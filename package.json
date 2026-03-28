@@ -1,6 +1,6 @@
 {
   "name": "oauth-multi-login-app",
-  "version": "1.1.17",
+  "version": "1.1.18",
   "private": true,
   "description": "Desktop OAuth multi-account login application",
   "author": {
@@ -43,7 +43,7 @@
     "desktop:dev": "bun run build:server && bunx electron .",
     "dist:win": "bun run verify:desktop && node scripts/build-server-binary.mjs win32 x64 && node scripts/build-desktop.mjs win x64",
     "dist:linux": "bun run verify:desktop && node scripts/build-server-binary.mjs linux x64 && node scripts/build-desktop.mjs linux x64",
-    "dist:linux-arm64": "bun run verify:desktop && node scripts/build-server-binary.mjs linux arm64 && node scripts/build-desktop.mjs linux arm64",
+    "dist:linux-arm64": "bun run verify:desktop && node scripts/build-server-binary.mjs linux arm64 && node scripts/build-desktop.mjs linux arm64 && node scripts/build-linux-deb.mjs arm64",
     "dist:rk3588-desktop": "bun run dist:linux-arm64",
     "dist:mac": "bun run verify:desktop && bun run build:server && node scripts/build-desktop.mjs mac"
   },

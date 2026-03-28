@@ -69,14 +69,14 @@ If you want a server-style deployment managed with shell scripts and `systemd`, 
 Recommended desktop install flow on the board:
 
 ```bash
-sudo apt install ./Codex\ Gateway-1.1.17-linux-arm64.deb
+sudo apt install ./Codex\ Gateway-1.1.18-linux-arm64.deb
 ```
 
 Recommended server-bundle install flow on the board:
 
 ```bash
-tar -xzf Codex-Gateway-server-rk3588-linux-arm64-1.1.17.tar.gz
-cd Codex-Gateway-server-rk3588-linux-arm64-1.1.17
+tar -xzf Codex-Gateway-server-rk3588-linux-arm64-1.1.18.tar.gz
+cd Codex-Gateway-server-rk3588-linux-arm64-1.1.18
 chmod +x scripts/install-rk3588.sh start.sh
 ./scripts/install-rk3588.sh
 ```
@@ -101,7 +101,7 @@ The workflow [`.github/workflows/build-desktop.yml`](./.github/workflows/build-d
 - `ubuntu-24.04-arm` -> RK3588/Linux `arm64` `.AppImage`, `.deb`, `.tar.gz`
 - `macos-latest` -> `.dmg`, `.zip`
 
-Tagging a release like `v1.1.17` will also publish those desktop artifacts plus the RK3588 server bundle to GitHub Releases.
+Tagging a release like `v1.1.18` will also publish those desktop artifacts plus the RK3588 server bundle to GitHub Releases.
 
 Recommended path from this Windows machine:
 

@@ -20,7 +20,7 @@ Do not use the Linux `amd64` packages on RK3588.
 On the board:
 
 ```bash
-sudo apt install ./Codex\ Gateway-1.1.17-linux-arm64.deb
+sudo apt install ./Codex\ Gateway-1.1.18-linux-arm64.deb
 ```
 
 After installation:

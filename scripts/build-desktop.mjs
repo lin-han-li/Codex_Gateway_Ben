@@ -109,7 +109,10 @@ if (target === "mac" && !env.CSC_IDENTITY_AUTO_DISCOVERY) {
 }
 
 cleanDesktopArtifacts(target)
-const buildArgs = [...config.args]
+const buildArgs =
+  target === "linux" && arch === "arm64"
+    ? ["--linux", "AppImage", "tar.gz", "--publish", "never"]
+    : [...config.args]
 if (arch) {
   buildArgs.push(`--${arch}`)
 }
