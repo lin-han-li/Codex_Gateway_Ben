@@ -1,10 +1,11 @@
 {
   "name": "oauth-multi-login-app",
-  "version": "1.1.8",
+  "version": "1.1.9",
   "private": true,
   "description": "Desktop OAuth multi-account login application",
   "author": "local",
   "type": "module",
+  "packageManager": "bun@1.2.23",
   "main": "electron/main.cjs",
   "scripts": {
     "dev": "bun --watch src/index.ts",
@@ -32,6 +33,7 @@
     "test:token-accuracy": "bun scripts/token-accuracy-audit.ts",
     "test:compat": "bun run check && bun run test:bridge && bun run test:parity && bun run test:session-parity && bun run test:session-quality && bun run test:long-session && bun run test:quota-failover && bun run test:transient-failover && bun run test:transient-exhaustion && bun run test:transport-exhaustion && bun run test:ban-failover && bun run test:ban-catch-normalization && bun run test:workspace-failover && bun run test:pool-consistency && bun run test:key-issue && bun run test:behavior && bun run test:hard-audit && bun run test:token-accuracy",
     "gate:release": "bun run test:compat",
+    "release:cross-platform": "powershell -ExecutionPolicy Bypass -File scripts/release-cross-platform.ps1",
     "build:server": "node scripts/build-server-binary.mjs",
     "desktop:dev": "bun run build:server && bunx electron .",
     "dist:win": "bun run verify:desktop && bun run build:server && node scripts/build-desktop.mjs win",

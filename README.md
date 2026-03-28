@@ -63,6 +63,30 @@ The workflow [`.github/workflows/build-desktop.yml`](./.github/workflows/build-d
 
 Tagging a release like `v1.1.8` will also publish those artifacts to GitHub Releases.
 
+Recommended path from this Windows machine:
+
+```powershell
+cd C:\Users\pengjianzhong\Desktop\MY_Project\Codex_Gateway\oauth-multi-login-app
+bun install
+npm run release:cross-platform
+```
+
+That helper will run the core checks locally and print the exact GitHub Actions URL for this repo.
+
+When you are ready to trigger the native Linux/macOS builds from GitHub:
+
+```powershell
+npm run release:cross-platform -- -PushBranch
+```
+
+When you are ready to create a release build for all three desktop targets:
+
+```powershell
+npm run release:cross-platform -- -PushBranch -CreateReleaseTag
+```
+
+By default the release tag is `v<package.json version>`, for example `v1.1.9`.
+
 ## Desktop local run (without installer)
 ```bash
 cd D:/Server/chatgpt/oauth-multi-login-app
@@ -89,7 +113,7 @@ bun run desktop:dev
 - `OAUTH_APP_FORWARD_PROXY_ENFORCE_ALLOWLIST`: when `1`, deny non-allowlisted hosts; default `0` (compat mode passthrough + logging)
 
 Identity-header policy:
-- Upstream `originator`, `user-agent`, and `version` are always enforced by the bridge to Codex official defaults (or configured overrides) and are not passthrough from client requests.
+- Upstream `originator`, `user-agent`, and `version` preserve a valid incoming Codex client identity when the three headers are self-consistent; otherwise the bridge falls back to Codex official defaults (or configured overrides).
 
 ## Virtual key bridge APIs
 

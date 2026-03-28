@@ -355,6 +355,7 @@ async function main() {
       OAUTH_APP_HOST: "127.0.0.1",
       OAUTH_APP_PORT: bridgePort,
       OAUTH_APP_DATA_DIR: tempDataDir,
+      OAUTH_APP_FORWARD_PROXY_ENABLED: "0",
       OAUTH_CODEX_API_BASE: `${upstreamOrigin}/backend-api/codex`,
       OAUTH_OPENAI_API_BASE: `${upstreamOrigin}/v1`,
       OAUTH_BEHAVIOR_ENABLED: "false",

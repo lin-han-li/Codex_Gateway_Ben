@@ -4026,19 +4026,14 @@ function rewriteUpstreamSessionHeaders(headers: Headers, input: { strictPrivacy:
   }
 }
 
-function resolveForwardClientIdentity(incoming?: Headers, options?: { allowPassthrough?: boolean }) {
-  if (options?.allowPassthrough !== true) {
-    return {
-      originator: CODEX_ORIGINATOR,
-      userAgent: CODEX_USER_AGENT,
-      version: CODEX_CLIENT_VERSION,
-    }
-  }
-
+function resolveForwardClientIdentity(incoming?: Headers) {
   const incomingOriginator = normalizeHeaderIdentityValue(incoming?.get("originator"))
   const incomingVersion = normalizeHeaderIdentityValue(incoming?.get("version"))
   const incomingUserAgent = normalizeHeaderIdentityValue(incoming?.get("user-agent"))
 
+  // These headers describe the Codex client itself rather than the end user.
+  // Keeping a self-consistent incoming identity preserves official wire parity
+  // while strict privacy continues to strip user/account/session identifiers.
   if (
     incomingOriginator &&
     incomingVersion &&
@@ -4080,9 +4075,7 @@ function buildUpstreamForwardHeaders(input: {
   strictPrivacy?: boolean
 }) {
   const strictPrivacy = input.strictPrivacy ?? isStrictUpstreamPrivacyEnabled()
-  const identity = resolveForwardClientIdentity(input.incoming, {
-    allowPassthrough: !strictPrivacy,
-  })
+  const identity = resolveForwardClientIdentity(input.incoming)
   const headers = new Headers()
   input.incoming?.forEach((value, key) => {
     if (shouldDropForwardHeader(key, strictPrivacy)) return
