@@ -71,13 +71,32 @@ chmod +x start.sh
 bun install --frozen-lockfile --production
 ```
 
-然后把 `systemd/codex-gateway.service` 放到 `/etc/systemd/system/`，按实际机器调整 `User`、`Group` 和 `PATH`：
+然后把 `systemd/codex-gateway.service` 放到 `/etc/systemd/system/`，按实际机器调整 `User`、`Group`、`WorkingDirectory` 和 `PATH`：
 
 ```bash
 sudo systemctl daemon-reload
 sudo systemctl enable --now codex-gateway
 sudo systemctl status codex-gateway
 ```
+
+## RK3588 / Debian 11 arm64 快速部署
+
+如果你的板子是 RK3588 这类 `aarch64/arm64` 设备，推荐直接使用 release 里的 `server-deploy` 部署包，而不是桌面 Linux `amd64` 安装包。
+
+```bash
+tar -xzf Codex-Gateway-rk3588-linux-arm64-1.1.12.tar.gz
+cd Codex-Gateway-rk3588-linux-arm64-1.1.12
+chmod +x scripts/install-rk3588.sh start.sh
+./scripts/install-rk3588.sh
+```
+
+这个脚本会：
+
+- 检查当前机器是否为 `arm64`
+- 如缺失则安装 Bun
+- 执行 `bun install --frozen-lockfile --production`
+- 自动生成 `.env`
+- 在有权限时生成并启用匹配当前目录和当前用户的 `systemd` 服务
 
 ## Windows 服务器启动
 

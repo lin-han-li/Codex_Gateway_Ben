@@ -44,6 +44,25 @@ This produces macOS artifacts under `dist/` (`.dmg`, `.zip`).
 
 Cross-building from a different host OS is intentionally blocked because the bundled local server is compiled as a native standalone binary for the host platform.
 
+## RK3588 / Debian 11 arm64
+
+For RK3588 class boards, do not use the desktop Linux `amd64` packages.
+Use the release artifact named like:
+
+- `Codex-Gateway-rk3588-linux-arm64-<version>.tar.gz`
+
+That bundle contains the `server-deploy` source package plus an RK3588 bootstrap script.
+Recommended installation flow on the board:
+
+```bash
+tar -xzf Codex-Gateway-rk3588-linux-arm64-1.1.12.tar.gz
+cd Codex-Gateway-rk3588-linux-arm64-1.1.12
+chmod +x scripts/install-rk3588.sh start.sh
+./scripts/install-rk3588.sh
+```
+
+The bootstrap script installs Bun if missing, installs production dependencies, creates `.env` from `.env.example`, and can generate/enable a `systemd` unit that matches the current extract path and current user when permissions allow.
+
 ## Build validation
 ```bash
 bun run verify:desktop
@@ -61,7 +80,7 @@ The workflow [`.github/workflows/build-desktop.yml`](./.github/workflows/build-d
 - `ubuntu-latest` -> `.AppImage`, `.deb`, `.tar.gz`
 - `macos-latest` -> `.dmg`, `.zip`
 
-Tagging a release like `v1.1.11` will also publish those artifacts to GitHub Releases.
+Tagging a release like `v1.1.12` will also publish those desktop artifacts plus the RK3588 server bundle to GitHub Releases.
 
 Recommended path from this Windows machine:
 
@@ -85,7 +104,7 @@ When you are ready to create a release build for all three desktop targets:
 npm run release:cross-platform -- -PushBranch -CreateReleaseTag
 ```
 
-By default the release tag is `v<package.json version>`, for example `v1.1.11`.
+By default the release tag is `v<package.json version>`, for example `v1.1.12`.
 
 ## Desktop local run (without installer)
 ```bash

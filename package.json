@@ -1,6 +1,6 @@
 {
   "name": "oauth-multi-login-app",
-  "version": "1.1.11",
+  "version": "1.1.12",
   "private": true,
   "description": "Desktop OAuth multi-account login application",
   "author": {
@@ -38,6 +38,7 @@
     "gate:release": "bun run test:compat",
     "release:cross-platform": "powershell -ExecutionPolicy Bypass -File scripts/release-cross-platform.ps1",
     "build:server": "node scripts/build-server-binary.mjs",
+    "bundle:rk3588": "node scripts/package-server-deploy-bundle.mjs $npm_package_version",
     "desktop:dev": "bun run build:server && bunx electron .",
     "dist:win": "bun run verify:desktop && bun run build:server && node scripts/build-desktop.mjs win",
     "dist:linux": "bun run verify:desktop && bun run build:server && node scripts/build-desktop.mjs linux",

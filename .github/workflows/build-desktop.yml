@@ -61,9 +61,49 @@ jobs:
           path: ${{ matrix.artifact_paths }}
           if-no-files-found: error
 
+  build-rk3588-bundle:
+    name: Build RK3588 Server Bundle
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.2.23
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Verify server-deploy bundle
+        run: |
+          cd server-deploy
+          bun install --frozen-lockfile
+          bun run check
+
+      - name: Build RK3588 source bundle
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          if [[ -z "${VERSION}" || "${VERSION}" == "${GITHUB_REF_NAME}" ]]; then
+            VERSION="$(node -p "require('./package.json').version")"
+          fi
+          BUNDLE_DIR="$(node scripts/package-server-deploy-bundle.mjs "${VERSION}" "rk3588-linux-arm64")"
+          tar -C "dist-server" -czf "dist-server/$(basename "${BUNDLE_DIR}").tar.gz" "$(basename "${BUNDLE_DIR}")"
+
+      - name: Upload RK3588 bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: codex-gateway-rk3588-server
+          path: dist-server/*.tar.gz
+          if-no-files-found: error
+
   release:
     name: Create Release
-    needs: build
+    needs:
+      - build
+      - build-rk3588-bundle
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     permissions:
