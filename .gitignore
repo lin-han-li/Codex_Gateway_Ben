@@ -1,0 +1,12 @@
+node_modules
+data
+build/*
+!build/installer.nsh
+dist
+dist-*/
+*.bun-build
+_tmp/
+_tmp_config_test.toml
+_tmp_script_check.js
+server-deploy-bundle/
+server-runtime-bundle/

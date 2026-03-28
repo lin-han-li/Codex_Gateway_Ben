@@ -1,0 +1,104 @@
+{
+  "name": "oauth-multi-login-app",
+  "version": "1.1.8",
+  "private": true,
+  "description": "Desktop OAuth multi-account login application",
+  "author": "local",
+  "type": "module",
+  "main": "electron/main.cjs",
+  "scripts": {
+    "dev": "bun --watch src/index.ts",
+    "start": "bun src/index.ts",
+    "check": "tsc --noEmit",
+    "check:web": "node scripts/check-web-syntax.mjs",
+    "verify:desktop": "bun run check && bun run check:web",
+    "test:bridge": "bun scripts/bridge-regression.ts",
+    "test:parity": "bun scripts/codex-parity-audit.ts",
+    "test:authmode-parity": "bun scripts/codex-oauth-vs-apikey-parity.ts",
+    "test:session-parity": "bun scripts/codex-session-parity-report.ts",
+    "test:session-quality": "bun scripts/codex-session-quality-audit.ts",
+    "test:long-session": "bun scripts/codex-long-session-continuity.ts",
+    "test:quota-failover": "bun scripts/codex-quota-failover-audit.ts",
+    "test:transient-failover": "bun scripts/codex-transient-failover-audit.ts",
+    "test:transient-exhaustion": "bun scripts/codex-transient-exhaustion-audit.ts",
+    "test:transport-exhaustion": "bun scripts/codex-transport-exhaustion-audit.ts",
+    "test:ban-failover": "bun scripts/codex-ban-failover-audit.ts",
+    "test:ban-catch-normalization": "bun scripts/codex-ban-catch-normalization-audit.ts",
+    "test:workspace-failover": "bun scripts/codex-workspace-failover-audit.ts",
+    "test:pool-consistency": "bun scripts/pool-consistency-audit.ts",
+    "test:key-issue": "bun scripts/virtual-key-issue-audit.ts",
+    "test:behavior": "bun scripts/codex-behavior-audit.ts",
+    "test:hard-audit": "bun scripts/codex-hard-audit.ts",
+    "test:token-accuracy": "bun scripts/token-accuracy-audit.ts",
+    "test:compat": "bun run check && bun run test:bridge && bun run test:parity && bun run test:session-parity && bun run test:session-quality && bun run test:long-session && bun run test:quota-failover && bun run test:transient-failover && bun run test:transient-exhaustion && bun run test:transport-exhaustion && bun run test:ban-failover && bun run test:ban-catch-normalization && bun run test:workspace-failover && bun run test:pool-consistency && bun run test:key-issue && bun run test:behavior && bun run test:hard-audit && bun run test:token-accuracy",
+    "gate:release": "bun run test:compat",
+    "build:server": "node scripts/build-server-binary.mjs",
+    "desktop:dev": "bun run build:server && bunx electron .",
+    "dist:win": "bun run verify:desktop && bun run build:server && node scripts/build-desktop.mjs win",
+    "dist:linux": "bun run verify:desktop && bun run build:server && node scripts/build-desktop.mjs linux",
+    "dist:mac": "bun run verify:desktop && bun run build:server && node scripts/build-desktop.mjs mac"
+  },
+  "dependencies": {
+    "hono": "^4.8.3",
+    "zod": "^3.24.4"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.2.23",
+    "electron": "^30.5.1",
+    "electron-builder": "^24.13.3",
+    "typescript": "^5.9.2"
+  },
+  "build": {
+    "appId": "com.local.oauthmultilogin",
+    "productName": "Codex Gateway",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "electron/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "build/server",
+        "to": "server",
+        "filter": [
+          "oauth-server*"
+        ]
+      },
+      {
+        "from": "src/web",
+        "to": "web"
+      }
+    ],
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "artifactName": "${productName} Setup ${version}.${ext}"
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb",
+        "tar.gz"
+      ],
+      "category": "Development",
+      "artifactName": "${productName}-${version}-linux-${arch}.${ext}"
+    },
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "category": "public.app-category.developer-tools",
+      "artifactName": "${productName}-${version}-mac-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "include": "build/installer.nsh"
+    }
+  }
+}

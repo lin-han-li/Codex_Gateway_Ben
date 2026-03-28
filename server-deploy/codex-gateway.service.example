@@ -1,0 +1,15 @@
+[Unit]
+Description=Codex Gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/codex-gateway-server
+EnvironmentFile=/opt/codex-gateway-server/.env
+ExecStart=/usr/local/bin/bun src/index.ts
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

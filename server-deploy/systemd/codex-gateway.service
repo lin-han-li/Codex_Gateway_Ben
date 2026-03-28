@@ -1,0 +1,19 @@
+[Unit]
+Description=Codex Gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=codex
+Group=codex
+WorkingDirectory=/opt/codex-gateway
+Environment=ENV_FILE=/opt/codex-gateway/.env
+Environment=PATH=/home/codex/.bun/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/opt/codex-gateway/start.sh
+Restart=always
+RestartSec=5
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target

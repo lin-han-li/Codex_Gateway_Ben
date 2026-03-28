@@ -1,0 +1,14 @@
+services:
+  codex-gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: codex-gateway
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "${OAUTH_APP_PORT:-4777}:${OAUTH_APP_PORT:-4777}"
+      - "${OAUTH_APP_FORWARD_PROXY_PORT:-4778}:${OAUTH_APP_FORWARD_PROXY_PORT:-4778}"
+    volumes:
+      - ./data:/opt/codex-gateway/data
