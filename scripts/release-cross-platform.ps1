@@ -25,8 +25,8 @@ function Invoke-Step {
     return
   }
 
-  $args = if ($Command.Length -gt 1) { @($Command[1..($Command.Length - 1)]) } else { @() }
-  & $Command[0] @args
+  $commandArgs = if ($Command.Length -gt 1) { @($Command[1..($Command.Length - 1)]) } else { @() }
+  & $Command[0] @commandArgs
   if ($LASTEXITCODE -ne 0) {
     throw "$Label failed with exit code $LASTEXITCODE"
   }
