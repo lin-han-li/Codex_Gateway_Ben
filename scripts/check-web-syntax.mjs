@@ -3,13 +3,15 @@ import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { spawn } from "node:child_process"
+import { existsSync } from "node:fs"
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
-const htmlFiles = [
+const candidateHtmlFiles = [
   "src/web/index.html",
   "server-deploy/src/web/index.html",
   "server-runtime-bundle/src/web/index.html",
 ]
+const htmlFiles = candidateHtmlFiles.filter((relativePath) => existsSync(path.join(rootDir, relativePath)))
 
 const scriptPattern = /<script\b[^>]*type=["']module["'][^>]*>([\s\S]*?)<\/script>/i
 

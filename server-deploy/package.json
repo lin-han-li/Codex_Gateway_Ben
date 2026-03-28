@@ -1,6 +1,6 @@
 {
   "name": "codex-gateway-server",
-  "version": "1.1.9",
+  "version": "1.1.10",
   "private": true,
   "description": "Server deployment bundle for Codex Gateway",
   "type": "module",
