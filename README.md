@@ -61,7 +61,7 @@ The workflow [`.github/workflows/build-desktop.yml`](./.github/workflows/build-d
 - `ubuntu-latest` -> `.AppImage`, `.deb`, `.tar.gz`
 - `macos-latest` -> `.dmg`, `.zip`
 
-Tagging a release like `v1.1.10` will also publish those artifacts to GitHub Releases.
+Tagging a release like `v1.1.11` will also publish those artifacts to GitHub Releases.
 
 Recommended path from this Windows machine:
 
@@ -85,7 +85,7 @@ When you are ready to create a release build for all three desktop targets:
 npm run release:cross-platform -- -PushBranch -CreateReleaseTag
 ```
 
-By default the release tag is `v<package.json version>`, for example `v1.1.10`.
+By default the release tag is `v<package.json version>`, for example `v1.1.11`.
 
 ## Desktop local run (without installer)
 ```bash
