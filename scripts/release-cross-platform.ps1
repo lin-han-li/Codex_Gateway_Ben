@@ -55,6 +55,10 @@ $remoteUrl = Get-GitOutput @("remote", "get-url", "origin")
 $defaultTag = "v$version"
 $releaseTag = if ([string]::IsNullOrWhiteSpace($Tag)) { $defaultTag } else { $Tag.Trim() }
 
+if ($CreateReleaseTag -and $releaseTag -ne $defaultTag) {
+  throw "Release tag $releaseTag does not match package.json version $version. Expected $defaultTag."
+}
+
 $githubActionsUrl = $null
 if ($remoteUrl -match '^https://github\.com/(?<slug>[^/]+/[^/.]+)(?:\.git)?$') {
   $githubActionsUrl = "https://github.com/$($matches.slug)/actions/workflows/build-desktop.yml"
@@ -72,6 +76,7 @@ if ($githubActionsUrl) {
 Write-Host ""
 
 if (-not $SkipChecks) {
+  Invoke-Step "Version sync check" @("node", "scripts/assert-release-version-sync.mjs")
   Invoke-Step "Type check" @("npm", "run", "check")
   Invoke-Step "Request parity audit" @("bun", "run", "test:parity")
   Invoke-Step "Session parity audit" @("bun", "run", "test:session-parity")

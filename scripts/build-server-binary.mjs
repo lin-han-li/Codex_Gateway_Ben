@@ -5,8 +5,41 @@ import { spawn } from "node:child_process"
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 const serverDir = path.join(rootDir, "build", "server")
-const outputName = process.platform === "win32" ? "oauth-server.exe" : "oauth-server"
+const platformAliases = {
+  win: "win32",
+  windows: "win32",
+  win32: "win32",
+  linux: "linux",
+  darwin: "darwin",
+  mac: "darwin",
+  macos: "darwin",
+}
+const archAliases = {
+  x64: "x64",
+  amd64: "x64",
+  arm64: "arm64",
+  aarch64: "arm64",
+}
+const targetPlatform = platformAliases[String(process.argv[2] || process.platform).trim().toLowerCase()]
+const targetArch = archAliases[String(process.argv[3] || process.arch).trim().toLowerCase()]
+
+if (!targetPlatform) {
+  throw new Error(`Unsupported target platform: ${process.argv[2] || process.platform}`)
+}
+
+if (!targetArch) {
+  throw new Error(`Unsupported target arch: ${process.argv[3] || process.arch}`)
+}
+
+const supportedTargets = new Set(["win32:x64", "linux:x64", "linux:arm64", "darwin:x64", "darwin:arm64"])
+if (!supportedTargets.has(`${targetPlatform}:${targetArch}`)) {
+  throw new Error(`Unsupported Bun executable target: ${targetPlatform}/${targetArch}`)
+}
+
+const outputName = targetPlatform === "win32" ? "oauth-server.exe" : "oauth-server"
 const outputPath = path.join(serverDir, outputName)
+const bunCompileTarget =
+  targetPlatform === "win32" ? `bun-windows-${targetArch}` : targetPlatform === "darwin" ? `bun-darwin-${targetArch}` : `bun-linux-${targetArch}`
 
 async function captureStdout(command, args) {
   return new Promise((resolve, reject) => {
@@ -95,5 +128,6 @@ for (const entry of await readdir(serverDir, { withFileTypes: true }).catch(() =
 }
 
 await assertBunVersionMatchesPackageManager()
-await run("bun", ["build", "--compile", "src/index.ts", "--outfile", outputPath])
+console.log(`[build-server] target ${bunCompileTarget}`)
+await run("bun", ["build", "--compile", "--target", bunCompileTarget, "src/index.ts", "--outfile", outputPath])
 console.log(`Built standalone server binary: ${outputPath}`)

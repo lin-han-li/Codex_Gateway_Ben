@@ -1,6 +1,6 @@
 {
   "name": "oauth-multi-login-app",
-  "version": "1.1.16",
+  "version": "1.1.17",
   "private": true,
   "description": "Desktop OAuth multi-account login application",
   "author": {
@@ -16,6 +16,7 @@
     "check": "tsc --noEmit",
     "check:web": "node scripts/check-web-syntax.mjs",
     "verify:desktop": "bun run check && bun run check:web",
+    "check:version-sync": "node scripts/assert-release-version-sync.mjs",
     "test:bridge": "bun scripts/bridge-regression.ts",
     "test:parity": "bun scripts/codex-parity-audit.ts",
     "test:authmode-parity": "bun scripts/codex-oauth-vs-apikey-parity.ts",
@@ -40,8 +41,10 @@
     "build:server": "node scripts/build-server-binary.mjs",
     "bundle:rk3588": "node scripts/package-server-deploy-bundle.mjs $npm_package_version",
     "desktop:dev": "bun run build:server && bunx electron .",
-    "dist:win": "bun run verify:desktop && bun run build:server && node scripts/build-desktop.mjs win",
-    "dist:linux": "bun run verify:desktop && bun run build:server && node scripts/build-desktop.mjs linux",
+    "dist:win": "bun run verify:desktop && node scripts/build-server-binary.mjs win32 x64 && node scripts/build-desktop.mjs win x64",
+    "dist:linux": "bun run verify:desktop && node scripts/build-server-binary.mjs linux x64 && node scripts/build-desktop.mjs linux x64",
+    "dist:linux-arm64": "bun run verify:desktop && node scripts/build-server-binary.mjs linux arm64 && node scripts/build-desktop.mjs linux arm64",
+    "dist:rk3588-desktop": "bun run dist:linux-arm64",
     "dist:mac": "bun run verify:desktop && bun run build:server && node scripts/build-desktop.mjs mac"
   },
   "dependencies": {
@@ -76,6 +79,10 @@
       {
         "from": "src/web",
         "to": "web"
+      },
+      {
+        "from": "build/icons",
+        "to": "icons"
       }
     ],
     "win": {
@@ -90,8 +97,18 @@
         "deb",
         "tar.gz"
       ],
+      "icon": "build/icons",
+      "executableName": "codex-gateway",
+      "synopsis": "Desktop gateway for multi-account OAuth routing",
+      "description": "Codex Gateway desktop app with a bundled local gateway service and browser-based management UI.",
       "category": "Development",
       "maintainer": "lin-han-li <lin-han-li@users.noreply.github.com>",
+      "desktop": {
+        "Comment": "Multi-account OAuth gateway desktop app",
+        "Keywords": "Codex;Gateway;OAuth;OpenAI;Proxy;",
+        "StartupNotify": "true",
+        "StartupWMClass": "Codex Gateway"
+      },
       "artifactName": "${productName}-${version}-linux-${arch}.${ext}"
     },
     "mac": {

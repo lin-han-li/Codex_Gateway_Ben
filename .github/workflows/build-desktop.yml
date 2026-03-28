@@ -22,9 +22,17 @@ jobs:
               dist/*.exe
               dist/*.blockmap
           - os: ubuntu-latest
-            label: Linux
+            label: Linux x64
             script: dist:linux
-            artifact_name: codex-gateway-linux
+            artifact_name: codex-gateway-linux-x64
+            artifact_paths: |
+              dist/*.AppImage
+              dist/*.deb
+              dist/*.tar.gz
+          - os: ubuntu-24.04-arm
+            label: RK3588 Desktop
+            script: dist:linux-arm64
+            artifact_name: codex-gateway-rk3588-desktop
             artifact_paths: |
               dist/*.AppImage
               dist/*.deb
@@ -48,6 +56,9 @@ jobs:
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
+
+      - name: Verify version sync
+        run: node scripts/assert-release-version-sync.mjs
 
       - name: Build desktop artifacts
         env:
@@ -76,6 +87,9 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      - name: Verify version sync
+        run: node scripts/assert-release-version-sync.mjs
+
       - name: Verify server-deploy bundle
         run: |
           cd server-deploy
@@ -89,7 +103,7 @@ jobs:
           if [[ -z "${VERSION}" || "${VERSION}" == "${GITHUB_REF_NAME}" ]]; then
             VERSION="$(node -p "require('./package.json').version")"
           fi
-          BUNDLE_DIR="$(node scripts/package-server-deploy-bundle.mjs "${VERSION}" "rk3588-linux-arm64")"
+          BUNDLE_DIR="$(node scripts/package-server-deploy-bundle.mjs "${VERSION}" "server-rk3588-linux-arm64")"
           tar -C "dist-server" -czf "dist-server/$(basename "${BUNDLE_DIR}").tar.gz" "$(basename "${BUNDLE_DIR}")"
 
       - name: Upload RK3588 bundle
@@ -114,6 +128,9 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: release-artifacts
+
+      - name: Verify version sync
+        run: node scripts/assert-release-version-sync.mjs
 
       - name: Show release files
         run: find release-artifacts -maxdepth 2 -type f | sort

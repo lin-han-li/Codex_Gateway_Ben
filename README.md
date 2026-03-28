@@ -33,6 +33,12 @@ bun run dist:linux
 
 This produces Linux artifacts under `dist/` (`.AppImage`, `.deb`, `.tar.gz`).
 
+For RK3588 or other Linux `arm64` desktop targets:
+
+```bash
+bun run dist:linux-arm64
+```
+
 macOS packages must be built on macOS:
 ```bash
 cd D:/Server/chatgpt/oauth-multi-login-app
@@ -46,17 +52,31 @@ Cross-building from a different host OS is intentionally blocked because the bun
 
 ## RK3588 / Debian 11 arm64
 
-For RK3588 class boards, do not use the desktop Linux `amd64` packages.
-Use the release artifact named like:
+There are now two different RK3588 release shapes:
 
-- `Codex-Gateway-rk3588-linux-arm64-<version>.tar.gz`
+- Desktop app for boards with a GUI desktop:
+  - `Codex Gateway-<version>-linux-arm64.deb`
+  - `Codex Gateway-<version>-linux-arm64.AppImage`
+  - `Codex Gateway-<version>-linux-arm64.tar.gz`
+- Headless/server bundle for service deployment:
+  - `Codex-Gateway-server-rk3588-linux-arm64-<version>.tar.gz`
 
-That bundle contains the `server-deploy` source package plus an RK3588 bootstrap script.
-Recommended installation flow on the board:
+If you want a normal desktop app that can be opened from the application launcher, use the `linux-arm64.deb` package.
+That package installs the Electron desktop app plus the bundled local gateway service and creates a normal launcher entry.
+
+If you want a server-style deployment managed with shell scripts and `systemd`, use the RK3588 server bundle instead.
+
+Recommended desktop install flow on the board:
 
 ```bash
-tar -xzf Codex-Gateway-rk3588-linux-arm64-1.1.15.tar.gz
-cd Codex-Gateway-rk3588-linux-arm64-1.1.15
+sudo apt install ./Codex\ Gateway-1.1.17-linux-arm64.deb
+```
+
+Recommended server-bundle install flow on the board:
+
+```bash
+tar -xzf Codex-Gateway-server-rk3588-linux-arm64-1.1.17.tar.gz
+cd Codex-Gateway-server-rk3588-linux-arm64-1.1.17
 chmod +x scripts/install-rk3588.sh start.sh
 ./scripts/install-rk3588.sh
 ```
@@ -77,10 +97,11 @@ This runs TypeScript checking plus syntax validation for the embedded desktop we
 
 The workflow [`.github/workflows/build-desktop.yml`](./.github/workflows/build-desktop.yml) builds desktop artifacts on native runners:
 - `windows-latest` -> NSIS `.exe`
-- `ubuntu-latest` -> `.AppImage`, `.deb`, `.tar.gz`
+- `ubuntu-latest` -> Linux `x64` `.AppImage`, `.deb`, `.tar.gz`
+- `ubuntu-24.04-arm` -> RK3588/Linux `arm64` `.AppImage`, `.deb`, `.tar.gz`
 - `macos-latest` -> `.dmg`, `.zip`
 
-Tagging a release like `v1.1.15` will also publish those desktop artifacts plus the RK3588 server bundle to GitHub Releases.
+Tagging a release like `v1.1.17` will also publish those desktop artifacts plus the RK3588 server bundle to GitHub Releases.
 
 Recommended path from this Windows machine:
 

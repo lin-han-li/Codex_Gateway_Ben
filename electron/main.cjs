@@ -167,6 +167,17 @@ function resolveWebDir() {
   return path.join(__dirname, "..", "src", "web")
 }
 
+function resolveDesktopIconPath() {
+  const iconDir = app.isPackaged ? path.join(process.resourcesPath, "icons") : path.join(__dirname, "..", "build", "icons")
+  for (const candidate of ["512x512.png", "256x256.png", "128x128.png", "64x64.png", "32x32.png"]) {
+    const absolutePath = path.join(iconDir, candidate)
+    if (fs.existsSync(absolutePath)) {
+      return absolutePath
+    }
+  }
+  return null
+}
+
 function resolveDataDir() {
   return path.join(app.getPath("userData"), "data")
 }
@@ -910,14 +921,20 @@ async function createMainWindow() {
   }
 
   const baseUrl = await startServer()
-  mainWindow = new BrowserWindow({
+  const windowOptions = {
     width: WINDOW_DEFAULT_WIDTH,
     height: WINDOW_DEFAULT_HEIGHT,
     minWidth: WINDOW_MIN_WIDTH,
     minHeight: WINDOW_MIN_HEIGHT,
     autoHideMenuBar: true,
     show: false,
-  })
+  }
+  const appIconPath = resolveDesktopIconPath()
+  if (appIconPath && process.platform !== "darwin") {
+    windowOptions.icon = appIconPath
+  }
+
+  mainWindow = new BrowserWindow(windowOptions)
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url)

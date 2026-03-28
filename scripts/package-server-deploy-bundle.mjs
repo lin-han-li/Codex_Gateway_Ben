@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url"
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 const version = String(process.argv[2] || "").trim()
-const platformTag = String(process.argv[3] || "rk3588-linux-arm64").trim()
+const platformTag = String(process.argv[3] || "server-rk3588-linux-arm64").trim()
 
 if (!version) {
   throw new Error("Usage: node scripts/package-server-deploy-bundle.mjs <version> [platform-tag]")
