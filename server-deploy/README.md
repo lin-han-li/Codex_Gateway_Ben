@@ -84,8 +84,8 @@ sudo systemctl status codex-gateway
 如果你的板子是 RK3588 这类 `aarch64/arm64` 设备，推荐直接使用 release 里的 `server-deploy` 部署包，而不是桌面 Linux `amd64` 安装包。
 
 ```bash
-tar -xzf Codex-Gateway-rk3588-linux-arm64-1.1.12.tar.gz
-cd Codex-Gateway-rk3588-linux-arm64-1.1.12
+tar -xzf Codex-Gateway-rk3588-linux-arm64-1.1.14.tar.gz
+cd Codex-Gateway-rk3588-linux-arm64-1.1.14
 chmod +x scripts/install-rk3588.sh start.sh
 ./scripts/install-rk3588.sh
 ```

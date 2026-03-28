@@ -52,7 +52,7 @@ ensure_env_file() {
 
 install_dependencies() {
   cd "${ROOT_DIR}"
-  bun install --frozen-lockfile --production
+  bun install --production
 }
 
 enable_systemd_service() {

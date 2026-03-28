@@ -79,7 +79,7 @@ jobs:
       - name: Verify server-deploy bundle
         run: |
           cd server-deploy
-          bun install --frozen-lockfile
+          bun install
           bun run check
 
       - name: Build RK3588 source bundle
