@@ -13,6 +13,8 @@ let serverManagementToken = ""
 let isQuitting = false
 let mainWindow = null
 let serverLogTail = []
+let serverRestartInProgress = false
+let suppressExitNotification = false
 const WINDOW_DEFAULT_WIDTH = 1200
 const WINDOW_DEFAULT_HEIGHT = 820
 const WINDOW_MIN_WIDTH = 1120
@@ -56,11 +58,20 @@ function getServerTailText() {
   return serverLogTail.filter(Boolean).slice(-6).join("\n")
 }
 
-function clearBootstrapLog() {
+function prepareBootstrapLog() {
   serverLogTail = []
   try {
     fs.mkdirSync(resolveDataDir(), { recursive: true })
-    fs.writeFileSync(resolveBootstrapLogPath(), "", "utf8")
+    const logPath = resolveBootstrapLogPath()
+    if (fs.existsSync(logPath)) {
+      const stat = fs.statSync(logPath)
+      if (stat.size > 1024 * 1024) {
+        const archived = `${logPath}.${Date.now()}`
+        fs.renameSync(logPath, archived)
+      }
+    }
+    fs.openSync(logPath, "a").close()
+    appendBootstrapLog("info", "=== desktop bootstrap session started ===")
   } catch {}
 }
 
@@ -616,18 +627,27 @@ function requestHealth(url) {
   })
 }
 
+const HEALTH_CHECK_ATTEMPTS = 160
+const HEALTH_CHECK_DELAY_MS = 250
+
 async function waitForServer(baseUrl) {
   let lastError = null
-  for (let i = 0; i < 80; i += 1) {
+  for (let attempt = 0; attempt < HEALTH_CHECK_ATTEMPTS; attempt += 1) {
     try {
       await requestHealth(`${baseUrl}/api/health`)
       return
     } catch (error) {
       lastError = error
+      if (attempt < HEALTH_CHECK_ATTEMPTS - 1) {
+        appendBootstrapLog(
+          "warn",
+          `Health check ${attempt + 1}/${HEALTH_CHECK_ATTEMPTS} failed: ${error instanceof Error ? error.message : String(error)}`,
+        )
+      }
     }
-    await delay(250)
+    await delay(HEALTH_CHECK_DELAY_MS)
   }
-  throw lastError ?? new Error("Server startup timeout")
+  throw lastError ?? new Error(`Server startup timeout after ${HEALTH_CHECK_ATTEMPTS * HEALTH_CHECK_DELAY_MS}ms`)
 }
 
 function stopServer() {
@@ -671,7 +691,7 @@ async function startServer() {
   const dataDir = resolveDataDir()
   const webDir = resolveWebDir()
   fs.mkdirSync(dataDir, { recursive: true })
-  clearBootstrapLog()
+  prepareBootstrapLog()
   appendBootstrapLog("info", "Starting bundled OAuth server")
   appendBootstrapLog("info", `Data directory: ${dataDir}`)
   appendBootstrapLog("info", `Web directory: ${webDir}`)
@@ -799,12 +819,16 @@ async function startServer() {
     recordServerOutput(chunk, "error")
   })
   serverProcess.on("exit", (code, signal) => {
-    if (isQuitting) return
     const reason = code !== null ? `exit code ${code}` : `signal ${signal}`
-    appendBootstrapLog("error", `Server process stopped unexpectedly (${reason})`)
-    if (!mainWindow) return
-    dialog.showErrorBox("Codex Gateway", buildDetailedError(`Server process stopped unexpectedly (${reason}).`))
-    app.quit()
+    serverProcess = null
+    if (isQuitting || suppressExitNotification) return
+    notifyServerFailure(reason)
+  })
+  serverProcess.on("error", (error) => {
+    const message = error instanceof Error ? error.message : String(error)
+    serverProcess = null
+    if (isQuitting || suppressExitNotification) return
+    notifyServerFailure(`child process error: ${message}`)
   })
 
   serverBaseUrl = formatLocalAddress(localOpenHost, port)
@@ -823,6 +847,58 @@ async function startServer() {
     stopServer()
     serverBaseUrl = null
     throw new Error(buildDetailedError(error instanceof Error ? error.message : String(error)))
+  }
+}
+
+function buildDesktopUrl(baseUrl) {
+  const url = new URL(baseUrl)
+  url.searchParams.set("desktop", "1")
+  if (serverManagementToken) {
+    url.searchParams.set("admin_token", serverManagementToken)
+  }
+  return url.toString()
+}
+
+async function restartServerProcess() {
+  if (serverRestartInProgress) return
+  serverRestartInProgress = true
+  suppressExitNotification = true
+  try {
+    stopServer()
+    serverBaseUrl = null
+    const baseUrl = await startServer()
+    if (!mainWindow || mainWindow.isDestroyed()) return
+    await mainWindow.loadURL(buildDesktopUrl(baseUrl))
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error)
+    dialog.showErrorBox("Codex Gateway", `Failed to restart the OAuth server:\n${detail}`)
+  } finally {
+    suppressExitNotification = false
+    serverRestartInProgress = false
+  }
+}
+
+function notifyServerFailure(reason) {
+  appendBootstrapLog("error", `Server process stopped unexpectedly (${reason})`)
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    app.quit()
+    return
+  }
+  const response = dialog.showMessageBoxSync(mainWindow, {
+    type: "error",
+    title: "Codex Gateway",
+    message: "The OAuth server has stopped",
+    detail: buildDetailedError(`The bundled server exited with ${reason}.`),
+    buttons: ["Restart server", "Quit application"],
+    defaultId: 0,
+    cancelId: 1,
+    noLink: true,
+  })
+  if (response === 0) {
+    void restartServerProcess()
+  } else {
+    isQuitting = true
+    app.quit()
   }
 }
 
@@ -852,16 +928,12 @@ async function createMainWindow() {
   mainWindow.on("closed", () => {
     mainWindow = null
   })
-  const url = new URL(baseUrl)
-  url.searchParams.set("desktop", "1")
-  if (serverManagementToken) {
-    url.searchParams.set("admin_token", serverManagementToken)
-  }
+  const desktopUrl = buildDesktopUrl(baseUrl)
   appendBootstrapLog(
     "info",
-    `Desktop window target: ${redactSensitiveUrl(url.toString())} adminToken=${serverManagementToken ? "present" : "missing"}`,
+    `Desktop window target: ${redactSensitiveUrl(desktopUrl)} adminToken=${serverManagementToken ? "present" : "missing"}`,
   )
-  await mainWindow.loadURL(url.toString())
+  await mainWindow.loadURL(desktopUrl)
 }
 
 const gotSingleInstanceLock = app.requestSingleInstanceLock()

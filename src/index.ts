@@ -260,6 +260,8 @@ const FORWARD_PROXY_ALLOWED_HOSTS = String(
 const FORWARD_PROXY_ENFORCE_ALLOWLIST =
   String(process.env.OAUTH_APP_FORWARD_PROXY_ENFORCE_ALLOWLIST ?? "0").trim() === "1"
 let forwardProxy: RestrictedForwardProxy | null = null
+let server: ReturnType<typeof Bun.serve> | null = null
+let fatalShutdown = false
 
 type UpstreamProfile = {
   providerMode: "chatgpt" | "openai"
@@ -1086,6 +1088,14 @@ function emitUsageUpdated(input: { accountId: string; keyId?: string; usage: Usa
   emitServerEvent("usage", payload)
 }
 
+function logBackgroundError(label: string, error: unknown) {
+  console.error(`[oauth-multi-login] background task failed (${label})`, error)
+}
+
+function handleBackgroundPromise(label: string, promise: Promise<unknown>) {
+  promise.catch((error) => logBackgroundError(label, error))
+}
+
 function emitAccountRateLimitsUpdated(input: { accountId: string; source: string; quota: AccountQuotaSnapshot }) {
   const derived = resolvePublicAccountDerivedState(input.accountId, input.quota)
   emitServerEvent("account-rate-limits-updated", {
@@ -1545,6 +1555,8 @@ async function refreshAndEmitAccountQuota(accountID: string, source: string) {
         quota,
       })
     }
+  } catch (error) {
+    logBackgroundError(`refreshAndEmitAccountQuota:${source}:${normalizedAccountID}`, error)
   } finally {
     accountQuotaRefreshInFlight.delete(normalizedAccountID)
   }
@@ -1567,6 +1579,8 @@ async function pollAndEmitAccountQuota(source: string) {
         quota,
       })
     }
+  } catch (error) {
+    logBackgroundError(`pollAndEmitAccountQuota:${source}`, error)
   } finally {
     accountQuotaPollInFlight = false
   }
@@ -1603,7 +1617,10 @@ function startServerEventHooks() {
       if (account) {
         invalidatePoolConsistency(account.providerId)
       }
-      void refreshAndEmitAccountQuota(session.accountId, "login-session")
+      handleBackgroundPromise(
+        "refreshAndEmitAccountQuota:login-session",
+        refreshAndEmitAccountQuota(session.accountId, "login-session"),
+      )
     }
   })
 
@@ -1625,7 +1642,7 @@ function startServerEventHooks() {
   healthTimer.unref?.()
 
   const quotaTimer = setInterval(() => {
-    void pollAndEmitAccountQuota("quota-poll")
+    handleBackgroundPromise("pollAndEmitAccountQuota:quota-poll", pollAndEmitAccountQuota("quota-poll"))
   }, ACCOUNT_QUOTA_POLL_INTERVAL_MS)
   quotaTimer.unref?.()
 }
@@ -2320,7 +2337,10 @@ function importJsonOAuthAccount(input: z.infer<typeof ImportJsonAccountSchema>) 
   })
   markAccountHealthy(accountID, "codex-json-import")
   invalidatePoolConsistency("chatgpt")
-  void refreshAndEmitAccountQuota(accountID, "codex-json-import")
+  handleBackgroundPromise(
+    "refreshAndEmitAccountQuota:codex-json-import",
+    refreshAndEmitAccountQuota(accountID, "codex-json-import"),
+  )
   const account = accountStore.get(accountID)
   let virtualKey: { key: string; record: unknown } | undefined
   if (input.issueVirtualKey) {
@@ -2481,7 +2501,10 @@ async function importRefreshTokenOAuthAccount(input: z.infer<typeof ImportRtAcco
   })
   markAccountHealthy(accountID, refreshed ? "refresh-token-import-refresh" : "refresh-token-import")
   invalidatePoolConsistency(input.providerId)
-  void refreshAndEmitAccountQuota(accountID, "refresh-token-import")
+  handleBackgroundPromise(
+    "refreshAndEmitAccountQuota:refresh-token-import",
+    refreshAndEmitAccountQuota(accountID, "refresh-token-import"),
+  )
   const account = accountStore.get(accountID)
   let virtualKey: { key: string; record: unknown } | undefined
   if (input.issueVirtualKey) {
@@ -5705,7 +5728,10 @@ app.post("/api/bridge/oauth/sync", async (c) => {
       },
     })
     invalidatePoolConsistency(input.providerId)
-    void refreshAndEmitAccountQuota(accountID, "bridge-oauth-sync")
+    handleBackgroundPromise(
+      "refreshAndEmitAccountQuota:bridge-oauth-sync",
+      refreshAndEmitAccountQuota(accountID, "bridge-oauth-sync"),
+    )
     const account = accountStore.get(accountID)
     let virtualKey: { key: string; record: unknown } | undefined
     if (input.issueVirtualKey) {
@@ -5797,7 +5823,10 @@ app.post("/api/accounts/:id/refresh", async (c) => {
     })
     markAccountHealthy(accountID, "account-refresh")
     invalidatePoolConsistency(account.providerId)
-    void refreshAndEmitAccountQuota(accountID, "account-refresh")
+    handleBackgroundPromise(
+      "refreshAndEmitAccountQuota:account-refresh",
+      refreshAndEmitAccountQuota(accountID, "account-refresh"),
+    )
 
     return c.json({
       success: true,
@@ -6184,7 +6213,10 @@ async function proxyVirtualKeyCodexRequest(c: any, upstreamPath = "/responses") 
           evictAccountModelsCache(failedAccountId)
         } else if (quotaSignal.matched) {
           markAccountQuotaExhausted(failedAccountId)
-          void refreshAndEmitAccountQuota(failedAccountId, "proxy-usage-limit-reached")
+          handleBackgroundPromise(
+            "refreshAndEmitAccountQuota:proxy-usage-limit-reached",
+            refreshAndEmitAccountQuota(failedAccountId, "proxy-usage-limit-reached"),
+          )
         } else {
           markAccountUnhealthy(failedAccountId, transientSignal.reason ?? "upstream_http_502", "responses")
         }
@@ -6340,17 +6372,23 @@ async function proxyVirtualKeyCodexRequest(c: any, upstreamPath = "/responses") 
 
     const [clientStream, usageStream] = upstream.body.tee()
     if (isEventStreamContentType(upstream.headers.get("content-type"))) {
-      void trackUsageFromStream({
-        accountId: account.id,
-        keyId: key.id,
-        stream: usageStream,
-      })
+      handleBackgroundPromise(
+        "trackUsageFromStream:responses",
+        trackUsageFromStream({
+          accountId: account.id,
+          keyId: key.id,
+          stream: usageStream,
+        }),
+      )
     } else {
-      void trackUsageFromJsonStream({
-        accountId: account.id,
-        keyId: key.id,
-        stream: usageStream,
-      })
+      handleBackgroundPromise(
+        "trackUsageFromJsonStream:responses",
+        trackUsageFromJsonStream({
+          accountId: account.id,
+          keyId: key.id,
+          stream: usageStream,
+        }),
+      )
     }
 
     accountStore.addRequestAudit({
@@ -6824,7 +6862,10 @@ app.post("/api/chat/virtual-key", async (c) => {
           evictAccountModelsCache(failedAccountId)
         } else if (quotaSignal.matched) {
           markAccountQuotaExhausted(failedAccountId)
-          void refreshAndEmitAccountQuota(failedAccountId, "chat-usage-limit-reached")
+          handleBackgroundPromise(
+            "refreshAndEmitAccountQuota:chat-usage-limit-reached",
+            refreshAndEmitAccountQuota(failedAccountId, "chat-usage-limit-reached"),
+          )
         } else {
           markAccountUnhealthy(failedAccountId, transientSignal.reason ?? "upstream_http_502", "chat")
         }
@@ -6921,7 +6962,20 @@ app.post("/api/chat/virtual-key", async (c) => {
   }
 })
 
-const server = Bun.serve({
+function handleProcessFailure(event: string, error: unknown) {
+  if (fatalShutdown) return
+  fatalShutdown = true
+  console.error(`[oauth-multi-login] ${event}`, error)
+  forwardProxy?.stop()?.catch(() => undefined)
+  callbackServer.stop()?.catch(() => undefined)
+  server?.stop()
+  process.exit(1)
+}
+
+process.on("unhandledRejection", (reason) => handleProcessFailure("unhandledRejection", reason))
+process.on("uncaughtException", (error) => handleProcessFailure("uncaughtException", error))
+
+server = Bun.serve({
   hostname: AppConfig.host,
   port: AppConfig.port,
   idleTimeout: 120,
