@@ -4,6 +4,11 @@ import { fileURLToPath } from "node:url"
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 const packagePaths = [{ relativePath: "package.json", required: true }, { relativePath: "server-deploy/package.json", required: true }, { relativePath: "server-runtime-bundle/package.json", required: false }]
+const htmlPaths = [
+  { relativePath: "src/web/index.html", required: true },
+  { relativePath: "server-deploy/src/web/index.html", required: true },
+  { relativePath: "server-runtime-bundle/src/web/index.html", required: false },
+]
 
 const packages = packagePaths.flatMap(({ relativePath, required }) => {
   const absolutePath = path.join(rootDir, relativePath)
@@ -30,6 +35,28 @@ for (const entry of packages.slice(1)) {
   if (candidateVersion !== packageVersion) {
     throw new Error(
       `[version-sync] ${entry.relativePath} version ${candidateVersion || "<empty>"} does not match root package.json version ${packageVersion}`,
+    )
+  }
+}
+
+const expectedBadgeVersion = `v${packageVersion}`
+for (const { relativePath, required } of htmlPaths) {
+  const absolutePath = path.join(rootDir, relativePath)
+  if (!fs.existsSync(absolutePath)) {
+    if (required) {
+      throw new Error(`[version-sync] missing required html file: ${relativePath}`)
+    }
+    continue
+  }
+  const html = fs.readFileSync(absolutePath, "utf8")
+  const match = html.match(/<div class="ver">\s*([^<]+)\s*<\/div>/i)
+  if (!match) {
+    throw new Error(`[version-sync] version badge not found in ${relativePath}`)
+  }
+  const candidateBadge = String(match[1] || "").trim()
+  if (candidateBadge !== expectedBadgeVersion) {
+    throw new Error(
+      `[version-sync] ${relativePath} badge ${candidateBadge || "<empty>"} does not match package.json version ${expectedBadgeVersion}`,
     )
   }
 }
