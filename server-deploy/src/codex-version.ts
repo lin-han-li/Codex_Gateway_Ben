@@ -3,7 +3,7 @@ import { existsSync } from "node:fs"
 import path from "node:path"
 
 const VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/
-const FALLBACK_CODEX_CLIENT_VERSION = "0.115.0"
+const FALLBACK_CODEX_CLIENT_VERSION = "0.117.0"
 
 function normalizeVersion(raw?: string | null) {
   const value = String(raw ?? "").trim()
@@ -89,5 +89,11 @@ function resolveOverrideVersion() {
 
 export function resolveCodexClientVersion() {
   return resolveOverrideVersion() ?? resolveFromLocalCodexOfficial() ?? FALLBACK_CODEX_CLIENT_VERSION
+}
+
+export function toWholeCodexClientVersion(version?: string | null) {
+  const normalized = normalizeVersion(version)
+  if (!normalized) return FALLBACK_CODEX_CLIENT_VERSION
+  return normalized.split("-")[0] || FALLBACK_CODEX_CLIENT_VERSION
 }
 

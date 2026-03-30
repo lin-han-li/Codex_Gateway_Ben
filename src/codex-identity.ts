@@ -19,6 +19,20 @@ function noneIfWhitespace(value?: string | null) {
   return normalized.length > 0 ? normalized : undefined
 }
 
+const FIRST_PARTY_CODEX_ORIGINATORS = new Set([
+  "codex_cli_rs",
+  "codex-tui",
+  "codex_vscode",
+  "codex_atlas",
+  "codex_chatgpt_desktop",
+])
+
+export function isFirstPartyCodexOriginator(originator?: string | null) {
+  const normalized = noneIfWhitespace(originator)
+  if (!normalized) return false
+  return FIRST_PARTY_CODEX_ORIGINATORS.has(normalized) || normalized.startsWith("Codex ")
+}
+
 function formatTerminalVersion(name: string, version?: string) {
   return version ? `${name}/${version}` : name
 }

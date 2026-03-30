@@ -7,8 +7,8 @@ import { spawnSync } from "node:child_process"
 import { existsSync, statSync } from "node:fs"
 import { readFile, writeFile } from "node:fs/promises"
 import { AppConfig, ensureAppDirs } from "./config"
-import { resolveCodexClientVersion } from "./codex-version"
-import { buildCodexUserAgent } from "./codex-identity"
+import { resolveCodexClientVersion, toWholeCodexClientVersion } from "./codex-version"
+import { buildCodexUserAgent, isFirstPartyCodexOriginator } from "./codex-identity"
 import { BehaviorController, resolveBehaviorSignal, type BehaviorConfig } from "./behavior/control"
 import {
   buildUpstreamAccountUnavailableFailure,
@@ -157,6 +157,7 @@ const DEFAULT_CHATGPT_CODEX_API_BASE = "https://chatgpt.com/backend-api/codex"
 const DEFAULT_OPENAI_API_BASE = "https://api.openai.com/v1"
 const CODEX_ORIGINATOR = process.env.OAUTH_CODEX_ORIGINATOR ?? "codex_cli_rs"
 const CODEX_CLIENT_VERSION = resolveCodexClientVersion()
+const CODEX_CLIENT_WHOLE_VERSION = toWholeCodexClientVersion(CODEX_CLIENT_VERSION)
 const CODEX_VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/
 const FORCED_WORKSPACE_ID = String(process.env.OAUTH_CODEX_ALLOWED_WORKSPACE_ID ?? "").trim()
 const EVENT_STREAM_TOKEN_TTL_MS = 5 * 60 * 1000
@@ -525,6 +526,10 @@ const STRICT_PRIVACY_SESSION_KEYS_LOWER = new Set([
   "sessionid",
   "session-id",
   "x-session-id",
+  "previous_response_id",
+  "previousresponseid",
+  "previous-response-id",
+  "conversation",
   "conversation_id",
   "conversationid",
   "conversation-id",
@@ -2615,6 +2620,10 @@ function extractSessionRouteIDFromHeaders(headers?: Headers) {
     headers.get("session-id"),
     headers.get("x-session-id"),
     headers.get("sessionid"),
+    headers.get("previous_response_id"),
+    headers.get("previous-response-id"),
+    headers.get("previousresponseid"),
+    headers.get("conversation"),
     headers.get("prompt_cache_key"),
     headers.get("prompt-cache-key"),
     headers.get("x-prompt-cache-key"),
@@ -2631,7 +2640,19 @@ function extractSessionRouteIDFromRequestUrl(requestUrl?: string | null) {
   if (!raw) return undefined
   try {
     const url = new URL(raw)
-    const candidates = ["session_id", "sessionId", "prompt_cache_key", "promptCacheKey"]
+    const candidates = [
+      "session_id",
+      "sessionId",
+      "previous_response_id",
+      "previousResponseId",
+      "conversation",
+      "conversation_id",
+      "conversationId",
+      "thread_id",
+      "threadId",
+      "prompt_cache_key",
+      "promptCacheKey",
+    ]
     for (const key of candidates) {
       const normalized = normalizeSessionRouteID(url.searchParams.get(key))
       if (normalized) return normalized
@@ -2818,7 +2839,19 @@ function parseAuditRequestFields(input: { body: Uint8Array; contentType?: string
     const parsed = JSON.parse(text) as Record<string, unknown>
     const modelRaw = parsed.model
     const model = typeof modelRaw === "string" && modelRaw.trim().length > 0 ? modelRaw.trim() : null
-    const sessionCandidates = [parsed.session_id, parsed.sessionId, parsed.prompt_cache_key]
+    const sessionCandidates = [
+      parsed.session_id,
+      parsed.sessionId,
+      parsed.previous_response_id,
+      parsed.previousResponseId,
+      parsed.conversation,
+      parsed.conversation_id,
+      parsed.conversationId,
+      parsed.thread_id,
+      parsed.threadId,
+      parsed.prompt_cache_key,
+      parsed.promptCacheKey,
+    ]
     const sessionId =
       sessionCandidates.find((value) => typeof value === "string" && String(value).trim().length > 0)?.toString() ?? null
     return { model, sessionId }
@@ -3213,7 +3246,7 @@ function isModelsCacheFresh(snapshot: AccountModelsSnapshot | undefined, now = D
 }
 
 function resolveModelsClientVersion(requestUrl?: string) {
-  if (!requestUrl) return CODEX_CLIENT_VERSION
+  if (!requestUrl) return CODEX_CLIENT_WHOLE_VERSION
   try {
     const incoming = new URL(requestUrl)
     const queryVersion = String(incoming.searchParams.get("client_version") ?? "").trim()
@@ -3221,7 +3254,7 @@ function resolveModelsClientVersion(requestUrl?: string) {
   } catch {
     // ignore malformed URL and fallback to server version
   }
-  return CODEX_CLIENT_VERSION
+  return CODEX_CLIENT_WHOLE_VERSION
 }
 
 function buildModelsUpstreamUrl(input: { requestUrl?: string; clientVersion: string; modelsEndpoint: string; accountId?: string | null }) {
@@ -3838,6 +3871,9 @@ const STRICT_PRIVACY_TOP_LEVEL_BODY_FIELDS = ["user", "user_id", "chatgpt_user_i
 const STRICT_PRIVACY_BODY_SESSION_FIELDS = [
   "session_id",
   "sessionId",
+  "previous_response_id",
+  "previousResponseId",
+  "conversation",
   "conversation_id",
   "conversationId",
   "thread_id",
@@ -3998,6 +4034,10 @@ const STRICT_PRIVACY_SESSION_HEADER_NAMES = [
   "session_id",
   "session-id",
   "sessionid",
+  "previous_response_id",
+  "previous-response-id",
+  "previousresponseid",
+  "conversation",
   "prompt_cache_key",
   "prompt-cache-key",
   "x-prompt-cache-key",
@@ -4038,8 +4078,10 @@ function resolveForwardClientIdentity(incoming?: Headers) {
     incomingOriginator &&
     incomingVersion &&
     incomingUserAgent &&
+    isFirstPartyCodexOriginator(incomingOriginator) &&
     CODEX_VERSION_PATTERN.test(incomingVersion) &&
-    incomingUserAgent.startsWith(`${incomingOriginator}/${incomingVersion} `)
+    (incomingUserAgent === `${incomingOriginator}/${incomingVersion}` ||
+      incomingUserAgent.startsWith(`${incomingOriginator}/${incomingVersion} `))
   ) {
     return {
       originator: incomingOriginator,
@@ -4111,6 +4153,7 @@ const PASSTHROUGH_CODEX_FAILURE_HEADERS = new Set([
   "content-type",
   "content-language",
   "retry-after",
+  "x-request-id",
   "x-codex-active-limit",
   "x-codex-promo-message",
   "x-codex-credits-has-credits",

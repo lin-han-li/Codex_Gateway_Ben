@@ -271,7 +271,10 @@ async function main() {
       parityResponse.headers.get("x-codex-primary-used-percent") === "80",
       "Codex rate limit headers should be preserved on failure",
     )
-    assertCondition(!parityResponse.headers.get("x-request-id"), "x-request-id should be stripped on failure")
+    assertCondition(
+      parityResponse.headers.get("x-request-id") === "req_bridge_regression",
+      "x-request-id should be preserved on failure",
+    )
     assertCondition(!parityResponse.headers.get("cf-ray"), "cf-ray should be stripped on failure")
     assertCondition(
       !parityResponse.headers.get("x-openai-authorization-error"),
