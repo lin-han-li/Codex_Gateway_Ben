@@ -59,6 +59,19 @@ for (const { relativePath, required } of htmlPaths) {
       `[version-sync] ${relativePath} badge ${candidateBadge || "<empty>"} does not match package.json version ${expectedBadgeVersion}`,
     )
   }
+
+  const requiredSnippets = [
+    "确认删除这个账号吗？关联的单账号 Key 也会一起删除。",
+    "剩余时间:",
+    "最近使用:",
+    "永久",
+    "已过期",
+  ]
+  for (const snippet of requiredSnippets) {
+    if (!html.includes(snippet)) {
+      throw new Error(`[version-sync] ${relativePath} is missing required UI snippet: ${snippet}`)
+    }
+  }
 }
 
 const expectedTag = `v${packageVersion}`

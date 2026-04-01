@@ -123,6 +123,9 @@ function buildExpectedOutgoingRequest(input: {
 
   const parsed = new URL(input.requestUrl)
   const url = input.shouldRewrite ? input.codexEndpoint : parsed.toString()
+  if (new URL(url).pathname.includes("/backend-api/codex/")) {
+    headers.delete("version")
+  }
   return {
     method: input.requestMethod,
     url,
@@ -201,7 +204,6 @@ async function runAudit() {
         accept: "text/event-stream",
         originator: CODEX_ORIGINATOR,
         "user-agent": userAgent,
-        version: CODEX_CLIENT_VERSION,
         session_id: sessionID,
         "openai-beta": "responses=v1",
         "x-stainless-test": "session-parity",
@@ -234,7 +236,6 @@ async function runAudit() {
         accept: "application/json",
         originator: CODEX_ORIGINATOR,
         "user-agent": userAgent,
-        version: CODEX_CLIENT_VERSION,
         "openai-beta": "responses=v1",
         "x-stainless-test": "session-parity",
         "x-session-case": "responses_compact_passthrough",

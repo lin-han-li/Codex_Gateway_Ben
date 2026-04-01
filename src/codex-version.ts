@@ -53,8 +53,11 @@ function resolveVersionFromGitRepo(repoRoot: string) {
 function collectCodexOfficialRoots() {
   const candidates = [
     process.env.OAUTH_CODEX_OFFICIAL_ROOT,
+    path.resolve(process.cwd(), "codex_office_source"),
     path.resolve(process.cwd(), "codex-official"),
+    path.resolve(process.cwd(), "../codex_office_source"),
     path.resolve(process.cwd(), "../codex-official"),
+    path.resolve(import.meta.dir, "../../codex_office_source"),
     path.resolve(import.meta.dir, "../../codex-official"),
   ]
 

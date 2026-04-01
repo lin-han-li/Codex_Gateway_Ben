@@ -2397,7 +2397,7 @@
       <aside class="sidebar">
         <div class="brand">
           <h1>Codex Gateway</h1>
-          <div class="ver">v1.1.24</div>
+      <div class="ver">v1.1.28</div>
         </div>
         <nav class="nav">
           <button class="nav-btn active" data-view="dashboard"><span>📊</span><span>仪表盘</span></button>
@@ -2698,14 +2698,14 @@
               <div class="settings-panel-head">
                 <div>
                   <h3>加密与隐私</h3>
-                  <div class="settings-panel-note">非回环绑定建议配置加密密钥，隐私透传默认严格模式。</div>
-                </div>
-                <span id="settingsPrivacyChip" class="status-chip">严格模式</span>
-              </div>
-              <div class="field-line">
-                <label>加密密钥（局域网绑定建议配置，重启生效）</label>
-                <input id="encryptionKeyInput" type="password" placeholder="建议 32+ 字符随机值；留空则沿用已保存值" />
-              </div>
+            if (action === "refresh-token") {
+              openRefreshTokenModal(id);
+              return;
+            }
+            if (action === "delete") {
+              const confirmed = window.confirm("确认删除这个账号吗？关联的单账号 Key 也会一起删除。");
+              if (!confirmed) return;
+            }
               <div class="field-line">
                 <label style="display: flex; align-items: center; gap: 8px; cursor: pointer">
                   <input id="upstreamPrivacyStrictInput" type="checkbox" checked />
@@ -2874,6 +2874,7 @@
             managementAuthEnabled: false,
             encryptionKeyConfigured: false,
             upstreamPrivacyStrict: true,
+            officialStrictPassthrough: false,
             restartRequired: true,
             statsTimezone: "",
             pricingMode: "",
@@ -5563,7 +5564,7 @@
               return;
             }
             if (action === "delete") {
-              const confirmed = window.confirm("确认删除这个账号吗？关联的单账号 Key 涔熶細涓€璧峰垹闄ゃ€");
+              const confirmed = window.confirm("确认删除这个账号吗？关联的单账号 Key 也会一起删除。");
               if (!confirmed) return;
             }
             if (action === "activate") {
@@ -5631,9 +5632,9 @@
         const hours = Math.floor((remainMs % dayMs) / hourMs);
         const minutes = Math.floor((remainMs % hourMs) / minuteMs);
 
-        if (days > 0) return `${days}澶${hours}灏忔椂`;
-        if (hours > 0) return `${hours}灏忔椂${minutes}鍒嗛挓`;
-        return `${Math.max(1, minutes)}鍒嗛挓`;
+        if (days > 0) return `${days}天${hours}小时`;
+        if (hours > 0) return `${hours}小时${minutes}分钟`;
+        return `${Math.max(1, minutes)}分钟`;
       }
 
       function matchesVirtualKeyQuery(row, query) {
@@ -5737,7 +5738,6 @@
 
         if (title) title.textContent = row.name || "未命名 Key";
         if (subtitle) subtitle.textContent = keyAccountLabel(row);
-        if (secret) secret.textContent = revealed || `${row.keyPrefix || "-"}...`;
         if (meta) {
           const statusText = row.isRevoked ? "已吊销" : expired ? "已过期" : "生效";
           meta.textContent = `状态: ${statusText} | 剩余时间: ${formatRemainingTime(row.expiresAt)} | Token: ${Number(
@@ -7037,6 +7037,7 @@
         S.settings.managementAuthEnabled = Boolean(settings.managementAuthEnabled);
         S.settings.encryptionKeyConfigured = Boolean(settings.encryptionKeyConfigured);
         S.settings.upstreamPrivacyStrict = settings.upstreamPrivacyStrict === false ? false : true;
+        S.settings.officialStrictPassthrough = settings.officialStrictPassthrough === true;
         S.settings.restartRequired = settings.restartRequired === false ? false : true;
         S.settings.statsTimezone = String(settings.statsTimezone || "");
         S.settings.pricingMode = String(settings.pricingMode || "");
@@ -7128,6 +7129,8 @@
         if (encryptionInput && encryptionInput.value !== S.encryptionKey) encryptionInput.value = S.encryptionKey || "";
         const strictPrivacyInput = document.getElementById("upstreamPrivacyStrictInput");
         if (strictPrivacyInput) strictPrivacyInput.checked = S.settings.upstreamPrivacyStrict !== false;
+        const officialStrictPassthroughInput = document.getElementById("officialStrictPassthroughInput");
+        if (officialStrictPassthroughInput) officialStrictPassthroughInput.checked = S.settings.officialStrictPassthrough === true;
         const origin = document.getElementById("origin");
         if (origin) origin.textContent = S.settings.activeLocalServiceAddress || window.location.origin;
         const bindOrigin = document.getElementById("bindOrigin");
@@ -7326,6 +7329,12 @@
               <label style="display: flex; align-items: center; gap: 8px; cursor: pointer">
                 <input id="upstreamPrivacyStrictInput" type="checkbox" checked />
                 <span>严格隐私透传（不透传内网用户标识信息到 OpenAI）</span>
+              </label>
+            </div>
+            <div class="field-line">
+              <label style="display: flex; align-items: center; gap: 8px; cursor: pointer">
+                <input id="officialStrictPassthroughInput" type="checkbox" />
+                <span>官方严格直通模式（保留 Codex 会话字段与请求标识，不再做账号绑定改写）</span>
               </label>
             </div>
             <div class="info-grid">
@@ -7853,6 +7862,10 @@
         const encryptionKey = encryptionInput?.value?.trim() || "";
         const strictPrivacyInput = document.getElementById("upstreamPrivacyStrictInput");
         const upstreamPrivacyStrict = strictPrivacyInput ? Boolean(strictPrivacyInput.checked) : true;
+        const officialStrictPassthroughInput = document.getElementById("officialStrictPassthroughInput");
+        const officialStrictPassthrough = officialStrictPassthroughInput
+          ? Boolean(officialStrictPassthroughInput.checked)
+          : false;
         const previousAdminToken = String(S.adminToken || "");
         const previousEncryptionKey = String(S.encryptionKey || "");
         saveAdminTokenToStorage(adminToken);
@@ -7866,6 +7879,7 @@
               payload.encryptionKey = encryptionKey;
             }
             payload.upstreamPrivacyStrict = upstreamPrivacyStrict;
+            payload.officialStrictPassthrough = officialStrictPassthrough;
             const output = await api("/api/settings", {
               method: "POST",
               body: JSON.stringify(payload),

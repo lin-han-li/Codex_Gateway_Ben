@@ -208,7 +208,11 @@ type VirtualKeySessionRow = {
   account_id: string
   request_count: number
   last_used_at: number | null
+  updated_at?: number | null
 }
+
+const VIRTUAL_KEY_SESSION_IDLE_TTL_MS = 45 * 60 * 1000
+const VIRTUAL_KEY_SESSION_CLEANUP_INTERVAL_MS = 60 * 1000
 
 type TableInfoRow = {
   name: string
@@ -523,6 +527,7 @@ function mapRequestTokenStatsDayRow(row?: RequestTokenStatsDayRow | null): Reque
 
 export class AccountStore {
   private readonly db: Database
+  private lastVirtualKeySessionCleanupAt = 0
 
   constructor(file: string) {
     this.db = new Database(file, { create: true })
@@ -1424,6 +1429,7 @@ export class AccountStore {
       pressureScoreByAccountId?: Map<string, number>
     },
   ) {
+    this.pruneExpiredVirtualKeySessions()
     if (sessionId) {
       const sticky = this.pickSessionStickyAccount(keyID, providerId, sessionId)
       if (sticky) return sticky
@@ -1440,10 +1446,11 @@ export class AccountStore {
   }
 
   private pickSessionStickyAccount(keyID: string, providerId: string, sessionId: string) {
+    this.pruneExpiredVirtualKeySessions()
     const row = this.db
       .query<VirtualKeySessionRow, [string, string]>(
         `
-          SELECT key_id, session_id, account_id, request_count, last_used_at
+          SELECT key_id, session_id, account_id, request_count, last_used_at, updated_at
           FROM virtual_key_sessions
           WHERE key_id = ? AND session_id = ?
           LIMIT 1
@@ -1451,6 +1458,10 @@ export class AccountStore {
       )
       .get(keyID, sessionId)
     if (!row) return null
+    if (!this.isVirtualKeySessionFresh(row)) {
+      this.deleteVirtualKeySessionRoute(keyID, sessionId)
+      return null
+    }
 
     const account = this.getSingleRouteAccount(providerId, row.account_id)
     if (!account) return null
@@ -1550,6 +1561,7 @@ export class AccountStore {
   }) {
     const sessionId = normalizeSessionRouteID(input.sessionId)
     if (!sessionId) return null
+    this.pruneExpiredVirtualKeySessions()
 
     const excluded = new Set<string>([input.failedAccountId, ...(input.excludeAccountIds ?? [])])
     const selected = this.pickPoolAccountCandidate(input.keyId, input.providerId, {
@@ -1595,17 +1607,22 @@ export class AccountStore {
     const sessionId = normalizeSessionRouteID(input.sessionId)
     const accountId = String(input.accountId ?? "").trim()
     if (!sessionId || !accountId) return false
+    this.pruneExpiredVirtualKeySessions()
 
     const row = this.db
-      .query<{ request_count: number }, [string, string, string]>(
+      .query<{ request_count: number; last_used_at: number | null; updated_at: number | null }, [string, string, string]>(
         `
-          SELECT request_count
+          SELECT request_count, last_used_at, updated_at
           FROM virtual_key_sessions
           WHERE key_id = ? AND session_id = ? AND account_id = ?
           LIMIT 1
         `,
       )
       .get(input.keyId, sessionId, accountId)
+    if (row && !this.isVirtualKeySessionFresh(row)) {
+      this.deleteVirtualKeySessionRoute(input.keyId, sessionId)
+      return false
+    }
 
     return Number(row?.request_count ?? 0) > 1
   }
@@ -1632,6 +1649,7 @@ export class AccountStore {
   }
 
   private touchVirtualKeySessionRoute(keyID: string, sessionId: string, accountID: string) {
+    this.pruneExpiredVirtualKeySessions()
     const now = Date.now()
     this.db
       .query(
@@ -1652,6 +1670,40 @@ export class AccountStore {
         `,
       )
       .run(keyID, sessionId, accountID, now, now)
+  }
+
+  private pruneExpiredVirtualKeySessions(now = Date.now()) {
+    if (now - this.lastVirtualKeySessionCleanupAt < VIRTUAL_KEY_SESSION_CLEANUP_INTERVAL_MS) {
+      return
+    }
+    this.lastVirtualKeySessionCleanupAt = now
+    const oldestAllowed = now - VIRTUAL_KEY_SESSION_IDLE_TTL_MS
+    this.db
+      .query(
+        `
+          DELETE FROM virtual_key_sessions
+          WHERE COALESCE(last_used_at, updated_at, 0) > 0
+            AND COALESCE(last_used_at, updated_at, 0) < ?
+        `,
+      )
+      .run(oldestAllowed)
+  }
+
+  private isVirtualKeySessionFresh(row?: { last_used_at?: number | null; updated_at?: number | null } | null, now = Date.now()) {
+    const touchedAt = Number(row?.last_used_at ?? row?.updated_at ?? 0)
+    if (!Number.isFinite(touchedAt) || touchedAt <= 0) return false
+    return now - touchedAt <= VIRTUAL_KEY_SESSION_IDLE_TTL_MS
+  }
+
+  private deleteVirtualKeySessionRoute(keyID: string, sessionId: string) {
+    this.db
+      .query(
+        `
+          DELETE FROM virtual_key_sessions
+          WHERE key_id = ? AND session_id = ?
+        `,
+      )
+      .run(keyID, sessionId)
   }
 
   activate(id: string) {

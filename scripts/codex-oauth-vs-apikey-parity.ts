@@ -96,8 +96,8 @@ function evaluateOAuthParity(captured: CapturedUpstream): ModeCheck {
   if (captured.headers.originator !== "codex_cli_rs") {
     findings.push(`originator expected=codex_cli_rs actual=${captured.headers.originator ?? "<missing>"}`)
   }
-  if (captured.headers.version !== "1.2.27") {
-    findings.push(`version expected=1.2.27 actual=${captured.headers.version ?? "<missing>"}`)
+  if (captured.headers.version) {
+    findings.push(`version expected=<missing> actual=${captured.headers.version}`)
   }
   if (captured.headers["user-agent"] !== "codex_cli_rs/1.2.27 (parity-audit)") {
     findings.push(`user-agent expected=codex_cli_rs/1.2.27 (parity-audit) actual=${captured.headers["user-agent"] ?? "<missing>"}`)

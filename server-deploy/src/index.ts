@@ -9,7 +9,7 @@ import { readFile, writeFile } from "node:fs/promises"
 import { AppConfig, ensureAppDirs } from "./config"
 import { resolveCodexClientVersion, toWholeCodexClientVersion } from "./codex-version"
 import { buildCodexUserAgent, isFirstPartyCodexOriginator } from "./codex-identity"
-import { BehaviorController, resolveBehaviorSignal, type BehaviorConfig } from "./behavior/control"
+import { BehaviorController, resolveBehaviorSignal, type BehaviorAcquireFailure, type BehaviorConfig } from "./behavior/control"
 import {
   buildUpstreamAccountUnavailableFailure,
   detectRoutingBlockedAccount,
@@ -211,6 +211,7 @@ type ProviderRoutingHints = {
 type ProviderRoutingHintsOptions = {
   allowTransientUnhealthy?: boolean
   preferredPlanCohort?: AccountPlanCohort | null
+  cohortMode?: "strict" | "prefer" | "off"
 }
 
 const ACCOUNT_QUOTA_CACHE_TTL_MS = 90 * 1000
@@ -431,6 +432,46 @@ const POOL_FAIL_FAST_RETRY_POLICY: Partial<UpstreamRetryPolicy> = {
   retryTransport: true,
 }
 
+const POOL_REROUTE_MAX_ATTEMPTS = 3
+
+type BehaviorAcquireError = Error & {
+  behaviorFailure: BehaviorAcquireFailure
+}
+
+function createBehaviorAcquireError(behaviorFailure: BehaviorAcquireFailure): BehaviorAcquireError {
+  const error = new Error(behaviorFailure.message) as BehaviorAcquireError
+  error.name = "BehaviorAcquireError"
+  error.behaviorFailure = behaviorFailure
+  return error
+}
+
+function getBehaviorAcquireFailure(error: unknown): BehaviorAcquireFailure | null {
+  const candidate = error as Partial<BehaviorAcquireError> | null
+  if (!candidate || typeof candidate !== "object") return null
+  const behaviorFailure = candidate.behaviorFailure as BehaviorAcquireFailure | undefined
+  if (!behaviorFailure || behaviorFailure.ok !== false) return null
+  return behaviorFailure
+}
+
+function toBehaviorAcquireResponse(behaviorFailure: BehaviorAcquireFailure) {
+  const retryAfterSeconds = behaviorFailure.retryAfterMs
+    ? Math.max(1, Math.ceil(behaviorFailure.retryAfterMs / 1000))
+    : undefined
+  return new Response(
+    JSON.stringify({
+      error: behaviorFailure.message,
+      code: behaviorFailure.code,
+    }),
+    {
+      status: behaviorFailure.status,
+      headers: {
+        "Content-Type": "application/json",
+        ...(retryAfterSeconds ? { "Retry-After": String(retryAfterSeconds) } : {}),
+      },
+    },
+  )
+}
+
 // Codex 官方无“行为层”参数；此处固定禁用，避免引入非官方可配置行为差异
 const OFFICIAL_BEHAVIOR_CONFIG: BehaviorConfig = {
   enabled: false,
@@ -455,6 +496,7 @@ type RuntimeSettings = {
   adminToken: string
   encryptionKey: string
   upstreamPrivacyStrict: boolean
+  officialStrictPassthrough: boolean
 }
 
 type ServiceAddressInfo = {
@@ -600,6 +642,7 @@ async function loadRuntimeSettings() {
     adminToken: "",
     encryptionKey: "",
     upstreamPrivacyStrict: true,
+    officialStrictPassthrough: false,
   }
 
   try {
@@ -611,6 +654,7 @@ async function loadRuntimeSettings() {
       adminToken: String(parsed?.adminToken ?? "").trim(),
       encryptionKey: String(parsed?.encryptionKey ?? "").trim(),
       upstreamPrivacyStrict: parsed?.upstreamPrivacyStrict === false ? false : true,
+      officialStrictPassthrough: parsed?.officialStrictPassthrough === true,
     }
   } catch {
     return defaults
@@ -637,11 +681,16 @@ function isStrictUpstreamPrivacyEnabled() {
   return runtimeSettings.upstreamPrivacyStrict !== false
 }
 
+function isOfficialStrictPassthroughEnabled() {
+  return runtimeSettings.officialStrictPassthrough === true
+}
+
 const STRICT_PRIVACY_SESSION_KEYS_LOWER = new Set([
   "session_id",
   "sessionid",
   "session-id",
   "x-session-id",
+  "x-client-request-id",
   "previous_response_id",
   "previousresponseid",
   "previous-response-id",
@@ -680,6 +729,9 @@ function rewriteClientIdentifierForUpstream(input: {
 }) {
   const normalized = String(input.value ?? "").trim()
   if (!normalized) return normalized
+  if (isOfficialStrictPassthroughEnabled() && isAccountBoundSessionFieldKey(input.fieldKey)) {
+    return normalized
+  }
   if (input.accountId && isAccountBoundSessionFieldKey(input.fieldKey)) {
     return bindClientIdentifierToAccount(input)
   }
@@ -1005,6 +1057,7 @@ const UpdateSettingsSchema = z.object({
   adminToken: z.string().max(500).optional(),
   encryptionKey: z.string().max(500).optional(),
   upstreamPrivacyStrict: z.boolean().optional(),
+  officialStrictPassthrough: z.boolean().optional(),
 })
 
 const OpenExternalUrlSchema = z.object({
@@ -2050,6 +2103,11 @@ function markAccountUnhealthy(accountId: string, reason: string, source: string)
 function markAccountHealthy(accountId: string, source: string) {
   const normalizedAccountId = normalizeIdentity(accountId)
   if (!normalizedAccountId) return
+  const current = getActiveAccountHealthSnapshot(normalizedAccountId)
+  if (!current) return
+  if (isStickyAccountHealthSnapshot(current) && !canClearStickyAccountHealth(current, source)) {
+    return
+  }
   const deleted = accountHealthCache.delete(normalizedAccountId)
   if (!deleted) return
   const account = accountStore.get(normalizedAccountId)
@@ -2058,6 +2116,23 @@ function markAccountHealthy(accountId: string, source: string) {
     accountId: normalizedAccountId,
     source,
   })
+}
+
+function canClearStickyAccountHealth(snapshot: AccountHealthSnapshot, source: string) {
+  const normalizedSource = String(source ?? "").trim().toLowerCase()
+  const reason = normalizeAccountHealthReason(snapshot.reason)
+  if (normalizedSource === "responses" || normalizedSource === "chat") {
+    return true
+  }
+  if (
+    normalizedSource === "refresh" ||
+    normalizedSource === "account-refresh" ||
+    normalizedSource === "refresh-token-import" ||
+    normalizedSource === "refresh-token-import-refresh"
+  ) {
+    return reason === "login_required" || reason.startsWith("refresh_")
+  }
+  return false
 }
 
 async function refreshAndEmitAccountQuota(accountID: string, source: string) {
@@ -2581,6 +2656,7 @@ function buildProviderRoutingHints(
 ): ProviderRoutingHints {
   const quotaHints = buildProviderQuotaRoutingHints(providerId, now)
   const pressureHints = buildProviderPressureRoutingHints(providerId, now)
+  const deprioritized = new Set(quotaHints.deprioritizedAccountIds)
   const excluded = new Set([
     ...collectProviderQuotaExhaustedExclusions(providerId, now),
     ...collectProviderUnhealthyExclusions(providerId, {
@@ -2588,8 +2664,10 @@ function buildProviderRoutingHints(
     }),
     ...quotaHints.excludeAccountIds,
   ])
+  const normalizedProviderId = normalizeIdentity(providerId)?.toLowerCase()
+  const cohortMode = options?.cohortMode ?? "prefer"
   let preferredPlanCohort: AccountPlanCohort | null = options?.preferredPlanCohort ?? null
-  if ((normalizeIdentity(providerId) ?? "chatgpt").toLowerCase() === "chatgpt") {
+  if (normalizedProviderId === "chatgpt" && cohortMode !== "off") {
     const candidates = accountStore
       .list()
       .filter(
@@ -2607,23 +2685,27 @@ function buildProviderRoutingHints(
     if (preferredPlanCohort) {
       for (const account of candidates) {
         if (resolveAccountPlanCohort(account) !== preferredPlanCohort) {
-          excluded.add(account.id)
+          if (cohortMode === "strict") {
+            excluded.add(account.id)
+          } else {
+            deprioritized.add(account.id)
+          }
         }
       }
     }
   }
   const consistencyExclusions = collectProviderConsistencyExclusions(providerId, now, {
-    preferredPlanCohort,
+    preferredPlanCohort: cohortMode === "off" ? null : preferredPlanCohort,
   })
   for (const accountId of consistencyExclusions) {
     excluded.add(accountId)
   }
   return {
     excludeAccountIds: [...excluded],
-    deprioritizedAccountIds: quotaHints.deprioritizedAccountIds.filter((accountId) => !excluded.has(accountId)),
+    deprioritizedAccountIds: [...deprioritized].filter((accountId) => !excluded.has(accountId)),
     headroomByAccountId: quotaHints.headroomByAccountId,
     pressureScoreByAccountId: pressureHints.pressureScoreByAccountId,
-    preferredPlanCohort,
+    preferredPlanCohort: cohortMode === "off" ? null : preferredPlanCohort,
   }
 }
 
@@ -2632,7 +2714,10 @@ function buildRelaxedProviderRoutingHints(
   now = Date.now(),
   options?: ProviderRoutingHintsOptions,
 ) {
-  return buildProviderRoutingHints(providerId, now, options)
+  return buildProviderRoutingHints(providerId, now, {
+    ...options,
+    cohortMode: "off",
+  })
 }
 
 function resolveAccountRoutingState(accountId: string, quota?: AccountQuotaSnapshot | null, now = Date.now()): AccountRoutingState {
@@ -2763,6 +2848,7 @@ async function fetchAccountQuotaSnapshot(account: StoredAccount): Promise<Accoun
       accessToken: auth.accessToken,
       accountId: auth.accountId,
       boundAccountId: account.id,
+      providerMode: "chatgpt",
       defaultAccept: "application/json",
     })
     const routeTag = "/api/accounts/quota"
@@ -4403,6 +4489,7 @@ function buildServiceStatusSummary(now = Date.now()) {
     managementAuthEnabled: Boolean(getEffectiveManagementToken()),
     encryptionKeyConfigured: Boolean(getEffectiveEncryptionKey()),
     upstreamPrivacyStrict: isStrictUpstreamPrivacyEnabled(),
+    officialStrictPassthrough: isOfficialStrictPassthroughEnabled(),
     restartRequired: true,
     checkedAt: now,
   }
@@ -4584,7 +4671,7 @@ const accountModelsCache = new Map<string, AccountModelsSnapshot>()
 const accountModelsRefreshInFlight = new Map<string, Promise<AccountModelsSnapshot>>()
 const POOL_CONSISTENCY_TTL_MS = 60 * 1000
 const POOL_CONSISTENCY_OBSERVATION_LOG_TTL_MS = 5 * 60 * 1000
-const QUOTA_EXHAUSTED_ACCOUNT_COOLDOWN_MS = 5 * 60 * 1000
+const QUOTA_EXHAUSTED_ACCOUNT_COOLDOWN_MS = 30 * 60 * 1000
 const quotaExhaustedAccountCooldown = new Map<string, number>()
 
 type PoolConsistencySuccess = {
@@ -5635,6 +5722,7 @@ function shouldDropForwardHeader(headerName: string, strictPrivacy: boolean) {
   if (ALWAYS_DROPPED_FORWARD_HEADERS.has(lower)) return true
   if (!strictPrivacy) return false
   if (STRICT_PRIVACY_DROPPED_FORWARD_HEADERS.has(lower)) return true
+  if (lower === "x-client-request-id") return false
   return STRICT_PRIVACY_DROPPED_HEADER_PREFIXES.some((prefix) => lower.startsWith(prefix))
 }
 
@@ -5642,6 +5730,8 @@ const STRICT_PRIVACY_SESSION_HEADER_NAMES = [
   "session_id",
   "session-id",
   "sessionid",
+  "x-session-id",
+  "x-client-request-id",
   "previous_response_id",
   "previous-response-id",
   "previousresponseid",
@@ -5718,6 +5808,7 @@ function buildUpstreamForwardHeaders(input: {
   accessToken: string
   accountId?: string
   boundAccountId?: string
+  providerMode?: UpstreamProfile["providerMode"]
   attachChatgptAccountId?: boolean
   defaultAccept?: string
   organizationId?: string
@@ -5741,7 +5832,11 @@ function buildUpstreamForwardHeaders(input: {
   }
   headers.set("originator", identity.originator)
   headers.set("user-agent", identity.userAgent)
-  headers.set("version", identity.version)
+  if (input.providerMode === "openai") {
+    headers.set("version", identity.version)
+  } else {
+    headers.delete("version")
+  }
   headers.set("authorization", `Bearer ${input.accessToken}`)
   if (input.organizationId) {
     headers.set("OpenAI-Organization", input.organizationId)
@@ -5762,6 +5857,8 @@ const PASSTHROUGH_CODEX_FAILURE_HEADERS = new Set([
   "content-language",
   "retry-after",
   "x-request-id",
+  "x-oai-request-id",
+  "cf-ray",
   "x-codex-active-limit",
   "x-codex-promo-message",
   "x-codex-credits-has-credits",
@@ -5895,6 +5992,7 @@ async function fetchModelsSnapshotFromUpstream(input: {
       accessToken: auth.accessToken,
       accountId: auth.accountId,
       boundAccountId: input.account.id,
+      providerMode: profile.providerMode,
       attachChatgptAccountId: profile.attachChatgptAccountId,
       defaultAccept: "application/json",
       organizationId: openAIHeaders?.organizationId,
@@ -6037,6 +6135,7 @@ async function proxyOpenAIModelsRequest(input: {
     accessToken: auth.accessToken,
     accountId: auth.accountId,
     boundAccountId: input.account.id,
+    providerMode: profile.providerMode,
     attachChatgptAccountId: profile.attachChatgptAccountId,
     defaultAccept: "application/json",
     organizationId: openAIHeaders.organizationId,
@@ -6262,16 +6361,18 @@ function buildCodexRequestBody(input: {
   payloadInput: Array<Record<string, unknown>>
 }) {
   const modelConfig = getResponsesModelConfig(input.model)
+  const promptCacheKey = rewriteClientIdentifierForUpstream({
+    accountId: input.accountId,
+    fieldKey: "prompt_cache_key",
+    value: input.sessionId,
+    strictPrivacy: isStrictUpstreamPrivacyEnabled(),
+  })
   const requestBody: Record<string, unknown> = {
     model: input.model,
     input: input.payloadInput,
     store: false,
     instructions: CHAT_INSTRUCTIONS,
-    prompt_cache_key: bindClientIdentifierToAccount({
-      accountId: input.accountId,
-      fieldKey: "prompt_cache_key",
-      value: input.sessionId,
-    }),
+    prompt_cache_key: promptCacheKey,
     stream: true,
   }
 
@@ -6427,6 +6528,7 @@ async function runChatWithAccount(input: {
   sessionId?: string
   historyNamespace: string
   keyId?: string
+  behaviorSignal?: ReturnType<typeof resolveBehaviorSignal>
 }) {
   if (input.account.providerId !== "chatgpt") {
     throw new Error("Only ChatGPT OAuth accounts support this chat endpoint")
@@ -6437,6 +6539,12 @@ async function runChatWithAccount(input: {
   const auth = await ensureChatgptAccountAccess(input.account)
   const accessToken = auth.accessToken
   const accountId = auth.accountId
+  const boundSessionId = rewriteClientIdentifierForUpstream({
+    accountId: input.account.id,
+    fieldKey: "session_id",
+    value: sessionId,
+    strictPrivacy: isStrictUpstreamPrivacyEnabled(),
+  })
 
   const headers = new Headers({
     "Content-Type": "application/json",
@@ -6444,12 +6552,8 @@ async function runChatWithAccount(input: {
     authorization: `Bearer ${accessToken}`,
     originator: CODEX_ORIGINATOR,
     "User-Agent": CODEX_USER_AGENT,
-    version: CODEX_CLIENT_VERSION,
-    session_id: bindClientIdentifierToAccount({
-      accountId: input.account.id,
-      fieldKey: "session_id",
-      value: sessionId,
-    }),
+    session_id: boundSessionId,
+    "x-client-request-id": boundSessionId,
   })
 
   if (accountId) {
@@ -6468,28 +6572,20 @@ async function runChatWithAccount(input: {
     payloadInput,
   })
   const requestBodyBytes = new TextEncoder().encode(JSON.stringify(requestBody))
-  let chatResponse = (
-    await requestUpstreamWithPolicy({
-      url: CODEX_RESPONSES_ENDPOINT,
-      method: "POST",
-      headers,
-      body: requestBodyBytes,
-      accountId: input.account.id,
-      routeTag: "/api/chat",
-      policyOverride: INTERACTIVE_FAST_RETRY_POLICY,
-      recordBehaviorResult: true,
-    })
-  ).response
+  const behaviorSignal = input.behaviorSignal ?? {
+    clientTag: input.keyId ? `virtual_key_chat:${input.keyId}` : `chat:${input.account.id}`,
+    egressKind: "unknown" as const,
+  }
+  const behaviorDecision = await behaviorController.acquire({
+    accountId: input.account.id,
+    signal: behaviorSignal,
+  })
+  if (!behaviorDecision.ok) {
+    throw createBehaviorAcquireError(behaviorDecision)
+  }
 
-  if (chatResponse.status === 401) {
-    const latest = accountStore.get(input.account.id) ?? input.account
-    const refreshed = await refreshChatgptAccountAccess(latest)
-    headers.set("authorization", `Bearer ${refreshed.accessToken}`)
-    if (refreshed.accountId) {
-      headers.set("ChatGPT-Account-ID", refreshed.accountId)
-    } else {
-      headers.delete("ChatGPT-Account-ID")
-    }
+  let chatResponse: Response
+  try {
     chatResponse = (
       await requestUpstreamWithPolicy({
         url: CODEX_RESPONSES_ENDPOINT,
@@ -6502,6 +6598,31 @@ async function runChatWithAccount(input: {
         recordBehaviorResult: true,
       })
     ).response
+
+    if (chatResponse.status === 401) {
+      const latest = accountStore.get(input.account.id) ?? input.account
+      const refreshed = await refreshChatgptAccountAccess(latest)
+      headers.set("authorization", `Bearer ${refreshed.accessToken}`)
+      if (refreshed.accountId) {
+        headers.set("ChatGPT-Account-ID", refreshed.accountId)
+      } else {
+        headers.delete("ChatGPT-Account-ID")
+      }
+      chatResponse = (
+        await requestUpstreamWithPolicy({
+          url: CODEX_RESPONSES_ENDPOINT,
+          method: "POST",
+          headers,
+          body: requestBodyBytes,
+          accountId: input.account.id,
+          routeTag: "/api/chat",
+          policyOverride: INTERACTIVE_FAST_RETRY_POLICY,
+          recordBehaviorResult: true,
+        })
+      ).response
+    }
+  } finally {
+    behaviorDecision.release()
   }
 
   if (!chatResponse.ok) {
@@ -6648,6 +6769,7 @@ app.get("/api/settings", (c) =>
         managementAuthEnabled: Boolean(getEffectiveManagementToken()),
         encryptionKeyConfigured: Boolean(getEffectiveEncryptionKey()),
         upstreamPrivacyStrict: isStrictUpstreamPrivacyEnabled(),
+        officialStrictPassthrough: isOfficialStrictPassthroughEnabled(),
         restartRequired: true,
         statsTimezone: STATS_TIMEZONE,
         pricingMode: PRICING_MODE,
@@ -6668,6 +6790,10 @@ app.post("/api/settings", async (c) => {
       input.encryptionKey === undefined ? String(runtimeSettings.encryptionKey ?? "").trim() : String(input.encryptionKey ?? "").trim()
     const nextUpstreamPrivacyStrict =
       input.upstreamPrivacyStrict === undefined ? runtimeSettings.upstreamPrivacyStrict !== false : Boolean(input.upstreamPrivacyStrict)
+    const nextOfficialStrictPassthrough =
+      input.officialStrictPassthrough === undefined
+        ? runtimeSettings.officialStrictPassthrough === true
+        : Boolean(input.officialStrictPassthrough)
     const effectiveEncryptionKey = String(AppConfig.encryptionKey ?? "").trim() || nextEncryptionKey
     const warnings: string[] = []
     if (normalized) {
@@ -6682,6 +6808,7 @@ app.post("/api/settings", async (c) => {
     runtimeSettings.adminToken = nextAdminToken
     runtimeSettings.encryptionKey = nextEncryptionKey
     runtimeSettings.upstreamPrivacyStrict = nextUpstreamPrivacyStrict
+    runtimeSettings.officialStrictPassthrough = nextOfficialStrictPassthrough
     await saveRuntimeSettings(runtimeSettings)
     const serviceInfo = getSafeServiceAddressInfo(AppConfig.host, AppConfig.port)
     return c.json({
@@ -6695,6 +6822,7 @@ app.post("/api/settings", async (c) => {
         managementAuthEnabled: Boolean(getEffectiveManagementToken()),
         encryptionKeyConfigured: Boolean(getEffectiveEncryptionKey()),
         upstreamPrivacyStrict: isStrictUpstreamPrivacyEnabled(),
+        officialStrictPassthrough: isOfficialStrictPassthroughEnabled(),
         restartRequired: true,
         statsTimezone: STATS_TIMEZONE,
         pricingMode: PRICING_MODE,
@@ -7573,7 +7701,6 @@ async function proxyVirtualKeyCodexRequest(c: any, upstreamPath = "/responses") 
   let auditSessionId: string | null = null
   let auditReasoningEffort: string | null = null
   let outgoingBody: Uint8Array | undefined = undefined
-  let behaviorRelease: (() => void) | null = null
   let auditRoutingMode = "single"
   const writeAudit = (input: Omit<RequestAuditCompatInput, "route" | "method" | "reasoningEffort">) =>
     writeRequestAuditCompat({
@@ -7660,37 +7787,29 @@ async function proxyVirtualKeyCodexRequest(c: any, upstreamPath = "/responses") 
     auditKeyId = key.id
     auditAccountId = account.id
     auditProviderId = account.providerId
+    let sameAccountRetryBudget = 1
 
-    const behaviorDecision = await behaviorController.acquire({
-      accountId: account.id,
-      signal: behaviorSignal,
-    })
-    if (!behaviorDecision.ok) {
-      const retryAfterSeconds = behaviorDecision.retryAfterMs ? Math.max(1, Math.ceil(behaviorDecision.retryAfterMs / 1000)) : undefined
-      writeAudit({
-        providerId: auditProviderId,
-        accountId: auditAccountId,
-        virtualKeyId: auditKeyId,
-        statusCode: behaviorDecision.status,
-        latencyMs: Date.now() - startedAt,
-        error: `${behaviorDecision.code}: ${behaviorDecision.message}`,
-        clientTag,
+    const acquireBehaviorBudgetForCurrentAccount = async () => {
+      const behaviorDecision = await behaviorController.acquire({
+        accountId: account.id,
+        signal: behaviorSignal,
       })
-      return new Response(
-        JSON.stringify({
-          error: behaviorDecision.message,
-          code: behaviorDecision.code,
-        }),
-        {
-          status: behaviorDecision.status,
-          headers: {
-            "Content-Type": "application/json",
-            ...(retryAfterSeconds ? { "Retry-After": String(retryAfterSeconds) } : {}),
-          },
-        },
-      )
+      if (!behaviorDecision.ok) {
+        throw createBehaviorAcquireError(behaviorDecision)
+      }
+      return behaviorDecision.release
     }
-    behaviorRelease = behaviorDecision.release
+
+    const hasEstablishedStickyRouteForCurrentAccount = () =>
+      Boolean(
+        key.routingMode === "pool" &&
+          sessionRouteId &&
+          accountStore.hasEstablishedVirtualKeySessionRoute({
+            keyId: key.id,
+            sessionId: sessionRouteId,
+            accountId: account.id,
+          }),
+      )
 
     const buildHeadersForCurrentAccount = (auth: { accessToken: string; accountId?: string }) => {
       const openAIHeaders = profile.providerMode === "openai" ? resolveAccountOpenAIHeaders(account) : null
@@ -7699,6 +7818,7 @@ async function proxyVirtualKeyCodexRequest(c: any, upstreamPath = "/responses") 
         accessToken: auth.accessToken,
         accountId: auth.accountId,
         boundAccountId: account.id,
+        providerMode: profile.providerMode,
         attachChatgptAccountId: profile.attachChatgptAccountId,
         organizationId: openAIHeaders?.organizationId,
         projectId: openAIHeaders?.projectId,
@@ -7730,6 +7850,9 @@ async function proxyVirtualKeyCodexRequest(c: any, upstreamPath = "/responses") 
       })
     }
     const selectReroutedPoolAccount = (failedAccountId: string) => {
+      if (rerouteTriedAccounts.size >= POOL_REROUTE_MAX_ATTEMPTS) {
+        return null
+      }
       const failedAccount = accountStore.get(failedAccountId)
       const preferredPlanCohort = failedAccount ? resolveAccountPlanCohort(failedAccount) : null
       const routingHints = buildProviderRoutingHints(key.providerId, Date.now(), {
@@ -7844,20 +7967,39 @@ async function proxyVirtualKeyCodexRequest(c: any, upstreamPath = "/responses") 
       ).response
 
     const attemptUpstreamForCurrentAccount = async () => {
-      auth = await resolveUpstreamAccountAuth(account)
-      headers = buildHeadersForCurrentAccount(auth)
-      upstreamRequestBody = buildRequestBodyForCurrentAccount()
-      let currentUpstream = await runUpstreamRequest(headers)
-
-      if (currentUpstream.status === 401 && profile.canRefreshOn401) {
-        const latest = accountStore.get(account.id) ?? account
-        auth = await resolveUpstreamAccountAuth(latest, { forceRefresh: true })
+      const releaseBehavior = await acquireBehaviorBudgetForCurrentAccount()
+      try {
+        auth = await resolveUpstreamAccountAuth(account)
         headers = buildHeadersForCurrentAccount(auth)
         upstreamRequestBody = buildRequestBodyForCurrentAccount()
-        currentUpstream = await runUpstreamRequest(headers)
-      }
+        let currentUpstream = await runUpstreamRequest(headers)
 
-      return currentUpstream
+        if (currentUpstream.status === 401 && profile.canRefreshOn401) {
+          const latest = accountStore.get(account.id) ?? account
+          auth = await resolveUpstreamAccountAuth(latest, { forceRefresh: true })
+          headers = buildHeadersForCurrentAccount(auth)
+          upstreamRequestBody = buildRequestBodyForCurrentAccount()
+          currentUpstream = await runUpstreamRequest(headers)
+        }
+
+        return currentUpstream
+      } finally {
+        releaseBehavior()
+      }
+    }
+
+    const tryStickySameAccountRetry = async () => {
+      if (sameAccountRetryBudget <= 0) return null
+      if (!hasEstablishedStickyRouteForCurrentAccount()) return null
+      sameAccountRetryBudget -= 1
+      emitServerEvent("virtual-key-retry", {
+        type: "virtual-key-retry",
+        at: Date.now(),
+        keyId: key.id,
+        sessionId: sessionRouteId ?? null,
+        accountId: account.id,
+      })
+      return attemptUpstreamForCurrentAccount()
     }
 
     let upstream: Response
@@ -7866,11 +8008,31 @@ async function proxyVirtualKeyCodexRequest(c: any, upstreamPath = "/responses") 
         upstream = await attemptUpstreamForCurrentAccount()
         break
       } catch (error) {
+        const behaviorFailure = getBehaviorAcquireFailure(error)
         const blocked = detectRoutingBlockedAccount({
           error,
         })
         const transient = detectTransientUpstreamError(error)
-        if (!(key.routingMode === "pool" && (blocked.matched || transient.matched))) {
+        if (transient.matched) {
+          const sameAccountRetryResponse = await tryStickySameAccountRetry().catch(() => null)
+          if (sameAccountRetryResponse) {
+            upstream = sameAccountRetryResponse
+            break
+          }
+        }
+        if (!(key.routingMode === "pool" && (blocked.matched || transient.matched || behaviorFailure))) {
+          if (behaviorFailure) {
+            writeAudit({
+              providerId: auditProviderId,
+              accountId: auditAccountId,
+              virtualKeyId: auditKeyId,
+              statusCode: behaviorFailure.status,
+              latencyMs: Date.now() - startedAt,
+              error: `${behaviorFailure.code}: ${behaviorFailure.message}`,
+              clientTag,
+            })
+            return toBehaviorAcquireResponse(behaviorFailure)
+          }
           throw error
         }
 
@@ -7879,7 +8041,7 @@ async function proxyVirtualKeyCodexRequest(c: any, upstreamPath = "/responses") 
         if (blocked.matched) {
           markAccountUnhealthy(failedAccountId, blocked.reason, "responses")
           evictAccountModelsCache(failedAccountId)
-        } else {
+        } else if (!behaviorFailure) {
           markAccountUnhealthy(failedAccountId, transient.reason ?? "upstream_transport_error", "responses")
         }
 
@@ -7899,7 +8061,7 @@ async function proxyVirtualKeyCodexRequest(c: any, upstreamPath = "/responses") 
           sessionId: sessionRouteId ?? null,
           fromAccountId: failedAccountId,
           toAccountId: account.id,
-          reason: blocked.reason ?? transient.reason ?? "routing_excluded",
+          reason: blocked.reason ?? transient.reason ?? behaviorFailure?.code ?? "routing_excluded",
         })
       }
     }
@@ -7910,6 +8072,13 @@ async function proxyVirtualKeyCodexRequest(c: any, upstreamPath = "/responses") 
         const quotaSignal = await detectQuotaExhaustedUpstreamResponse(upstream)
         const transientSignal = await detectTransientUpstreamResponse(upstream)
         if (!blockedSignal.matched && !quotaSignal.matched && !transientSignal.matched) break
+        if (transientSignal.matched) {
+          const sameAccountRetryResponse = await tryStickySameAccountRetry().catch(() => null)
+          if (sameAccountRetryResponse) {
+            upstream = sameAccountRetryResponse
+            continue
+          }
+        }
 
         const failedAccountId = account.id
         rerouteTriedAccounts.add(failedAccountId)
@@ -7941,18 +8110,7 @@ async function proxyVirtualKeyCodexRequest(c: any, upstreamPath = "/responses") 
           auditAccountId = account.id
           auditProviderId = account.providerId
 
-          auth = await resolveUpstreamAccountAuth(account)
-          headers = buildHeadersForCurrentAccount(auth)
-          upstreamRequestBody = buildRequestBodyForCurrentAccount()
-          let reRoutedResponse = await runUpstreamRequest(headers)
-          if (reRoutedResponse.status === 401 && profile.canRefreshOn401) {
-            const latest = accountStore.get(account.id) ?? account
-            auth = await resolveUpstreamAccountAuth(latest, { forceRefresh: true })
-            headers = buildHeadersForCurrentAccount(auth)
-            upstreamRequestBody = buildRequestBodyForCurrentAccount()
-            reRoutedResponse = await runUpstreamRequest(headers)
-          }
-          upstream = reRoutedResponse
+          upstream = await attemptUpstreamForCurrentAccount()
           emitServerEvent("virtual-key-failover", {
             type: "virtual-key-failover",
             at: Date.now(),
@@ -7968,6 +8126,7 @@ async function proxyVirtualKeyCodexRequest(c: any, upstreamPath = "/responses") 
           profile = previousProfile
           auditAccountId = previousAuditAccountId
           auditProviderId = previousAuditProviderId
+          const behaviorFailure = getBehaviorAcquireFailure(error)
           const reroutedBlocked = detectRoutingBlockedAccount({
             error,
           })
@@ -7983,6 +8142,10 @@ async function proxyVirtualKeyCodexRequest(c: any, upstreamPath = "/responses") 
             markAccountUnhealthy(reRoutedAccount.id, reroutedTransient.reason, "responses")
             continue
           }
+          if (behaviorFailure) {
+            rerouteTriedAccounts.add(reRoutedAccount.id)
+            continue
+          }
           break
         }
       }
@@ -7993,7 +8156,11 @@ async function proxyVirtualKeyCodexRequest(c: any, upstreamPath = "/responses") 
     }
 
     const upstreamRequestId =
-      upstream.headers.get("x-request-id") || upstream.headers.get("openai-request-id") || upstream.headers.get("cf-ray") || null
+      upstream.headers.get("x-request-id") ||
+      upstream.headers.get("x-oai-request-id") ||
+      upstream.headers.get("openai-request-id") ||
+      upstream.headers.get("cf-ray") ||
+      null
 
     if (!upstream.ok) {
       const responseBuffer = await upstream.arrayBuffer().catch(() => new ArrayBuffer(0))
@@ -8157,8 +8324,6 @@ async function proxyVirtualKeyCodexRequest(c: any, upstreamPath = "/responses") 
       clientTag,
     })
     return c.json({ error: errorMessage(error) }, finalStatus)
-  } finally {
-    behaviorRelease?.()
   }
 }
 
@@ -8305,6 +8470,7 @@ async function proxyVirtualKeyRateLimitUsage(c: any) {
       accessToken,
       accountId,
       boundAccountId: account.id,
+      providerMode: profile.providerMode,
       attachChatgptAccountId: profile.attachChatgptAccountId,
       defaultAccept: "application/json",
       organizationId: openAIHeaders?.organizationId,
@@ -8359,7 +8525,11 @@ async function proxyVirtualKeyRateLimitUsage(c: any) {
 
     const responseHeaders = new Headers(upstream.headers)
     const upstreamRequestId =
-      upstream.headers.get("x-request-id") || upstream.headers.get("openai-request-id") || upstream.headers.get("cf-ray") || null
+      upstream.headers.get("x-request-id") ||
+      upstream.headers.get("x-oai-request-id") ||
+      upstream.headers.get("openai-request-id") ||
+      upstream.headers.get("cf-ray") ||
+      null
     const responseBuffer = await upstream.arrayBuffer().catch(() => new ArrayBuffer(0))
     const responseBytes = responseBuffer.byteLength
 
@@ -8409,8 +8579,6 @@ async function proxyVirtualKeyRateLimitUsage(c: any) {
       clientTag,
     })
     return c.json({ error: errorMessage(error) }, finalStatus)
-  } finally {
-    behaviorRelease?.()
   }
 }
 
@@ -8435,9 +8603,14 @@ app.post("/api/chat", async (c) => {
       message: input.message,
       sessionId: input.sessionId,
       historyNamespace: `account:${account.id}`,
+      behaviorSignal: resolveBehaviorSignal(c.req.raw.headers),
     })
     return c.json(output)
   } catch (error) {
+    const behaviorFailure = getBehaviorAcquireFailure(error)
+    if (behaviorFailure) {
+      return toBehaviorAcquireResponse(behaviorFailure)
+    }
     const statusCode = getStatusErrorCode(error)
     if (statusCode) {
       return new Response(JSON.stringify({ error: errorMessage(error) }), {
@@ -8511,6 +8684,7 @@ app.post("/api/chat/virtual-key", async (c) => {
           sessionId: input.sessionId,
           historyNamespace: `key:${input.keyId}`,
           keyId: input.keyId,
+          behaviorSignal: resolveBehaviorSignal(c.req.raw.headers),
         })
 
         return c.json({
@@ -8520,13 +8694,18 @@ app.post("/api/chat/virtual-key", async (c) => {
         })
       } catch (error) {
         if (eligibleResolved.key.routingMode !== "pool") {
+          const behaviorFailure = getBehaviorAcquireFailure(error)
+          if (behaviorFailure) {
+            return toBehaviorAcquireResponse(behaviorFailure)
+          }
           throw error
         }
 
         const quotaSignal = await detectQuotaExhaustedChatError(error)
         const blockedSignal = detectRoutingBlockedChatError(error)
         const transientSignal = detectTransientUpstreamError(error)
-        if (!quotaSignal.matched && !blockedSignal.matched && !transientSignal.matched) {
+        const behaviorFailure = getBehaviorAcquireFailure(error)
+        if (!quotaSignal.matched && !blockedSignal.matched && !transientSignal.matched && !behaviorFailure) {
           throw error
         }
 
@@ -8541,8 +8720,17 @@ app.post("/api/chat/virtual-key", async (c) => {
             "refreshAndEmitAccountQuota:chat-usage-limit-reached",
             refreshAndEmitAccountQuota(failedAccountId, "chat-usage-limit-reached"),
           )
-        } else {
+        } else if (!behaviorFailure) {
           markAccountUnhealthy(failedAccountId, transientSignal.reason ?? "upstream_http_502", "chat")
+        }
+        if (rerouteTriedAccounts.size >= POOL_REROUTE_MAX_ATTEMPTS) {
+          const normalizedFailure = buildUpstreamAccountUnavailableFailure({
+            routingMode: eligibleResolved.key.routingMode,
+          })
+          return new Response(normalizedFailure.bodyText, {
+            status: normalizedFailure.status,
+            headers: normalizedFailure.headers,
+          })
         }
 
         const preferredPlanCohort = resolveAccountPlanCohort(activeAccount)
@@ -8616,13 +8804,17 @@ app.post("/api/chat/virtual-key", async (c) => {
           sessionId: input.sessionId ?? null,
           fromAccountId: failedAccountId,
           toAccountId: reRoutedAccount.id,
-          reason: blockedSignal.reason ?? quotaSignal.reason ?? transientSignal.reason ?? "routing_excluded",
+          reason: blockedSignal.reason ?? quotaSignal.reason ?? transientSignal.reason ?? behaviorFailure?.code ?? "routing_excluded",
         })
 
         activeAccount = reRoutedAccount
       }
     }
   } catch (error) {
+    const behaviorFailure = getBehaviorAcquireFailure(error)
+    if (behaviorFailure) {
+      return toBehaviorAcquireResponse(behaviorFailure)
+    }
     const normalizedCaughtFailure = normalizeCaughtCodexFailure({
       error,
       routingMode: auditRoutingMode,

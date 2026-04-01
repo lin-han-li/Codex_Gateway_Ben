@@ -115,6 +115,9 @@ function buildCodexClientOutgoingRequest(input: {
     parsed.pathname.includes("/v1/responses") || parsed.pathname.includes("/chat/completions")
       ? codexApiEndpoint
       : parsed.toString()
+  if (new URL(url).pathname.includes("/backend-api/codex/")) {
+    headers.delete("version")
+  }
 
   return {
     method: input.method,
@@ -313,7 +316,6 @@ async function main() {
       Authorization: "Bearer codex-oauth-dummy-key",
       originator: CODEX_ORIGINATOR,
       "User-Agent": bridge.userAgent,
-      version: CODEX_CLIENT_VERSION,
       session_id: bridge.sessionID,
       "openai-beta": "responses=v1",
       "x-stainless-test": "parity-audit",
