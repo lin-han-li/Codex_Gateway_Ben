@@ -978,6 +978,76 @@
         font-size: 13px;
       }
 
+      .card .sub {
+        color: var(--dim);
+        font-size: 12px;
+        line-height: 1.5;
+      }
+
+      .section-head {
+        margin-top: 16px;
+        margin-bottom: 12px;
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 12px;
+        flex-wrap: wrap;
+      }
+
+      .section-head h3 {
+        margin: 0;
+        font-size: 18px;
+        letter-spacing: -0.02em;
+      }
+
+      .section-note {
+        color: var(--dim);
+        font-size: 13px;
+      }
+
+      .today-stats-grid {
+        margin-bottom: 16px;
+      }
+
+      .pool-card {
+        display: grid;
+        gap: 10px;
+      }
+
+      .metric-progress-block {
+        display: grid;
+        gap: 6px;
+      }
+
+      .metric-progress-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        font-size: 13px;
+        color: var(--muted);
+      }
+
+      .metric-progress {
+        width: 100%;
+        height: 10px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.08);
+        overflow: hidden;
+      }
+
+      .metric-progress-bar {
+        width: 0%;
+        height: 100%;
+        border-radius: inherit;
+        background: linear-gradient(90deg, #2ac9d8, #5a8cff);
+        transition: width 160ms ease;
+      }
+
+      .metric-progress-bar.secondary {
+        background: linear-gradient(90deg, #43d17d, #7ad56d);
+      }
+
       .dashboard-grid {
         margin-top: 16px;
         display: grid;
@@ -1081,6 +1151,61 @@
         gap: 8px;
       }
 
+      .logs-shell {
+        display: grid;
+        gap: 12px;
+      }
+
+      .tab-strip {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px;
+        border-radius: 16px;
+        border: 1px solid var(--line);
+        background: rgba(10, 19, 33, 0.66);
+        width: fit-content;
+        max-width: 100%;
+        flex-wrap: wrap;
+      }
+
+      .tab-btn {
+        min-height: 38px;
+        border: 1px solid transparent;
+        border-radius: 12px;
+        background: transparent;
+        color: var(--dim-strong);
+        padding: 8px 14px;
+        font-size: 14px;
+        font-weight: 600;
+        cursor: pointer;
+        transition:
+          background 0.2s ease,
+          border-color 0.2s ease,
+          color 0.2s ease,
+          transform 0.2s ease;
+      }
+
+      .tab-btn:hover {
+        transform: translateY(-1px);
+        border-color: rgba(145, 216, 255, 0.14);
+        background: rgba(255, 255, 255, 0.04);
+      }
+
+      .tab-btn.active {
+        color: var(--text-strong);
+        border-color: rgba(145, 216, 255, 0.18);
+        background: linear-gradient(135deg, rgba(27, 178, 191, 0.22), rgba(73, 108, 255, 0.22));
+      }
+
+      .tab-panel {
+        display: none;
+      }
+
+      .tab-panel.active {
+        display: block;
+      }
+
       .log-line {
         min-height: 40px;
         border: 1px solid rgba(147, 189, 232, 0.08);
@@ -1104,6 +1229,225 @@
 
       .log-msg {
         word-break: break-word;
+      }
+
+      .log-toolbar {
+        display: grid;
+        grid-template-columns: minmax(240px, 1.6fr) repeat(2, minmax(140px, 0.8fr));
+        gap: 10px;
+        margin-bottom: 12px;
+      }
+
+      .toolbar-control {
+        min-height: 42px;
+        width: 100%;
+        border: 1px solid rgba(135, 170, 210, 0.16);
+        border-radius: 12px;
+        background: rgba(8, 15, 28, 0.74);
+        padding: 0 12px;
+      }
+
+      .table-meta {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        flex-wrap: wrap;
+        margin-bottom: 12px;
+        color: var(--dim);
+        font-size: var(--fs-sm);
+      }
+
+      .table-placeholder {
+        padding: 34px 18px;
+        text-align: center;
+        color: var(--dim);
+        font-size: var(--fs-sm);
+      }
+
+      .mono {
+        font-family: "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+      }
+
+      .request-status {
+        display: inline-flex;
+        align-items: center;
+        min-height: 24px;
+        padding: 2px 8px;
+        border-radius: 999px;
+        border: 1px solid rgba(141, 177, 214, 0.16);
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.02em;
+      }
+
+      .request-status.ok {
+        color: #8ff0bb;
+        border-color: rgba(72, 216, 142, 0.28);
+        background: rgba(72, 216, 142, 0.12);
+      }
+
+      .request-status.warn {
+        color: #ffd985;
+        border-color: rgba(243, 201, 109, 0.26);
+        background: rgba(243, 201, 109, 0.12);
+      }
+
+      .request-status.error {
+        color: #ffb0bc;
+        border-color: rgba(239, 111, 136, 0.28);
+        background: rgba(239, 111, 136, 0.12);
+      }
+
+      .request-error {
+        max-width: 320px;
+        color: var(--dim);
+        word-break: break-word;
+      }
+
+      .pagination {
+        margin-top: 12px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        flex-wrap: wrap;
+      }
+
+      .pagination-text {
+        color: var(--dim);
+        font-size: var(--fs-sm);
+      }
+
+      .pagination-actions {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+
+      .status-chip {
+        display: inline-flex;
+        align-items: center;
+        min-height: 28px;
+        padding: 4px 10px;
+        border-radius: 999px;
+        border: 1px solid rgba(141, 177, 214, 0.16);
+        background: rgba(255, 255, 255, 0.04);
+        color: var(--dim-strong);
+        font-size: 12px;
+        font-weight: 600;
+      }
+
+      .status-chip.ok {
+        color: #8ff0bb;
+        border-color: rgba(72, 216, 142, 0.24);
+      }
+
+      .status-chip.warn {
+        color: #ffd985;
+        border-color: rgba(243, 201, 109, 0.22);
+      }
+
+      .status-chip.error {
+        color: #ffb0bc;
+        border-color: rgba(239, 111, 136, 0.24);
+      }
+
+      .settings-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 14px;
+      }
+
+      .settings-panel {
+        display: grid;
+        gap: 14px;
+      }
+
+      .settings-panel-head {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 12px;
+        flex-wrap: wrap;
+      }
+
+      .settings-panel-head h3 {
+        margin: 0;
+        font-size: 18px;
+        letter-spacing: -0.02em;
+      }
+
+      .settings-panel-note {
+        color: var(--dim);
+        font-size: 13px;
+      }
+
+      .settings-kv {
+        display: grid;
+        gap: 10px;
+      }
+
+      .settings-kv-row {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 11px 12px;
+        border: 1px solid rgba(141, 177, 214, 0.08);
+        border-radius: 14px;
+        background: rgba(255, 255, 255, 0.03);
+      }
+
+      .settings-kv-row span {
+        color: var(--dim);
+        font-size: 12px;
+      }
+
+      .settings-kv-row strong,
+      .settings-kv-row code {
+        text-align: right;
+        word-break: break-word;
+        font-size: 13px;
+      }
+
+      .info-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+      }
+
+      .info-item {
+        padding: 12px;
+        border: 1px solid rgba(141, 177, 214, 0.08);
+        border-radius: 14px;
+        background: rgba(255, 255, 255, 0.03);
+      }
+
+      .info-item span {
+        display: block;
+        color: var(--dim);
+        font-size: 12px;
+        margin-bottom: 6px;
+      }
+
+      .info-item strong {
+        display: block;
+        font-size: 22px;
+        line-height: 1.05;
+        letter-spacing: -0.03em;
+      }
+
+      .settings-actions {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+
+      .settings-actions .btn {
+        min-width: 120px;
       }
 
       .table-wrap {
@@ -1655,6 +1999,14 @@
           grid-template-columns: 1fr;
         }
 
+        .log-toolbar {
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+        }
+
+        .settings-grid {
+          grid-template-columns: 1fr;
+        }
+
         table {
           min-width: 640px;
         }
@@ -1720,6 +2072,14 @@
           grid-template-columns: 1fr;
         }
 
+        .log-toolbar {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        .info-grid {
+          grid-template-columns: 1fr;
+        }
+
         table {
           min-width: 560px;
         }
@@ -1760,6 +2120,31 @@
 
         .head-actions .btn {
           width: 100%;
+        }
+
+        .tab-strip {
+          width: 100%;
+        }
+
+        .tab-btn {
+          flex: 1 1 0;
+          justify-content: center;
+        }
+
+        .log-toolbar {
+          grid-template-columns: 1fr;
+        }
+
+        .pagination {
+          align-items: stretch;
+        }
+
+        .pagination-actions {
+          width: 100%;
+        }
+
+        .pagination-actions .btn {
+          flex: 1 1 0;
         }
 
         table {
@@ -2012,13 +2397,13 @@
       <aside class="sidebar">
         <div class="brand">
           <h1>Codex Gateway</h1>
-          <div class="ver">v1.1.20</div>
+          <div class="ver">v1.1.23</div>
         </div>
         <nav class="nav">
           <button class="nav-btn active" data-view="dashboard"><span>📊</span><span>仪表盘</span></button>
           <button class="nav-btn" data-view="accounts"><span>👥</span><span>账号管理</span></button>
           <button class="nav-btn" data-view="keys"><span>🗝️</span><span>密钥管理</span></button>
-          <button class="nav-btn" data-view="logs"><span>📝</span><span>系统日志</span></button>
+          <button class="nav-btn" data-view="logs"><span>📝</span><span>日志</span></button>
           <button class="nav-btn" data-view="settings"><span>⚙️</span><span>设置</span></button>
         </nav>
         <div class="side-foot"><span class="dot"></span><span>就绪</span></div>
@@ -2037,6 +2422,44 @@
             <div class="card"><div id="sAbnormal" class="num">0</div><div class="label">异常账号</div></div>
             <div class="card"><div id="sToken" class="num">0</div><div class="label">Token 总用量</div></div>
             <div class="card"><div id="sSrv" class="num">--</div><div class="label">服务状态</div></div>
+          </div>
+          <div class="section-head">
+            <div>
+              <h3>今日统计</h3>
+              <div id="todayStatsHint" class="section-note">基于请求日志生成，默认统计今天 00:00 以来的数据。</div>
+            </div>
+          </div>
+          <div class="stats-grid today-stats-grid">
+            <div class="card">
+              <div id="todayTokens" class="num">0</div>
+              <div class="label">今日请求</div>
+              <div id="todayRequestsMeta" class="sub">等待请求日志</div>
+            </div>
+            <div class="card">
+              <div id="todayCachedTokens" class="num">0</div>
+              <div class="label">成功请求</div>
+              <div id="todaySuccessMeta" class="sub">成功率 0%</div>
+            </div>
+            <div class="card">
+              <div id="todayReasoningTokens" class="num">0</div>
+              <div class="label">异常请求</div>
+              <div id="todayErrorMeta" class="sub">4xx / 5xx 或带错误信息</div>
+            </div>
+            <div class="card">
+              <div id="todayEstimatedCost" class="num">$0.00</div>
+              <div class="label">平均延迟</div>
+              <div id="todayAvgLatencyMeta" class="sub">按全部今日请求计算</div>
+            </div>
+            <div class="card">
+              <div id="todayPoolPrimaryValue" class="num">0%</div>
+              <div class="label">活跃账号</div>
+              <div id="todayActiveAccountsMeta" class="sub">今日有请求的账号数</div>
+            </div>
+            <div class="card">
+              <div id="todayRequestCount" class="num">0</div>
+              <div class="label">活跃虚拟 Key</div>
+              <div id="todayActiveKeysMeta" class="sub">今日命中的 Key 数</div>
+            </div>
           </div>
           <div class="dashboard-grid">
             <div class="stack">
@@ -2143,47 +2566,203 @@
 
         <section class="pane" data-pane="logs">
           <div class="page-head">
-            <h2 class="page-title">系统日志</h2>
-            <div class="head-actions"><button id="clearLogs" class="btn">🗑 清空日志</button></div>
+            <h2 class="page-title">日志</h2>
+            <div class="head-actions">
+              <button id="refreshLogs" class="btn">刷新日志</button>
+              <button id="clearLogs" class="btn">清空日志</button>
+            </div>
           </div>
-          <div class="panel"><div id="sysLogs" class="log-list"></div></div>
+          <div class="logs-shell">
+            <div class="tab-strip" role="tablist" aria-label="日志分类">
+              <button id="logsTabRequests" class="tab-btn active" type="button" role="tab" aria-selected="true">请求日志</button>
+              <button id="logsTabSystem" class="tab-btn" type="button" role="tab" aria-selected="false">系统日志</button>
+            </div>
+            <div id="requestLogsPanel" class="tab-panel active">
+              <div class="panel">
+                <div class="log-toolbar">
+                  <input id="requestLogQuery" class="toolbar-control" placeholder="搜索路由 / 模型 / 账号 / Key / 错误 / Client Tag" />
+                  <select id="requestLogStatusFilter" class="toolbar-control">
+                    <option value="all">全部状态</option>
+                    <option value="success">仅成功</option>
+                    <option value="error">仅异常</option>
+                  </select>
+                  <select id="requestLogProviderFilter" class="toolbar-control">
+                    <option value="all">全部 Provider</option>
+                  </select>
+                  <select id="requestLogRouteFilter" class="toolbar-control">
+                    <option value="all">全部路由</option>
+                  </select>
+                  <select id="requestLogPageSize" class="toolbar-control">
+                    <option value="20">每页 20 条</option>
+                    <option value="50">每页 50 条</option>
+                    <option value="100">每页 100 条</option>
+                  </select>
+                </div>
+                <div id="requestLogsMeta" class="table-meta">尚未加载请求日志</div>
+                <div class="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>时间</th>
+                        <th>请求</th>
+                        <th>Provider</th>
+                        <th>账号</th>
+                        <th>虚拟 Key</th>
+                        <th>模型</th>
+                        <th>状态</th>
+                        <th>延迟</th>
+                        <th>流量</th>
+                        <th>客户端</th>
+                        <th>错误</th>
+                      </tr>
+                    </thead>
+                    <tbody id="requestLogsTableBody"></tbody>
+                  </table>
+                </div>
+                <div class="pagination">
+                  <div id="requestLogsSummary" class="pagination-text">暂无数据</div>
+                  <div class="pagination-actions">
+                    <button id="requestLogPrev" class="btn" type="button">上一页</button>
+                    <div id="requestLogsPageInfo" class="pagination-text">第 1 / 1 页</div>
+                    <button id="requestLogNext" class="btn" type="button">下一页</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div id="systemLogsPanel" class="tab-panel">
+              <div class="panel"><div id="sysLogs" class="log-list"></div></div>
+            </div>
+          </div>
         </section>
 
         <section class="pane" data-pane="settings">
           <div class="page-head"><h2 class="page-title">设置</h2></div>
-          <div class="panel">
-            <div class="muted">当前访问地址: <span id="origin"></span></div>
-            <div class="muted" style="margin-top: 6px">服务绑定地址: <span id="bindOrigin">-</span></div>
-            <div class="muted" style="margin-top: 6px">局域网访问地址: <span id="lanOrigins">-</span></div>
-            <div class="field-line" style="max-width: 640px; margin-top: 10px">
-              <label>本地服务地址（重启生效，留空自动分配；支持 localhost / 127.0.0.1 / 0.0.0.0 / 局域网IP）</label>
-              <input id="serviceAddressInput" placeholder="http://0.0.0.0:4777 或 http://192.168.1.88:4777" />
-            </div>
-            <div class="field-line" style="max-width: 640px; margin-top: 10px">
-              <label>管理令牌（可选，保护 /api 管理接口；保存在当前浏览器）</label>
-              <input id="adminTokenInput" type="password" placeholder="留空表示不启用客户端管理令牌" />
-            </div>
-            <div class="field-line" style="max-width: 640px; margin-top: 10px">
-              <label>加密密钥（局域网绑定必填，重启生效）</label>
-              <input id="encryptionKeyInput" type="password" placeholder="建议 32+ 字符随机值；留空则沿用已保存值" />
-            </div>
-            <div class="field-line" style="max-width: 640px; margin-top: 10px">
-              <label style="display: flex; align-items: center; gap: 8px; cursor: pointer">
-                <input id="upstreamPrivacyStrictInput" type="checkbox" checked />
-                <span>严格隐私透传（不透传内网用户标识信息到 OpenAI）</span>
-              </label>
-            </div>
-            <div class="head-actions" style="margin-top: 10px">
-              <button id="saveSettings" class="btn primary">保存设置</button>
-              <button id="resetServiceAddress" class="btn">恢复自动</button>
-            </div>
-            <div class="muted" style="margin-top: 8px">提示：修改后需重启软件生效</div>
-            <div class="muted" style="margin-top: 8px">局域网使用建议：绑定地址填 0.0.0.0，客户端使用“局域网访问地址”中的 IP。</div>
-            <div class="muted" style="margin-top: 8px">回调地址: <span id="callbackUrlHint">http://localhost:1455/auth/callback</span></div>
-            <div id="callbackUsageHint" class="muted" style="margin-top: 6px">
-              账号新增建议在服务机本地（或远程桌面）执行，本网页主要用于维护账号、密钥、日志与设置。
-            </div>
-            <div class="muted" style="margin-top: 8px">界面语言: 简体中文</div>
+          <div class="settings-grid">
+            <section class="panel settings-panel">
+              <div class="settings-panel-head">
+                <div>
+                  <h3>服务入口</h3>
+                  <div class="settings-panel-note">当前地址、绑定地址和客户端推荐入口。</div>
+                </div>
+                <span id="settingsServiceChip" class="status-chip">未知</span>
+              </div>
+              <div class="settings-kv">
+                <div class="settings-kv-row"><span>当前访问地址</span><strong id="origin">-</strong></div>
+                <div class="settings-kv-row"><span>服务绑定地址</span><strong id="bindOrigin">-</strong></div>
+                <div class="settings-kv-row"><span>推荐客户端地址</span><strong id="preferredOrigin">-</strong></div>
+                <div class="settings-kv-row"><span>局域网访问地址</span><strong id="lanOrigins">-</strong></div>
+                <div class="settings-kv-row"><span>OAuth 回调地址</span><code id="callbackUrlHint" class="mono">http://localhost:1455/auth/callback</code></div>
+              </div>
+            </section>
+            <section class="panel settings-panel">
+              <div class="settings-panel-head">
+                <div>
+                  <h3>网络绑定</h3>
+                  <div class="settings-panel-note">修改后重启服务生效，留空时自动分配。</div>
+                </div>
+                <span class="status-chip warn">需重启</span>
+              </div>
+              <div class="field-line">
+                <label>本地服务地址（支持 localhost / 127.0.0.1 / 0.0.0.0 / 局域网 IP）</label>
+                <input id="serviceAddressInput" placeholder="http://0.0.0.0:4777 或 http://192.168.1.88:4777" />
+              </div>
+              <div class="settings-kv">
+                <div class="settings-kv-row"><span>局域网使用建议</span><strong>绑定 0.0.0.0，客户端使用上方局域网地址</strong></div>
+                <div class="settings-kv-row"><span>远程维护建议</span><strong>新增 OAuth 账号优先在服务机本地或远程桌面执行</strong></div>
+              </div>
+            </section>
+            <section class="panel settings-panel">
+              <div class="settings-panel-head">
+                <div>
+                  <h3>管理保护</h3>
+                  <div class="settings-panel-note">保护 `/api/*` 管理接口，令牌保存于当前浏览器。</div>
+                </div>
+                <span id="settingsGuardChip" class="status-chip">未启用</span>
+              </div>
+              <div class="field-line">
+                <label>管理令牌</label>
+                <input id="adminTokenInput" type="password" placeholder="留空表示不启用客户端管理令牌" />
+              </div>
+              <div class="info-grid">
+                <div class="info-item">
+                  <span>管理保护</span>
+                  <strong id="settingsGuardState">未启用</strong>
+                </div>
+                <div class="info-item">
+                  <span>浏览器本地令牌</span>
+                  <strong id="settingsStoredAdminToken">未保存</strong>
+                </div>
+              </div>
+            </section>
+            <section class="panel settings-panel">
+              <div class="settings-panel-head">
+                <div>
+                  <h3>加密与隐私</h3>
+                  <div class="settings-panel-note">非回环绑定建议配置加密密钥，隐私透传默认严格模式。</div>
+                </div>
+                <span id="settingsPrivacyChip" class="status-chip">严格模式</span>
+              </div>
+              <div class="field-line">
+                <label>加密密钥（局域网绑定建议配置，重启生效）</label>
+                <input id="encryptionKeyInput" type="password" placeholder="建议 32+ 字符随机值；留空则沿用已保存值" />
+              </div>
+              <div class="field-line">
+                <label style="display: flex; align-items: center; gap: 8px; cursor: pointer">
+                  <input id="upstreamPrivacyStrictInput" type="checkbox" checked />
+                  <span>严格隐私透传（不透传内网用户标识信息到 OpenAI）</span>
+                </label>
+              </div>
+              <div class="info-grid">
+                <div class="info-item">
+                  <span>加密密钥状态</span>
+                  <strong id="settingsEncryptionState">未配置</strong>
+                </div>
+                <div class="info-item">
+                  <span>浏览器本地密钥</span>
+                  <strong id="settingsStoredEncryptionKey">未保存</strong>
+                </div>
+              </div>
+            </section>
+            <section class="panel settings-panel">
+              <div class="settings-panel-head">
+                <div>
+                  <h3>只读统计</h3>
+                  <div class="settings-panel-note">当前页面聚合的账号、Key、请求和用量数据。</div>
+                </div>
+                <span class="status-chip">只读</span>
+              </div>
+              <div class="info-grid">
+                <div class="info-item"><span>账号总数</span><strong id="settingsStatAccounts">0</strong></div>
+                <div class="info-item"><span>虚拟 Key</span><strong id="settingsStatKeys">0</strong></div>
+                <div class="info-item"><span>健康账号</span><strong id="settingsStatHealthy">0</strong></div>
+                <div class="info-item"><span>异常账号</span><strong id="settingsStatAbnormal">0</strong></div>
+                <div class="info-item"><span>总 Token</span><strong id="settingsStatTokens">0</strong></div>
+                <div class="info-item"><span>请求日志条数</span><strong id="settingsStatRequestLogs">0</strong></div>
+              </div>
+            </section>
+            <section class="panel settings-panel">
+              <div class="settings-panel-head">
+                <div>
+                  <h3>运行状态</h3>
+                  <div class="settings-panel-note">同步链路、实时事件和日志装载状态。</div>
+                </div>
+                <span class="status-chip">只读</span>
+              </div>
+              <div class="settings-kv">
+                <div class="settings-kv-row"><span>同步状态</span><strong id="settingsSyncState">同步中</strong></div>
+                <div class="settings-kv-row"><span>实时事件通道</span><strong id="settingsRealtimeState">未连接</strong></div>
+                <div class="settings-kv-row"><span>请求日志刷新</span><strong id="settingsRequestLogState">未加载</strong></div>
+                <div class="settings-kv-row"><span>系统日志条数</span><strong id="settingsSystemLogState">0</strong></div>
+                <div class="settings-kv-row"><span>界面语言</span><strong>简体中文</strong></div>
+              </div>
+              <div id="callbackUsageHint" class="settings-panel-note">
+                账号新增建议在服务机本地（或远程桌面）执行，本网页主要用于维护账号、密钥、日志与设置。
+              </div>
+              <div class="settings-actions">
+                <button id="saveSettings" class="btn primary">保存设置</button>
+                <button id="resetServiceAddress" class="btn">恢复自动</button>
+              </div>
+            </section>
           </div>
         </section>
       </main>
@@ -2295,14 +2874,56 @@
             managementAuthEnabled: false,
             encryptionKeyConfigured: false,
             upstreamPrivacyStrict: true,
+            restartRequired: true,
+            statsTimezone: "",
+            pricingMode: "",
+            pricingCatalogVersion: "",
+            serviceStatusSummary: null,
+          },
+          dashboardMetrics: {
+            todayTokens: 0,
+            cachedInputTokens: 0,
+            reasoningOutputTokens: 0,
+            estimatedCostUsd: 0,
+            unpricedRequestCount: 0,
+            todayRequestCount: 0,
+            statsTimezone: "",
+            pricingMode: "",
+            pricingCatalogVersion: "",
+            poolRemaining: {
+              primaryRemainPercent: null,
+              secondaryRemainPercent: null,
+              knownPrimaryCount: 0,
+              knownSecondaryCount: 0,
+              eligibleAccountCount: 0,
+              quotaKnownAccountCount: 0,
+            },
+          },
+          auditSummary: {
+            totalCount: 0,
+            filteredCount: 0,
+            successCount: 0,
+            errorCount: 0,
+            inputTokens: 0,
+            cachedInputTokens: 0,
+            outputTokens: 0,
+            totalTokens: 0,
+            billableTokens: 0,
+            reasoningOutputTokens: 0,
+            estimatedCostUsd: 0,
+            unpricedRequestCount: 0,
           },
           models: [],
           logs: [],
           bootstrapLogs: [],
+          requestLogs: [],
+          requestLogsLoadedAt: 0,
+          requestLogsTotal: 0,
           usageTotals: {
             promptTokens: 0,
             completionTokens: 0,
             totalTokens: 0,
+            estimatedCostUsd: 0,
             updatedAt: 0,
           },
           service: false,
@@ -2328,6 +2949,18 @@
           revealedKeys: {},
           accountQuery: "",
           keyQuery: "",
+          logsTab: "requests",
+          requestLogQuery: "",
+          requestLogStatus: "all",
+          requestLogProvider: "all",
+          requestLogRoute: "all",
+          requestLogPage: 1,
+          requestLogPageSize: 20,
+          requestLogLoading: false,
+          requestLogBusyVisible: false,
+          requestLogError: "",
+          requestLogPollTimer: null,
+          requestLogQueryTimer: null,
           chatSessions: {},
           currentView: "dashboard",
           testAccountId: "",
@@ -2394,6 +3027,11 @@
         ["models", "server.models"],
         ["logs", "server.logs"],
         ["bootstrapLogs", "server.bootstrapLogs"],
+        ["requestLogs", "server.requestLogs"],
+        ["requestLogsLoadedAt", "server.requestLogsLoadedAt"],
+        ["requestLogsTotal", "server.requestLogsTotal"],
+        ["dashboardMetrics", "server.dashboardMetrics"],
+        ["auditSummary", "server.auditSummary"],
         ["usageTotals", "server.usageTotals"],
         ["service", "server.service"],
         ["session", "server.session"],
@@ -2411,6 +3049,16 @@
         ["revealedKeys", "ui.revealedKeys"],
         ["accountQuery", "ui.accountQuery"],
         ["keyQuery", "ui.keyQuery"],
+        ["logsTab", "ui.logsTab"],
+        ["requestLogQuery", "ui.requestLogQuery"],
+        ["requestLogStatus", "ui.requestLogStatus"],
+        ["requestLogProvider", "ui.requestLogProvider"],
+        ["requestLogRoute", "ui.requestLogRoute"],
+        ["requestLogPage", "ui.requestLogPage"],
+        ["requestLogPageSize", "ui.requestLogPageSize"],
+        ["requestLogLoading", "ui.requestLogLoading"],
+        ["requestLogBusyVisible", "ui.requestLogBusyVisible"],
+        ["requestLogError", "ui.requestLogError"],
         ["chatSessions", "ui.chatSessions"],
         ["testAccountId", "ui.testAccountId"],
         ["testKeyId", "ui.testKeyId"],
@@ -3328,6 +3976,7 @@
           loadAccounts(),
           loadModels(),
           loadBootstrapLogs(),
+          loadRequestLogs({ silent: true }),
           skipSettings
             ? Promise.resolve()
             : loadSettings().catch((error) => {
@@ -3580,10 +4229,20 @@
         setTimeout(() => URL.revokeObjectURL(url), 0);
       }
 
-      function switchView(view) {
-        S.ui.currentView = view || "dashboard";
-        document.querySelectorAll("[data-view]").forEach((btn) => btn.classList.toggle("active", btn.dataset.view === view));
-        document.querySelectorAll("[data-pane]").forEach((pane) => pane.classList.toggle("active", pane.dataset.pane === view));
+      function switchViewLegacy(view) {
+        const nextView = view || "dashboard";
+        S.ui.currentView = nextView;
+        document.querySelectorAll("[data-view]").forEach((btn) => btn.classList.toggle("active", btn.dataset.view === nextView));
+        document.querySelectorAll("[data-pane]").forEach((pane) => pane.classList.toggle("active", pane.dataset.pane === nextView));
+        if (nextView === "logs") {
+          switchLogsTab(S.logsTab || "requests");
+          if (!S.requestLogsLoadedAt && !S.requestLogLoading) {
+            void loadRequestLogs({ silent: true });
+          }
+        }
+        if (nextView === "settings") {
+          renderSettingsReadOnly();
+        }
       }
 
       function drawStats() {
@@ -3593,6 +4252,7 @@
         const abnormalCount = S.accounts.filter((a) => Boolean(normalizeAbnormalState(a))).length;
         const healthyCount = Math.max(0, total - abnormalCount);
         const totalTokens = Math.max(0, Math.floor(Number(S.usageTotals?.totalTokens || 0)));
+        const totalEstimatedCostUsd = Math.max(0, Number(S.usageTotals?.estimatedCostUsd || 0));
         const totalEl = document.getElementById("sTotal");
         if (totalEl) totalEl.textContent = String(total);
         const oauthEl = document.getElementById("sOAuth");
@@ -3607,13 +4267,103 @@
         if (abnormalEl) abnormalEl.textContent = String(abnormalCount);
         const tokenEl = document.getElementById("sToken");
         if (tokenEl) tokenEl.textContent = totalTokens.toLocaleString();
+        let tokenCostEl = document.getElementById("sTokenCost");
+        if (!tokenCostEl && tokenEl?.parentElement) {
+          tokenCostEl = document.createElement("div");
+          tokenCostEl.id = "sTokenCost";
+          tokenCostEl.className = "sub";
+          tokenEl.parentElement.appendChild(tokenCostEl);
+        }
+        if (tokenCostEl) tokenCostEl.textContent = `累计预计费用 ${formatUsd(totalEstimatedCostUsd)}`;
         const serviceEl = document.getElementById("sSrv");
         if (serviceEl) serviceEl.textContent = S.service ? "运行中" : "离线";
+        renderTodayStats();
+        renderSettingsReadOnly();
         renderBulkDeleteButton();
       }
 
       function normalizeQuery(value) {
         return String(value ?? "").trim().toLowerCase();
+      }
+
+      function formatCompactNumber(value) {
+        return Math.max(0, Math.floor(Number(value || 0))).toLocaleString();
+      }
+
+      function formatLatencyMs(value) {
+        const ms = Math.max(0, Math.floor(Number(value || 0)));
+        return `${ms.toLocaleString()} ms`;
+      }
+
+      function formatPercent(value) {
+        if (value === null || value === undefined || value === "") return "-";
+        const percent = Math.max(0, Math.min(100, Number(value || 0)));
+        return `${percent.toFixed(percent >= 10 ? 0 : 1)}%`;
+      }
+
+      function formatUsd(value) {
+        const amount = Number(value || 0);
+        if (!Number.isFinite(amount) || amount <= 0) return "$0.00";
+        return `$${amount.toFixed(amount >= 100 ? 0 : 2)}`;
+      }
+
+      function coerceDashboardMetrics(metrics) {
+        const pool = metrics?.poolRemaining || {};
+        return {
+          todayTokens: Math.max(0, Math.floor(Number(metrics?.todayTokens || 0))),
+          cachedInputTokens: Math.max(0, Math.floor(Number(metrics?.cachedInputTokens || 0))),
+          reasoningOutputTokens: Math.max(0, Math.floor(Number(metrics?.reasoningOutputTokens || 0))),
+          estimatedCostUsd: Math.max(0, Number(metrics?.estimatedCostUsd || 0)),
+          unpricedRequestCount: Math.max(0, Math.floor(Number(metrics?.unpricedRequestCount || 0))),
+          todayRequestCount: Math.max(0, Math.floor(Number(metrics?.todayRequestCount || 0))),
+          statsTimezone: String(metrics?.statsTimezone || S.settings.statsTimezone || ""),
+          pricingMode: String(metrics?.pricingMode || S.settings.pricingMode || ""),
+          pricingCatalogVersion: String(metrics?.pricingCatalogVersion || S.settings.pricingCatalogVersion || ""),
+          poolRemaining: {
+            primaryRemainPercent:
+              pool?.primaryRemainPercent === null || pool?.primaryRemainPercent === undefined
+                ? null
+                : Math.max(0, Math.min(100, Number(pool.primaryRemainPercent || 0))),
+            secondaryRemainPercent:
+              pool?.secondaryRemainPercent === null || pool?.secondaryRemainPercent === undefined
+                ? null
+                : Math.max(0, Math.min(100, Number(pool.secondaryRemainPercent || 0))),
+            knownPrimaryCount: Math.max(0, Math.floor(Number(pool?.knownPrimaryCount || 0))),
+            knownSecondaryCount: Math.max(0, Math.floor(Number(pool?.knownSecondaryCount || 0))),
+            eligibleAccountCount: Math.max(0, Math.floor(Number(pool?.eligibleAccountCount || 0))),
+            quotaKnownAccountCount: Math.max(0, Math.floor(Number(pool?.quotaKnownAccountCount || 0))),
+          },
+        };
+      }
+
+      function coerceAuditSummary(summary) {
+        return {
+          totalCount: Math.max(0, Math.floor(Number(summary?.totalCount || 0))),
+          filteredCount: Math.max(0, Math.floor(Number(summary?.filteredCount || 0))),
+          successCount: Math.max(0, Math.floor(Number(summary?.successCount || 0))),
+          errorCount: Math.max(0, Math.floor(Number(summary?.errorCount || 0))),
+          inputTokens: Math.max(0, Math.floor(Number(summary?.inputTokens || 0))),
+          cachedInputTokens: Math.max(0, Math.floor(Number(summary?.cachedInputTokens || 0))),
+          outputTokens: Math.max(0, Math.floor(Number(summary?.outputTokens || 0))),
+          totalTokens: Math.max(0, Math.floor(Number(summary?.totalTokens || 0))),
+          billableTokens: Math.max(0, Math.floor(Number(summary?.billableTokens || 0))),
+          reasoningOutputTokens: Math.max(0, Math.floor(Number(summary?.reasoningOutputTokens || 0))),
+          estimatedCostUsd: Math.max(0, Number(summary?.estimatedCostUsd || 0)),
+          unpricedRequestCount: Math.max(0, Math.floor(Number(summary?.unpricedRequestCount || 0))),
+        };
+      }
+
+      function formatBytes(value) {
+        const size = Math.max(0, Math.floor(Number(value || 0)));
+        if (size >= 1024 * 1024) return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+        if (size >= 1024) return `${(size / 1024).toFixed(1)} KB`;
+        return `${size} B`;
+      }
+
+      function todayStartMs() {
+        const now = new Date();
+        now.setHours(0, 0, 0, 0);
+        return now.getTime();
       }
 
       function drawTokenUsage() {
@@ -3641,11 +4391,324 @@
           .join("");
       }
 
+      function requestLogStatusMeta(row) {
+        const status = Math.max(0, Math.floor(Number(row?.statusCode || 0)));
+        const isError = status >= 400 || String(row?.error || "").trim().length > 0;
+        if (isError) {
+          return {
+            className: status >= 500 ? "request-status error" : "request-status warn",
+            text: status > 0 ? String(status) : "ERROR",
+          };
+        }
+        if (status >= 200 && status < 400) {
+          return {
+            className: "request-status ok",
+            text: String(status || 200),
+          };
+        }
+        return {
+          className: "request-status",
+          text: status > 0 ? String(status) : "-",
+        };
+      }
+
+      function formatRequestLogAccount(accountId) {
+        const id = String(accountId || "").trim();
+        if (!id) return "-";
+        const account = getAccountById(id);
+        if (!account) return id.slice(0, 12);
+        return account.email || account.displayName || account.accountId || account.id;
+      }
+
+      function formatRequestLogKey(keyId) {
+        const id = String(keyId || "").trim();
+        if (!id) return "-";
+        const key = getVirtualKeyById(id);
+        if (!key) return id.slice(0, 12);
+        return key.name || key.keyPrefix || key.id;
+      }
+
+      function getTodayRequestMetrics() {
+        const todayLogs = S.requestLogs.filter((row) => Number(row?.at || 0) >= todayStartMs());
+        const total = todayLogs.length;
+        const success = todayLogs.filter((row) => {
+          const status = Math.floor(Number(row?.statusCode || 0));
+          return status >= 200 && status < 400 && !String(row?.error || "").trim();
+        }).length;
+        const error = Math.max(0, total - success);
+        const activeAccounts = new Set(
+          todayLogs.map((row) => String(row?.accountId || "").trim()).filter(Boolean),
+        ).size;
+        const activeKeys = new Set(
+          todayLogs.map((row) => String(row?.virtualKeyId || "").trim()).filter(Boolean),
+        ).size;
+        const avgLatency =
+          total > 0
+            ? Math.round(todayLogs.reduce((sum, row) => sum + Math.max(0, Number(row?.latencyMs || 0)), 0) / total)
+            : 0;
+        const successRate = total > 0 ? Math.round((success / total) * 100) : 0;
+        return {
+          total,
+          success,
+          error,
+          activeAccounts,
+          activeKeys,
+          avgLatency,
+          successRate,
+        };
+      }
+
+      function renderTodayStatsLegacy() {
+        const metrics = getTodayRequestMetrics();
+        const hint = document.getElementById("todayStatsHint");
+        const requestsEl = document.getElementById("todayRequests");
+        const successEl = document.getElementById("todaySuccess");
+        const errorEl = document.getElementById("todayError");
+        const latencyEl = document.getElementById("todayAvgLatency");
+        const accountsEl = document.getElementById("todayActiveAccounts");
+        const keysEl = document.getElementById("todayActiveKeys");
+        if (requestsEl) requestsEl.textContent = formatCompactNumber(metrics.total);
+        if (successEl) successEl.textContent = formatCompactNumber(metrics.success);
+        if (errorEl) errorEl.textContent = formatCompactNumber(metrics.error);
+        if (latencyEl) latencyEl.textContent = formatLatencyMs(metrics.avgLatency);
+        if (accountsEl) accountsEl.textContent = formatCompactNumber(metrics.activeAccounts);
+        if (keysEl) keysEl.textContent = formatCompactNumber(metrics.activeKeys);
+        const requestsMeta = document.getElementById("todayRequestsMeta");
+        if (requestsMeta) requestsMeta.textContent = S.requestLogLoading ? "请求日志同步中..." : `已载入 ${formatCompactNumber(S.requestLogs.length)} 条日志`;
+        const successMeta = document.getElementById("todaySuccessMeta");
+        if (successMeta) successMeta.textContent = `成功率 ${metrics.successRate}%`;
+        const errorMeta = document.getElementById("todayErrorMeta");
+        if (errorMeta) errorMeta.textContent = metrics.error > 0 ? "包含 4xx / 5xx / 显式错误" : "当前无异常请求";
+        const latencyMeta = document.getElementById("todayAvgLatencyMeta");
+        if (latencyMeta) latencyMeta.textContent = metrics.total > 0 ? `样本 ${formatCompactNumber(metrics.total)} 条` : "今天暂无请求";
+        const accountsMeta = document.getElementById("todayActiveAccountsMeta");
+        if (accountsMeta) accountsMeta.textContent = metrics.activeAccounts > 0 ? "以请求日志中的 accountId 去重" : "今天暂无活跃账号";
+        const keysMeta = document.getElementById("todayActiveKeysMeta");
+        if (keysMeta) keysMeta.textContent = metrics.activeKeys > 0 ? "以请求日志中的 virtualKeyId 去重" : "今天暂无活跃虚拟 Key";
+        if (hint) {
+          if (S.requestLogError) {
+            hint.textContent = `请求日志读取失败：${S.requestLogError}`;
+          } else if (S.requestLogLoading && S.requestLogs.length === 0) {
+            hint.textContent = "正在同步请求日志，今日统计稍后可用。";
+          } else if (!S.requestLogs.length) {
+            hint.textContent = "暂无请求日志，今日统计将随请求日志同步后更新。";
+          } else {
+            hint.textContent = `统计范围：今天 00:00 至今 | 已加载 ${formatCompactNumber(S.requestLogs.length)} 条请求日志 | 更新于 ${dt(
+              S.requestLogsLoadedAt,
+            )}`;
+          }
+        }
+      }
+
+      function renderLogsActions() {
+        const clearBtn = document.getElementById("clearLogs");
+        if (clearBtn) clearBtn.textContent = S.logsTab === "system" ? "清空系统日志" : "清空请求日志";
+      }
+
+      function switchLogsTabLegacy(tab) {
+        const nextTab = tab === "system" ? "system" : "requests";
+        S.logsTab = nextTab;
+        const requestTabBtn = document.getElementById("logsTabRequests");
+        const systemTabBtn = document.getElementById("logsTabSystem");
+        const requestPanel = document.getElementById("requestLogsPanel");
+        const systemPanel = document.getElementById("systemLogsPanel");
+        if (requestTabBtn) {
+          requestTabBtn.classList.toggle("active", nextTab === "requests");
+          requestTabBtn.setAttribute("aria-selected", nextTab === "requests" ? "true" : "false");
+        }
+        if (systemTabBtn) {
+          systemTabBtn.classList.toggle("active", nextTab === "system");
+          systemTabBtn.setAttribute("aria-selected", nextTab === "system" ? "true" : "false");
+        }
+        if (requestPanel) requestPanel.classList.toggle("active", nextTab === "requests");
+        if (systemPanel) systemPanel.classList.toggle("active", nextTab === "system");
+        renderLogsActions();
+        if (nextTab === "requests" && !S.requestLogsLoadedAt && !S.requestLogLoading) {
+          void loadRequestLogs({ silent: true });
+        }
+        if (nextTab === "requests") drawRequestLogsTable();
+        else drawLogs();
+      }
+
+      function refreshRequestLogFilterOptions() {
+        const providerSelect = document.getElementById("requestLogProviderFilter");
+        const routeSelect = document.getElementById("requestLogRouteFilter");
+        if (!providerSelect || !routeSelect) return;
+        const currentProvider = String(S.requestLogProvider || "all");
+        const currentRoute = String(S.requestLogRoute || "all");
+        const providers = [...new Set(S.requestLogs.map((row) => String(row?.providerId || "").trim()).filter(Boolean))].sort();
+        const routes = [...new Set(S.requestLogs.map((row) => String(row?.route || "").trim()).filter(Boolean))].sort();
+        providerSelect.innerHTML = ['<option value="all">全部 Provider</option>']
+          .concat(providers.map((value) => `<option value="${esc(value)}">${esc(value)}</option>`))
+          .join("");
+        routeSelect.innerHTML = ['<option value="all">全部路由</option>']
+          .concat(routes.map((value) => `<option value="${esc(value)}">${esc(value)}</option>`))
+          .join("");
+        providerSelect.value = providers.includes(currentProvider) ? currentProvider : "all";
+        routeSelect.value = routes.includes(currentRoute) ? currentRoute : "all";
+        S.requestLogProvider = providerSelect.value;
+        S.requestLogRoute = routeSelect.value;
+      }
+
+      function getFilteredRequestLogs() {
+        const query = normalizeQuery(S.requestLogQuery);
+        const status = String(S.requestLogStatus || "all");
+        const provider = String(S.requestLogProvider || "all");
+        const route = String(S.requestLogRoute || "all");
+        return S.requestLogs.filter((row) => {
+          const statusCode = Math.max(0, Math.floor(Number(row?.statusCode || 0)));
+          const isError = statusCode >= 400 || String(row?.error || "").trim().length > 0;
+          if (status === "success" && isError) return false;
+          if (status === "error" && !isError) return false;
+          if (provider !== "all" && String(row?.providerId || "").trim() !== provider) return false;
+          if (route !== "all" && String(row?.route || "").trim() !== route) return false;
+          if (!query) return true;
+          const target = [
+            row?.route,
+            row?.method,
+            row?.providerId,
+            row?.accountId,
+            row?.virtualKeyId,
+            row?.model,
+            row?.clientTag,
+            row?.error,
+            row?.upstreamRequestId,
+          ]
+            .map((value) => String(value || "").toLowerCase())
+            .join(" ");
+          return target.includes(query);
+        });
+      }
+
+      function drawRequestLogsTableLegacy() {
+        const tbody = document.getElementById("requestLogsTableBody");
+        const meta = document.getElementById("requestLogsMeta");
+        const summary = document.getElementById("requestLogsSummary");
+        const pageInfo = document.getElementById("requestLogsPageInfo");
+        const prevBtn = document.getElementById("requestLogPrev");
+        const nextBtn = document.getElementById("requestLogNext");
+        const statusSelect = document.getElementById("requestLogStatusFilter");
+        const pageSizeSelect = document.getElementById("requestLogPageSize");
+        if (!tbody || !meta || !summary || !pageInfo || !prevBtn || !nextBtn) return;
+        if (statusSelect) statusSelect.value = String(S.requestLogStatus || "all");
+        if (pageSizeSelect) pageSizeSelect.value = String(S.requestLogPageSize || 20);
+
+        const filtered = getFilteredRequestLogs();
+        const pageSize = Math.max(1, Math.floor(Number(S.requestLogPageSize || 20)));
+        const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
+        if (S.requestLogPage > totalPages) S.requestLogPage = totalPages;
+        if (S.requestLogPage < 1) S.requestLogPage = 1;
+        const start = (S.requestLogPage - 1) * pageSize;
+        const pageRows = filtered.slice(start, start + pageSize);
+
+        if (S.requestLogLoading && S.requestLogs.length === 0) {
+          tbody.innerHTML = '<tr><td colspan="11" class="table-placeholder">正在同步请求日志...</td></tr>';
+        } else if (S.requestLogError && S.requestLogs.length === 0) {
+          tbody.innerHTML = `<tr><td colspan="11" class="table-placeholder">请求日志读取失败：${esc(S.requestLogError)}</td></tr>`;
+        } else if (!pageRows.length) {
+          tbody.innerHTML = '<tr><td colspan="11" class="table-placeholder">暂无匹配的请求日志</td></tr>';
+        } else {
+          tbody.innerHTML = pageRows
+            .map((row) => {
+              const statusMeta = requestLogStatusMeta(row);
+              const reqBytes = Math.max(0, Math.floor(Number(row?.requestBytes || 0)));
+              const resBytes = Math.max(0, Math.floor(Number(row?.responseBytes || 0)));
+              const method = String(row?.method || "-").toUpperCase();
+              const routeText = String(row?.route || "-").trim() || "-";
+              const model = String(row?.model || "").trim() || "-";
+              const clientTag = String(row?.clientTag || "").trim() || "-";
+              const errorText = String(row?.error || "").trim();
+              return `
+                <tr>
+                  <td>${esc(dt(row?.at))}</td>
+                  <td><div><strong>${esc(routeText)}</strong></div><div class="muted">${esc(method)}</div></td>
+                  <td>${esc(String(row?.providerId || "-"))}</td>
+                  <td title="${esc(String(row?.accountId || ""))}">${esc(formatRequestLogAccount(row?.accountId))}</td>
+                  <td title="${esc(String(row?.virtualKeyId || ""))}">${esc(formatRequestLogKey(row?.virtualKeyId))}</td>
+                  <td>${esc(model)}</td>
+                  <td><span class="${statusMeta.className}">${esc(statusMeta.text)}</span></td>
+                  <td>${esc(formatLatencyMs(row?.latencyMs))}</td>
+                  <td class="mono">${esc(`${formatBytes(reqBytes)} / ${formatBytes(resBytes)}`)}</td>
+                  <td title="${esc(clientTag)}">${esc(clientTag)}</td>
+                  <td class="request-error" title="${esc(errorText)}">${esc(errorText || "-")}</td>
+                </tr>
+              `;
+            })
+            .join("");
+        }
+
+        if (S.requestLogError) {
+          meta.textContent = `请求日志读取失败：${S.requestLogError}`;
+        } else if (S.requestLogLoading) {
+          meta.textContent = "请求日志同步中...";
+        } else if (S.requestLogsLoadedAt) {
+          meta.textContent = `已加载 ${formatCompactNumber(S.requestLogs.length)} 条请求日志，更新时间 ${dt(S.requestLogsLoadedAt)}`;
+        } else {
+          meta.textContent = "尚未加载请求日志";
+        }
+        const pageStart = filtered.length > 0 ? start + 1 : 0;
+        const pageEnd = filtered.length > 0 ? start + pageRows.length : 0;
+        summary.textContent = `筛选后 ${formatCompactNumber(filtered.length)} 条，当前显示 ${formatCompactNumber(pageStart)}-${formatCompactNumber(pageEnd)}`;
+        pageInfo.textContent = `第 ${S.requestLogPage} / ${totalPages} 页`;
+        prevBtn.disabled = S.requestLogPage <= 1;
+        nextBtn.disabled = S.requestLogPage >= totalPages;
+      }
+
+      async function loadRequestLogsLegacy(options = {}) {
+        const silent = options.silent === true;
+        if (S.requestLogLoading) return;
+        if (!silent) beginSync();
+        S.requestLogLoading = true;
+        S.requestLogError = "";
+        drawRequestLogsTable();
+        renderTodayStats();
+        renderSettingsReadOnly();
+        try {
+          const output = await api(`/api/audits?limit=1000`);
+          S.requestLogs = Array.isArray(output?.logs)
+            ? output.logs.map((item) => ({
+                id: item?.id || makeId(),
+                at: Number(item?.at || 0),
+                route: String(item?.route || ""),
+                method: String(item?.method || ""),
+                providerId: String(item?.providerId || ""),
+                accountId: String(item?.accountId || ""),
+                virtualKeyId: String(item?.virtualKeyId || ""),
+                model: String(item?.model || ""),
+                sessionId: String(item?.sessionId || ""),
+                requestHash: String(item?.requestHash || ""),
+                requestBytes: Math.max(0, Math.floor(Number(item?.requestBytes || 0))),
+                responseBytes: Math.max(0, Math.floor(Number(item?.responseBytes || 0))),
+                statusCode: Math.max(0, Math.floor(Number(item?.statusCode || 0))),
+                latencyMs: Math.max(0, Math.floor(Number(item?.latencyMs || 0))),
+                upstreamRequestId: String(item?.upstreamRequestId || ""),
+                error: String(item?.error || ""),
+                clientTag: String(item?.clientTag || ""),
+              }))
+            : [];
+          S.requestLogsLoadedAt = Date.now();
+          refreshRequestLogFilterOptions();
+          if (!silent) finishSyncSuccess();
+        } catch (error) {
+          S.requestLogError = toErrorMessage(error);
+          if (!silent) finishSyncError("请求日志同步失败，正在重试");
+          if (options.rethrow) throw error;
+        } finally {
+          S.requestLogLoading = false;
+          refreshRequestLogFilterOptions();
+          drawRequestLogsTable();
+          renderTodayStats();
+          renderSettingsReadOnly();
+        }
+      }
+
       function drawLogs() {
         const dash = document.getElementById("dashLogs");
         if (dash) dash.innerHTML = renderLogLines(S.logs.slice(0, 12));
         const system = document.getElementById("sysLogs");
         if (system) system.innerHTML = renderLogLines(S.logs);
+        renderLogsActions();
+        renderSettingsReadOnly();
       }
 
       async function loadBootstrapLogs() {
@@ -3955,6 +5018,9 @@
         const promptTokens = normalizeTokenDelta(payload?.promptTokens);
         const completionTokens = normalizeTokenDelta(payload?.completionTokens);
         const totalTokens = normalizeTokenDelta(payload?.totalTokens);
+        const cachedInputTokens = normalizeTokenDelta(payload?.cachedInputTokens);
+        const reasoningOutputTokens = normalizeTokenDelta(payload?.reasoningOutputTokens);
+        const estimatedCostUsd = Number(payload?.estimatedCostUsd || 0);
         const usageTotals = payload?.usageTotals;
         const hasUsageTotals = Boolean(usageTotals && typeof usageTotals === "object");
         const hasDelta = !(promptTokens === 0 && completionTokens === 0 && totalTokens === 0);
@@ -3964,13 +5030,28 @@
             promptTokens: normalizeTokenDelta(usageTotals.promptTokens),
             completionTokens: normalizeTokenDelta(usageTotals.completionTokens),
             totalTokens: normalizeTokenDelta(usageTotals.totalTokens),
+            estimatedCostUsd: Math.max(0, Number(usageTotals.estimatedCostUsd || 0)),
             updatedAt: normalizeTokenDelta(usageTotals.updatedAt),
           };
         } else {
           S.usageTotals.promptTokens = Number(S.usageTotals.promptTokens || 0) + promptTokens;
           S.usageTotals.completionTokens = Number(S.usageTotals.completionTokens || 0) + completionTokens;
           S.usageTotals.totalTokens = Number(S.usageTotals.totalTokens || 0) + totalTokens;
+          S.usageTotals.estimatedCostUsd = Math.max(
+            0,
+            Number(S.usageTotals.estimatedCostUsd || 0) + (Number.isFinite(estimatedCostUsd) ? estimatedCostUsd : 0),
+          );
           S.usageTotals.updatedAt = Date.now();
+        }
+
+        if (promptTokens || completionTokens || cachedInputTokens || reasoningOutputTokens || estimatedCostUsd) {
+          S.dashboardMetrics = coerceDashboardMetrics({
+            ...S.dashboardMetrics,
+            todayTokens: Math.max(0, Number(S.dashboardMetrics?.todayTokens || 0) + Math.max(0, promptTokens - cachedInputTokens) + completionTokens),
+            cachedInputTokens: Math.max(0, Number(S.dashboardMetrics?.cachedInputTokens || 0) + cachedInputTokens),
+            reasoningOutputTokens: Math.max(0, Number(S.dashboardMetrics?.reasoningOutputTokens || 0) + reasoningOutputTokens),
+            estimatedCostUsd: Math.max(0, Number(S.dashboardMetrics?.estimatedCostUsd || 0) + (Number.isFinite(estimatedCostUsd) ? estimatedCostUsd : 0)),
+          });
         }
 
         let updated = false;
@@ -3995,15 +5076,24 @@
         }
 
         if (!updated) {
-          void loadAccounts();
+          if (S.ui.currentView === "accounts") {
+            void loadAccounts({ loadVirtualKeys: false, silent: true });
+          } else if (S.ui.currentView === "keys") {
+            void loadVirtualKeys();
+          } else {
+            void loadDashboardMetrics({ silent: true });
+          }
           return;
         }
 
         drawStats();
         drawTokenUsage();
-        drawAccountsTable();
-        drawKeysTable();
-        drawTestChatLog();
+        if (S.ui.currentView === "accounts") drawAccountsTable();
+        if (S.ui.currentView === "keys") drawKeysTable();
+        if (document.getElementById("testModal")?.classList.contains("open")) drawTestChatLog();
+        if (S.ui.currentView === "logs" && S.logsTab === "requests" && !S.requestLogLoading && Date.now() - Number(S.requestLogsLoadedAt || 0) > 60000) {
+          void loadRequestLogs({ silent: true });
+        }
       }
 
       function applyQuotaEventPayload(payload) {
@@ -4011,7 +5101,11 @@
         if (!accountId) return;
         const account = getAccountById(accountId);
         if (!account) {
-          void loadAccounts();
+          if (S.ui.currentView === "accounts") {
+            void loadAccounts({ loadVirtualKeys: false, silent: true });
+          } else {
+            void loadDashboardMetrics({ silent: true });
+          }
           return;
         }
         account.quota = payload?.quota || null;
@@ -4020,7 +5114,7 @@
           account.abnormalState = payload?.abnormalState || null;
         }
         drawStats();
-        drawAccountsTable();
+        if (S.ui.currentView === "accounts") drawAccountsTable();
       }
 
       function applyAccountHealthEventPayload(payload) {
@@ -4028,7 +5122,11 @@
         if (!accountId) return;
         const account = getAccountById(accountId);
         if (!account) {
-          void loadAccounts();
+          if (S.ui.currentView === "accounts") {
+            void loadAccounts({ loadVirtualKeys: false, silent: true });
+          } else {
+            void loadDashboardMetrics({ silent: true });
+          }
           return;
         }
         account.health = payload?.health || null;
@@ -4037,7 +5135,7 @@
           account.abnormalState = payload?.abnormalState || null;
         }
         drawStats();
-        drawAccountsTable();
+        if (S.ui.currentView === "accounts") drawAccountsTable();
       }
 
       function formatAccountLogLabel(accountId) {
@@ -4384,27 +5482,38 @@
         }
 
         const query = normalizeQuery(S.accountQuery);
-        const rows = S.accounts.filter((account) => {
-          if (!query) return true;
-          const quota = formatAccountQuota(account.quota);
-          const status = getAccountStatusMeta(account);
-          const abnormal = normalizeAbnormalState(account);
-          const fields = [
-            providerDisplayName(account),
-            accountType(account),
-            account.displayName,
-            account.email,
-            account.accountId,
-            account.id,
-            status.text,
-            status.detail,
-            abnormal?.label,
-            String(account.totalTokens || 0),
-            quota.text,
-            quota.detail,
-          ];
-          return fields.some((field) => String(field ?? "").toLowerCase().includes(query));
-        });
+        const rows = S.accounts
+          .map((account, index) => ({ account, index }))
+          .filter(({ account }) => {
+            if (!query) return true;
+            const quota = formatAccountQuota(account.quota);
+            const status = getAccountStatusMeta(account);
+            const abnormal = normalizeAbnormalState(account);
+            const fields = [
+              providerDisplayName(account),
+              accountType(account),
+              account.displayName,
+              account.email,
+              account.accountId,
+              account.id,
+              status.text,
+              status.detail,
+              abnormal?.label,
+              String(account.totalTokens || 0),
+              quota.text,
+              quota.detail,
+            ];
+            return fields.some((field) => String(field ?? "").toLowerCase().includes(query));
+          })
+          .sort((left, right) => {
+            const leftAbnormal = normalizeAbnormalState(left.account);
+            const rightAbnormal = normalizeAbnormalState(right.account);
+            const leftRank = leftAbnormal ? 1 : 0;
+            const rightRank = rightAbnormal ? 1 : 0;
+            if (leftRank !== rightRank) return leftRank - rightRank;
+            return left.index - right.index;
+          })
+          .map(({ account }) => account);
 
         if (!rows.length) {
           tbody.innerHTML = '<tr><td colspan="7" class="muted">未找到匹配账号</td></tr>';
@@ -4703,7 +5812,7 @@
 
       async function loadVirtualKeys() {
         const requestId = beginRequest("virtualKeys");
-        beginSync();
+        if (!silent) beginSync();
         try {
           const { keys } = await api("/api/virtual-keys");
           if (!isLatestRequest("virtualKeys", requestId)) return;
@@ -4720,7 +5829,7 @@
           renderBulkDeleteButton();
           finishSyncSuccess();
         } catch (error) {
-          finishSyncError("同步失败，正在重试");
+          if (!silent) finishSyncError("同步失败，正在重试...");
           throw error;
         }
       }
@@ -5670,22 +6779,25 @@
 
       async function loadAccounts(options = {}) {
         const requestId = beginRequest("accounts");
+        const silent = options.silent === true;
         const query = new URLSearchParams();
         if (options.refreshQuota) query.set("refreshQuota", "1");
         if (options.forceQuota) query.set("forceQuota", "1");
         if (options.accountId) query.set("accountId", String(options.accountId));
         const endpoint = query.toString() ? `/api/accounts?${query.toString()}` : "/api/accounts";
-        beginSync();
+        if (!silent) beginSync();
         try {
-          const { accounts, usageTotals } = await api(endpoint);
+          const { accounts, usageTotals, dashboardMetrics } = await api(endpoint);
           if (!isLatestRequest("accounts", requestId)) return;
           S.accounts = Array.isArray(accounts) ? accounts : [];
           S.usageTotals = {
             promptTokens: normalizeTokenDelta(usageTotals?.promptTokens),
             completionTokens: normalizeTokenDelta(usageTotals?.completionTokens),
             totalTokens: normalizeTokenDelta(usageTotals?.totalTokens),
+            estimatedCostUsd: Math.max(0, Number(usageTotals?.estimatedCostUsd || 0)),
             updatedAt: normalizeTokenDelta(usageTotals?.updatedAt),
           };
+          S.dashboardMetrics = coerceDashboardMetrics(dashboardMetrics);
           const knownIds = new Set(S.accounts.map((item) => item.id));
           Object.keys(S.refreshTokenCache).forEach((id) => {
             if (!knownIds.has(id)) delete S.refreshTokenCache[id];
@@ -5701,9 +6813,9 @@
           }
           if (!isLatestRequest("accounts", requestId)) return;
           drawTestChatLog();
-          finishSyncSuccess();
+          if (!silent) finishSyncSuccess();
         } catch (error) {
-          finishSyncError("同步失败，正在重试");
+          if (!silent) finishSyncError("同步失败，正在重试...");
           throw error;
         }
       }
@@ -5728,9 +6840,8 @@
         if (S.usageSyncInFlight) return;
         S.usageSyncInFlight = true;
         try {
-          await loadAccounts({ refreshQuota: false, loadVirtualKeys: true });
+          await loadDashboardMetrics({ silent: true });
           S.service = true;
-          drawStats();
         } catch (error) {
           const msg = error instanceof Error ? error.message : String(error);
           const now = Date.now();
@@ -5925,6 +7036,86 @@
         S.settings.managementAuthEnabled = Boolean(settings.managementAuthEnabled);
         S.settings.encryptionKeyConfigured = Boolean(settings.encryptionKeyConfigured);
         S.settings.upstreamPrivacyStrict = settings.upstreamPrivacyStrict === false ? false : true;
+        S.settings.restartRequired = settings.restartRequired === false ? false : true;
+        S.settings.statsTimezone = String(settings.statsTimezone || "");
+        S.settings.pricingMode = String(settings.pricingMode || "");
+        S.settings.pricingCatalogVersion = String(settings.pricingCatalogVersion || "");
+        S.settings.serviceStatusSummary = settings.serviceStatusSummary || null;
+      }
+
+      function setStatusChip(id, text, tone = "") {
+        const el = document.getElementById(id);
+        if (!el) return;
+        el.className = "status-chip";
+        if (tone) el.classList.add(tone);
+        el.textContent = text;
+      }
+
+      function renderSettingsReadOnlyLegacy() {
+        const total = S.accounts.length;
+        const apiCount = S.accounts.filter((a) => a.methodId === "api" || a.methodId === "api-key").length;
+        const abnormalCount = S.accounts.filter((a) => Boolean(normalizeAbnormalState(a))).length;
+        const healthyCount = Math.max(0, total - abnormalCount);
+        const totalTokens = Math.max(0, Math.floor(Number(S.usageTotals?.totalTokens || 0)));
+        const preferredOrigin = document.getElementById("preferredOrigin");
+        if (preferredOrigin) preferredOrigin.textContent = S.settings.preferredClientServiceAddress || "-";
+        setStatusChip("settingsServiceChip", S.service ? "服务在线" : "服务离线", S.service ? "ok" : "error");
+        setStatusChip(
+          "settingsGuardChip",
+          S.settings.managementAuthEnabled ? "已启用" : "未启用",
+          S.settings.managementAuthEnabled ? "ok" : "warn",
+        );
+        setStatusChip(
+          "settingsPrivacyChip",
+          S.settings.upstreamPrivacyStrict !== false ? "严格模式" : "宽松模式",
+          S.settings.upstreamPrivacyStrict !== false ? "ok" : "warn",
+        );
+        const guardState = document.getElementById("settingsGuardState");
+        if (guardState) guardState.textContent = S.settings.managementAuthEnabled ? "已启用" : "未启用";
+        const storedAdminToken = document.getElementById("settingsStoredAdminToken");
+        if (storedAdminToken) storedAdminToken.textContent = S.adminToken ? "已保存" : "未保存";
+        const encryptionState = document.getElementById("settingsEncryptionState");
+        if (encryptionState) encryptionState.textContent = S.settings.encryptionKeyConfigured ? "已配置" : "未配置";
+        const storedEncryptionKey = document.getElementById("settingsStoredEncryptionKey");
+        if (storedEncryptionKey) storedEncryptionKey.textContent = S.encryptionKey ? "已保存" : "未保存";
+        const statAccounts = document.getElementById("settingsStatAccounts");
+        if (statAccounts) statAccounts.textContent = formatCompactNumber(total);
+        const statKeys = document.getElementById("settingsStatKeys");
+        if (statKeys) statKeys.textContent = formatCompactNumber(S.virtualKeys.length);
+        const statHealthy = document.getElementById("settingsStatHealthy");
+        if (statHealthy) statHealthy.textContent = formatCompactNumber(healthyCount);
+        const statAbnormal = document.getElementById("settingsStatAbnormal");
+        if (statAbnormal) statAbnormal.textContent = formatCompactNumber(abnormalCount);
+        const statTokens = document.getElementById("settingsStatTokens");
+        if (statTokens) statTokens.textContent = formatCompactNumber(totalTokens);
+        const statRequestLogs = document.getElementById("settingsStatRequestLogs");
+        if (statRequestLogs) statRequestLogs.textContent = formatCompactNumber(S.requestLogs.length);
+        const syncState = document.getElementById("settingsSyncState");
+        if (syncState) syncState.textContent = String(S.ui.syncMessage || (S.ui.syncState === "ready" ? "已同步" : "同步中"));
+        const realtimeState = document.getElementById("settingsRealtimeState");
+        if (realtimeState) {
+          realtimeState.textContent = S.usageEventReady
+            ? "SSE 已连接"
+            : S.usageFallbackActive
+              ? "轮询刷新中"
+              : S.service
+                ? "未连接"
+                : "离线";
+        }
+        const requestLogState = document.getElementById("settingsRequestLogState");
+        if (requestLogState) {
+          requestLogState.textContent = S.requestLogError
+            ? `异常：${S.requestLogError}`
+            : S.requestLogBusyVisible
+              ? "同步中"
+              : S.requestLogsLoadedAt
+                ? `已加载 ${formatCompactNumber(S.requestLogs.length)} 条 · ${dt(S.requestLogsLoadedAt)}`
+                : "未加载";
+        }
+        const systemLogState = document.getElementById("settingsSystemLogState");
+        if (systemLogState) {
+          systemLogState.textContent = `${formatCompactNumber(S.logs.length)} 条系统日志 / ${formatCompactNumber(apiCount)} 个 API 账号`;
+        }
       }
 
       function applySettingsToUI() {
@@ -5954,6 +7145,7 @@
             ? "当前是网页远程访问。请通过远程桌面在服务机本机添加 OAuth 账号；本网页用于维护账号、密钥、日志和设置。"
             : "当前是本机访问。可直接添加 OAuth 账号；网页端也可用于日常维护。";
         }
+        renderSettingsReadOnly();
       }
 
       function refreshSettingsUi() {
@@ -5961,9 +7153,248 @@
         renderAuthShell();
       }
 
+      function hydrateDashboardTodayStatsLayout() {
+        const grid = document.querySelector(".today-stats-grid");
+        if (!grid || grid.dataset.v1Metrics === "true") return;
+        grid.dataset.v1Metrics = "true";
+        grid.innerHTML = `
+          <div class="card">
+            <div id="todayTokens" class="num">0</div>
+            <div class="label">今日令牌</div>
+            <div id="todayTokensMeta" class="sub">按 billable 口径统计</div>
+          </div>
+          <div class="card">
+            <div id="todayCachedTokens" class="num">0</div>
+            <div class="label">缓存令牌</div>
+            <div id="todayCachedTokensMeta" class="sub">上下文缓存命中</div>
+          </div>
+          <div class="card">
+            <div id="todayReasoningTokens" class="num">0</div>
+            <div class="label">推理令牌</div>
+            <div id="todayReasoningTokensMeta" class="sub">模型思考输出</div>
+          </div>
+          <div class="card">
+            <div id="todayEstimatedCost" class="num">$0.00</div>
+            <div class="label">预计费用</div>
+            <div id="todayEstimatedCostMeta" class="sub">按官价估算</div>
+          </div>
+          <div class="card pool-card">
+            <div class="label">账号池剩余</div>
+            <div class="metric-progress-block">
+              <div class="metric-progress-row">
+                <span>主窗口</span>
+                <strong id="todayPoolPrimaryValue">-</strong>
+              </div>
+              <div class="metric-progress"><div id="todayPoolPrimaryBar" class="metric-progress-bar"></div></div>
+            </div>
+            <div class="metric-progress-block">
+              <div class="metric-progress-row">
+                <span>次窗口</span>
+                <strong id="todayPoolSecondaryValue">-</strong>
+              </div>
+              <div class="metric-progress"><div id="todayPoolSecondaryBar" class="metric-progress-bar secondary"></div></div>
+            </div>
+            <div id="todayPoolMeta" class="sub">已知额度账号 0 / 可路由账号 0</div>
+          </div>
+          <div class="card">
+            <div id="todayRequestCount" class="num">0</div>
+            <div class="label">今日请求</div>
+            <div id="todayRequestCountMeta" class="sub">请求日志计数</div>
+          </div>
+        `;
+      }
+
+      function hydrateLogsLayout() {
+        const shell = document.querySelector('.pane[data-pane="logs"] .logs-shell');
+        if (!shell || shell.dataset.v1Logs === "true") return;
+        shell.dataset.v1Logs = "true";
+        shell.innerHTML = `
+          <div class="tab-strip" role="tablist" aria-label="日志分类">
+            <button id="logsTabRequests" class="tab-btn active" type="button" role="tab" aria-selected="true">请求日志</button>
+            <button id="logsTabSystem" class="tab-btn" type="button" role="tab" aria-selected="false">系统日志</button>
+          </div>
+          <div id="requestLogsPanel" class="tab-panel active">
+            <div class="panel">
+              <div class="log-toolbar">
+                <input id="requestLogQuery" class="toolbar-control" placeholder="搜索 route / method / provider / 账号 / Key / 模型 / 上游请求 ID / Client Tag / 错误" />
+                <select id="requestLogStatusFilter" class="toolbar-control">
+                  <option value="all">全部状态</option>
+                  <option value="2xx">仅 2xx</option>
+                  <option value="4xx">仅 4xx</option>
+                  <option value="5xx">仅 5xx</option>
+                </select>
+                <select id="requestLogPageSize" class="toolbar-control">
+                  <option value="20">每页 20 条</option>
+                  <option value="50">每页 50 条</option>
+                  <option value="100">每页 100 条</option>
+                </select>
+              </div>
+              <div id="requestLogsMeta" class="table-meta">尚未加载请求日志</div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>时间</th>
+                      <th>方法 / 路径</th>
+                      <th>账号 / 密钥</th>
+                      <th>模型 / 推理</th>
+                      <th>状态</th>
+                      <th>耗时</th>
+                      <th>Token</th>
+                      <th>预计费用</th>
+                      <th>错误</th>
+                    </tr>
+                  </thead>
+                  <tbody id="requestLogsTableBody"></tbody>
+                </table>
+              </div>
+              <div class="pagination">
+                <div id="requestLogsSummary" class="pagination-text">暂无数据</div>
+                <div class="pagination-actions">
+                  <button id="requestLogPrev" class="btn" type="button">上一页</button>
+                  <div id="requestLogsPageInfo" class="pagination-text">第 1 / 1 页</div>
+                  <button id="requestLogNext" class="btn" type="button">下一页</button>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div id="systemLogsPanel" class="tab-panel">
+            <div class="panel"><div id="sysLogs" class="log-list"></div></div>
+          </div>
+        `;
+      }
+
+      function hydrateSettingsLayout() {
+        const grid = document.querySelector('.pane[data-pane="settings"] .settings-grid');
+        if (!grid || grid.dataset.v1Settings === "true") return;
+        grid.dataset.v1Settings = "true";
+        grid.innerHTML = `
+          <section class="panel settings-panel">
+            <div class="settings-panel-head">
+              <div>
+                <h3>网络访问</h3>
+                <div class="settings-panel-note">展示当前访问地址、绑定地址和推荐客户端入口。</div>
+              </div>
+              <span id="settingsServiceChip" class="status-chip">未知</span>
+            </div>
+            <div class="settings-kv">
+              <div class="settings-kv-row"><span>当前访问地址</span><strong id="origin">-</strong></div>
+              <div class="settings-kv-row"><span>服务绑定地址</span><strong id="bindOrigin">-</strong></div>
+              <div class="settings-kv-row"><span>推荐客户端地址</span><strong id="preferredOrigin">-</strong></div>
+              <div class="settings-kv-row"><span>局域网访问地址</span><strong id="lanOrigins">-</strong></div>
+              <div class="settings-kv-row"><span>OAuth 回调地址</span><code id="callbackUrlHint" class="mono">http://localhost:1455/auth/callback</code></div>
+            </div>
+            <div class="field-line">
+              <label>本地服务地址</label>
+              <input id="serviceAddressInput" placeholder="http://127.0.0.1:4777 或 http://0.0.0.0:4777" />
+            </div>
+            <div class="settings-actions">
+              <button id="saveSettings" class="btn primary">保存设置</button>
+            </div>
+          </section>
+          <section class="panel settings-panel">
+            <div class="settings-panel-head">
+              <div>
+                <h3>安全鉴权</h3>
+                <div class="settings-panel-note">保护 /api 管理接口，令牌仅保存于当前浏览器。</div>
+              </div>
+              <span id="settingsGuardChip" class="status-chip">未启用</span>
+            </div>
+            <div class="field-line">
+              <label>管理令牌</label>
+              <input id="adminTokenInput" type="password" placeholder="留空表示不启用浏览器管理令牌" />
+            </div>
+            <div class="info-grid">
+              <div class="info-item"><span>管理保护</span><strong id="settingsGuardState">未启用</strong></div>
+              <div class="info-item"><span>浏览器本地令牌</span><strong id="settingsStoredAdminToken">未保存</strong></div>
+            </div>
+          </section>
+          <section class="panel settings-panel">
+            <div class="settings-panel-head">
+              <div>
+                <h3>隐私策略</h3>
+                <div class="settings-panel-note">非回环绑定建议配置加密密钥，并默认启用严格隐私透传。</div>
+              </div>
+              <span id="settingsPrivacyChip" class="status-chip">严格模式</span>
+            </div>
+            <div class="field-line">
+              <label>加密密钥</label>
+              <input id="encryptionKeyInput" type="password" placeholder="建议 32+ 字符随机值；留空则沿用已保存值" />
+            </div>
+            <div class="field-line">
+              <label style="display: flex; align-items: center; gap: 8px; cursor: pointer">
+                <input id="upstreamPrivacyStrictInput" type="checkbox" checked />
+                <span>严格隐私透传（不透传内网用户标识信息到 OpenAI）</span>
+              </label>
+            </div>
+            <div class="info-grid">
+              <div class="info-item"><span>加密状态</span><strong id="settingsEncryptionState">未配置</strong></div>
+              <div class="info-item"><span>浏览器本地密钥</span><strong id="settingsStoredEncryptionKey">未保存</strong></div>
+            </div>
+          </section>
+          <section class="panel settings-panel">
+            <div class="settings-panel-head">
+              <div>
+                <h3>统计与计费</h3>
+                <div class="settings-panel-note">只读展示统计口径与今日聚合，不影响实际账单。</div>
+              </div>
+              <span class="status-chip">只读</span>
+            </div>
+            <div class="info-grid">
+              <div class="info-item"><span>统计时区</span><strong id="settingsStatTimezone">-</strong></div>
+              <div class="info-item"><span>价格模式</span><strong id="settingsStatPricingMode">-</strong></div>
+              <div class="info-item"><span>价格表版本</span><strong id="settingsStatCatalogVersion">-</strong></div>
+              <div class="info-item"><span>今日令牌</span><strong id="settingsStatTodayTokens">0</strong></div>
+              <div class="info-item"><span>缓存令牌</span><strong id="settingsStatCachedTokens">0</strong></div>
+              <div class="info-item"><span>推理令牌</span><strong id="settingsStatReasoningTokens">0</strong></div>
+              <div class="info-item"><span>预计费用</span><strong id="settingsStatEstimatedCost">$0.00</strong></div>
+              <div class="info-item"><span>未估价请求</span><strong id="settingsStatUnpriced">0</strong></div>
+            </div>
+            <div class="settings-panel-note">未知模型不会记为 0 成本，而会单独统计为“未估价”。</div>
+          </section>
+          <section class="panel settings-panel">
+            <div class="settings-panel-head">
+              <div>
+                <h3>服务状态</h3>
+                <div class="settings-panel-note">同步链路、实时事件、日志与重启状态。</div>
+              </div>
+              <span class="status-chip">只读</span>
+            </div>
+            <div class="settings-kv">
+              <div class="settings-kv-row"><span>同步状态</span><strong id="settingsSyncState">同步中</strong></div>
+              <div class="settings-kv-row"><span>实时事件通道</span><strong id="settingsRealtimeState">未连接</strong></div>
+              <div class="settings-kv-row"><span>请求日志刷新</span><strong id="settingsRequestLogState">未加载</strong></div>
+              <div class="settings-kv-row"><span>系统日志条数</span><strong id="settingsSystemLogState">0</strong></div>
+              <div class="settings-kv-row"><span>是否需重启</span><strong id="settingsRestartState">是</strong></div>
+            </div>
+            <div id="callbackUsageHint" class="settings-panel-note">新增 OAuth 账号建议在服务机本地或远程桌面执行；本网页主要用于账号、密钥、日志与设置维护。</div>
+          </section>
+          <section class="panel settings-panel">
+            <div class="settings-panel-head">
+              <div>
+                <h3>危险操作</h3>
+                <div class="settings-panel-note">清空日志不会影响今日统计；恢复自动绑定需重启生效。</div>
+              </div>
+              <span class="status-chip warn">谨慎操作</span>
+            </div>
+            <div class="settings-actions">
+              <button id="resetServiceAddress" class="btn">恢复自动绑定</button>
+              <button id="dangerClearRequestLogs" class="btn">清空请求日志</button>
+              <button id="dangerClearSystemLogs" class="btn">清空系统日志</button>
+            </div>
+          </section>
+        `;
+      }
+
+      function hydrateV1Layouts() {
+        hydrateDashboardTodayStatsLayout();
+        hydrateLogsLayout();
+        hydrateSettingsLayout();
+      }
+
       async function loadSettings() {
         const requestId = beginRequest("settings");
-        beginSync();
+        if (!silent) beginSync();
         try {
           const output = await api("/api/settings");
           if (!isLatestRequest("settings", requestId)) return;
@@ -5972,8 +7403,388 @@
           refreshSettingsUi();
           finishSyncSuccess();
         } catch (error) {
-          finishSyncError("同步失败，正在重试");
+          if (!silent) finishSyncError("同步失败，正在重试...");
           throw error;
+        }
+      }
+
+      function stopRequestLogPolling() {
+        if (S.ui.requestLogPollTimer) {
+          clearInterval(S.ui.requestLogPollTimer);
+          S.ui.requestLogPollTimer = null;
+        }
+      }
+
+      function startRequestLogPolling() {
+        stopRequestLogPolling();
+        if (S.ui.currentView !== "logs" || S.logsTab !== "requests") return;
+        S.ui.requestLogPollTimer = setInterval(() => {
+          if (S.ui.currentView === "logs" && S.logsTab === "requests" && !S.requestLogLoading) {
+            void loadRequestLogs({ silent: true });
+          }
+        }, 5000);
+      }
+
+      async function loadDashboardMetrics(options = {}) {
+        const silent = options.silent === true;
+        if (!silent) beginSync();
+        try {
+          const output = await api("/api/dashboard/metrics");
+          const metricsPayload = output?.metrics || {};
+          S.dashboardMetrics = coerceDashboardMetrics(metricsPayload);
+          S.usageTotals = {
+            promptTokens: normalizeTokenDelta(metricsPayload?.usageTotals?.promptTokens),
+            completionTokens: normalizeTokenDelta(metricsPayload?.usageTotals?.completionTokens),
+            totalTokens: normalizeTokenDelta(metricsPayload?.usageTotals?.totalTokens),
+            estimatedCostUsd: Math.max(0, Number(metricsPayload?.usageTotals?.estimatedCostUsd || 0)),
+            updatedAt: normalizeTokenDelta(metricsPayload?.usageTotals?.updatedAt),
+          };
+          drawStats();
+          drawTokenUsage();
+          renderTodayStats();
+          renderSettingsReadOnly();
+          if (!silent) finishSyncSuccess();
+        } catch (error) {
+          if (!silent) finishSyncError("仪表盘统计同步失败，正在重试...");
+          throw error;
+        }
+      }
+
+      function renderTodayStats() {
+        const metrics = coerceDashboardMetrics(S.dashboardMetrics);
+        const pool = metrics.poolRemaining || {};
+        const hint = document.getElementById("todayStatsHint");
+        const todayTokensEl = document.getElementById("todayTokens");
+        const cachedTokensEl = document.getElementById("todayCachedTokens");
+        const reasoningTokensEl = document.getElementById("todayReasoningTokens");
+        const estimatedCostEl = document.getElementById("todayEstimatedCost");
+        const requestCountEl = document.getElementById("todayRequestCount");
+        if (todayTokensEl) todayTokensEl.textContent = formatCompactNumber(metrics.todayTokens);
+        if (cachedTokensEl) cachedTokensEl.textContent = formatCompactNumber(metrics.cachedInputTokens);
+        if (reasoningTokensEl) reasoningTokensEl.textContent = formatCompactNumber(metrics.reasoningOutputTokens);
+        if (estimatedCostEl) estimatedCostEl.textContent = formatUsd(metrics.estimatedCostUsd);
+        if (requestCountEl) requestCountEl.textContent = formatCompactNumber(metrics.todayRequestCount);
+
+        const todayTokensMeta = document.getElementById("todayTokensMeta");
+        if (todayTokensMeta) todayTokensMeta.textContent = `输入 - 缓存 + 输出 | 时区 ${metrics.statsTimezone || "-"}`;
+        const cachedTokensMeta = document.getElementById("todayCachedTokensMeta");
+        if (cachedTokensMeta) cachedTokensMeta.textContent = metrics.cachedInputTokens > 0 ? "上下文缓存命中" : "今日暂无缓存命中";
+        const reasoningTokensMeta = document.getElementById("todayReasoningTokensMeta");
+        if (reasoningTokensMeta) reasoningTokensMeta.textContent = metrics.reasoningOutputTokens > 0 ? "模型思考输出" : "今日暂无推理令牌";
+        const estimatedCostMeta = document.getElementById("todayEstimatedCostMeta");
+        if (estimatedCostMeta) {
+          estimatedCostMeta.textContent =
+            metrics.unpricedRequestCount > 0 ? `部分未估价（${formatCompactNumber(metrics.unpricedRequestCount)}）` : "按官价估算";
+        }
+        const requestCountMeta = document.getElementById("todayRequestCountMeta");
+        if (requestCountMeta) requestCountMeta.textContent = S.requestLogBusyVisible ? "请求日志同步中..." : "请求日志计数";
+
+        const primaryRemainPercent = pool.primaryRemainPercent;
+        const secondaryRemainPercent = pool.secondaryRemainPercent;
+        const poolPrimaryValue = document.getElementById("todayPoolPrimaryValue");
+        const poolSecondaryValue = document.getElementById("todayPoolSecondaryValue");
+        const poolPrimaryBar = document.getElementById("todayPoolPrimaryBar");
+        const poolSecondaryBar = document.getElementById("todayPoolSecondaryBar");
+        const poolMeta = document.getElementById("todayPoolMeta");
+        if (poolPrimaryValue) poolPrimaryValue.textContent = formatPercent(primaryRemainPercent);
+        if (poolSecondaryValue) poolSecondaryValue.textContent = formatPercent(secondaryRemainPercent);
+        if (poolPrimaryBar) poolPrimaryBar.style.width = `${Math.max(0, Math.min(100, Number(primaryRemainPercent || 0)))}%`;
+        if (poolSecondaryBar) poolSecondaryBar.style.width = `${Math.max(0, Math.min(100, Number(secondaryRemainPercent || 0)))}%`;
+        if (poolMeta) {
+          poolMeta.textContent = `已知额度账号 ${formatCompactNumber(pool.quotaKnownAccountCount)} / 可路由账号 ${formatCompactNumber(pool.eligibleAccountCount)}`;
+        }
+
+        if (hint) {
+          if (S.requestLogError) {
+            hint.textContent = `请求日志读取失败：${S.requestLogError}`;
+          } else if (S.requestLogBusyVisible && !S.requestLogsLoadedAt) {
+            hint.textContent = "正在同步请求日志与今日统计...";
+          } else {
+            hint.textContent = `统计范围：今日 00:00 至今 | 时区 ${metrics.statsTimezone || "-"} | 请求 ${formatCompactNumber(metrics.todayRequestCount)} | 更新于 ${dt(S.requestLogsLoadedAt || Date.now())}`;
+          }
+        }
+      }
+
+      function drawRequestLogsTable() {
+        const tbody = document.getElementById("requestLogsTableBody");
+        const meta = document.getElementById("requestLogsMeta");
+        const summary = document.getElementById("requestLogsSummary");
+        const pageInfo = document.getElementById("requestLogsPageInfo");
+        const prevBtn = document.getElementById("requestLogPrev");
+        const nextBtn = document.getElementById("requestLogNext");
+        const statusSelect = document.getElementById("requestLogStatusFilter");
+        const pageSizeSelect = document.getElementById("requestLogPageSize");
+        if (!tbody || !meta || !summary || !pageInfo || !prevBtn || !nextBtn) return;
+        if (statusSelect) statusSelect.value = String(S.requestLogStatus || "all");
+        if (pageSizeSelect) pageSizeSelect.value = String(S.requestLogPageSize || 20);
+
+        const pageSize = Math.max(1, Math.floor(Number(S.requestLogPageSize || 20)));
+        const total = Math.max(0, Math.floor(Number(S.requestLogsTotal || 0)));
+        const totalPages = Math.max(1, Math.ceil(total / pageSize));
+        if (S.requestLogPage > totalPages) S.requestLogPage = totalPages;
+        if (S.requestLogPage < 1) S.requestLogPage = 1;
+        const pageRows = Array.isArray(S.requestLogs) ? S.requestLogs : [];
+
+        if (S.requestLogBusyVisible && !pageRows.length) {
+          tbody.innerHTML = '<tr><td colspan="9" class="table-placeholder">正在同步请求日志...</td></tr>';
+        } else if (S.requestLogError && !pageRows.length) {
+          tbody.innerHTML = `<tr><td colspan="9" class="table-placeholder">请求日志读取失败：${esc(S.requestLogError)}</td></tr>`;
+        } else if (!pageRows.length) {
+          tbody.innerHTML = '<tr><td colspan="9" class="table-placeholder">暂无匹配的请求日志</td></tr>';
+        } else {
+          tbody.innerHTML = pageRows
+            .map((row) => {
+              const statusMeta = requestLogStatusMeta(row);
+              const model = String(row?.model || "").trim() || "-";
+              const reasoningEffort = String(row?.reasoningEffort || "").trim();
+              const errorText = String(row?.error || "").trim();
+              const totalTokens = Math.max(0, Math.floor(Number(row?.totalTokens || 0)));
+              const inputTokens = Math.max(0, Math.floor(Number(row?.inputTokens || 0)));
+              const cachedTokens = Math.max(0, Math.floor(Number(row?.cachedInputTokens || 0)));
+              const tokenText = totalTokens > 0 || inputTokens > 0 || cachedTokens > 0
+                ? `${formatCompactNumber(totalTokens)} / ${formatCompactNumber(inputTokens)} / ${formatCompactNumber(cachedTokens)}`
+                : "-";
+              return `
+                <tr>
+                  <td>${esc(dt(row?.at))}</td>
+                  <td><div><strong>${esc(String(row?.method || "-").toUpperCase())}</strong></div><div class="muted">${esc(String(row?.route || "-"))}</div></td>
+                  <td><div>${esc(formatRequestLogAccount(row?.accountId))}</div><div class="muted">${esc(formatRequestLogKey(row?.virtualKeyId))}</div></td>
+                  <td><div>${esc(model)}</div><div class="muted">${esc(reasoningEffort || "-")}</div></td>
+                  <td><span class="${statusMeta.className}">${esc(statusMeta.text)}</span></td>
+                  <td>${esc(formatLatencyMs(row?.latencyMs))}</td>
+                  <td class="mono">${esc(tokenText)}</td>
+                  <td class="mono">${esc(row?.estimatedCostUsd === null || row?.estimatedCostUsd === undefined ? "-" : formatUsd(row?.estimatedCostUsd))}</td>
+                  <td class="request-error" title="${esc(errorText)}">${esc(errorText || "-")}</td>
+                </tr>
+              `;
+            })
+            .join("");
+        }
+
+        const shownStart = total > 0 ? (S.requestLogPage - 1) * pageSize + 1 : 0;
+        const shownEnd = total > 0 ? shownStart + pageRows.length - 1 : 0;
+        const summaryMetrics = coerceAuditSummary(S.auditSummary);
+        if (meta) {
+          if (S.requestLogError) meta.textContent = `请求日志读取失败：${S.requestLogError}`;
+          else if (S.requestLogBusyVisible) meta.textContent = "请求日志同步中...";
+          else meta.textContent = `已加载 ${formatCompactNumber(pageRows.length)} 条 / 总计 ${formatCompactNumber(total)} 条，更新时间 ${dt(S.requestLogsLoadedAt || Date.now())}`;
+        }
+        if (summary) {
+          summary.textContent = `筛选命中 ${formatCompactNumber(summaryMetrics.filteredCount || total)} 条，成功 ${formatCompactNumber(summaryMetrics.successCount)}，异常 ${formatCompactNumber(summaryMetrics.errorCount)}，Token ${formatCompactNumber(summaryMetrics.totalTokens)}`;
+        }
+        if (pageInfo) pageInfo.textContent = `第 ${S.requestLogPage} / ${totalPages} 页`;
+        prevBtn.disabled = S.requestLogPage <= 1;
+        nextBtn.disabled = S.requestLogPage >= totalPages;
+      }
+
+      async function loadRequestLogs(options = {}) {
+        const silent = options.silent === true;
+        if (S.requestLogLoading) return;
+        if (!silent) beginSync();
+        S.requestLogLoading = true;
+        S.requestLogBusyVisible = !silent;
+        S.requestLogError = "";
+        if (!silent) {
+          drawRequestLogsTable();
+          renderTodayStats();
+          renderSettingsReadOnly();
+        }
+        try {
+          const query = new URLSearchParams();
+          if (S.requestLogQuery) query.set("query", String(S.requestLogQuery || "").trim());
+          query.set("statusGroup", String(S.requestLogStatus || "all"));
+          query.set("page", String(Math.max(1, Math.floor(Number(S.requestLogPage || 1)))));
+          query.set("pageSize", String(Math.max(1, Math.floor(Number(S.requestLogPageSize || 20)))));
+          const output = await api(`/api/audits?${query.toString()}`);
+          S.requestLogs = Array.isArray(output?.logs)
+            ? output.logs.map((item) => ({
+                id: item?.id || makeId(),
+                at: Number(item?.at || 0),
+                route: String(item?.route || ""),
+                method: String(item?.method || ""),
+                providerId: String(item?.providerId || ""),
+                accountId: String(item?.accountId || ""),
+                virtualKeyId: String(item?.virtualKeyId || ""),
+                model: String(item?.model || ""),
+                sessionId: String(item?.sessionId || ""),
+                requestHash: String(item?.requestHash || ""),
+                requestBytes: Math.max(0, Math.floor(Number(item?.requestBytes || 0))),
+                responseBytes: Math.max(0, Math.floor(Number(item?.responseBytes || 0))),
+                statusCode: Math.max(0, Math.floor(Number(item?.statusCode || 0))),
+                latencyMs: Math.max(0, Math.floor(Number(item?.latencyMs || 0))),
+                upstreamRequestId: String(item?.upstreamRequestId || ""),
+                error: String(item?.error || ""),
+                clientTag: String(item?.clientTag || ""),
+                inputTokens: Math.max(0, Math.floor(Number(item?.inputTokens || 0))),
+                cachedInputTokens: Math.max(0, Math.floor(Number(item?.cachedInputTokens || 0))),
+                outputTokens: Math.max(0, Math.floor(Number(item?.outputTokens || 0))),
+                totalTokens: Math.max(0, Math.floor(Number(item?.totalTokens || 0))),
+                reasoningOutputTokens: Math.max(0, Math.floor(Number(item?.reasoningOutputTokens || 0))),
+                estimatedCostUsd:
+                  item?.estimatedCostUsd === null || item?.estimatedCostUsd === undefined ? null : Number(item.estimatedCostUsd || 0),
+                reasoningEffort: String(item?.reasoningEffort || ""),
+              }))
+            : [];
+          S.requestLogsTotal = Math.max(0, Math.floor(Number(output?.total || 0)));
+          S.requestLogPage = Math.max(1, Math.floor(Number(output?.page || S.requestLogPage || 1)));
+          S.requestLogPageSize = Math.max(1, Math.floor(Number(output?.pageSize || S.requestLogPageSize || 20)));
+          S.auditSummary = coerceAuditSummary(output?.summary);
+          S.requestLogsLoadedAt = Date.now();
+          if (!silent) finishSyncSuccess();
+        } catch (error) {
+          S.requestLogError = toErrorMessage(error);
+          if (!silent) finishSyncError("请求日志同步失败，正在重试...");
+          if (options.rethrow) throw error;
+        } finally {
+          S.requestLogLoading = false;
+          S.requestLogBusyVisible = false;
+          drawRequestLogsTable();
+          renderTodayStats();
+          renderSettingsReadOnly();
+        }
+      }
+
+      function renderSettingsReadOnly() {
+        const metrics = coerceDashboardMetrics(S.dashboardMetrics);
+        const serviceSummary = S.settings.serviceStatusSummary || metrics.serviceStatusSummary || null;
+        const preferredOrigin = document.getElementById("preferredOrigin");
+        if (preferredOrigin) preferredOrigin.textContent = S.settings.preferredClientServiceAddress || "-";
+        setStatusChip("settingsServiceChip", S.service ? "服务在线" : "服务离线", S.service ? "ok" : "error");
+        setStatusChip(
+          "settingsGuardChip",
+          S.settings.managementAuthEnabled ? "已启用" : "未启用",
+          S.settings.managementAuthEnabled ? "ok" : "warn",
+        );
+        setStatusChip(
+          "settingsPrivacyChip",
+          S.settings.upstreamPrivacyStrict !== false ? "严格模式" : "宽松模式",
+          S.settings.upstreamPrivacyStrict !== false ? "ok" : "warn",
+        );
+        const guardState = document.getElementById("settingsGuardState");
+        if (guardState) guardState.textContent = S.settings.managementAuthEnabled ? "已启用" : "未启用";
+        const storedAdminToken = document.getElementById("settingsStoredAdminToken");
+        if (storedAdminToken) storedAdminToken.textContent = S.adminToken ? "已保存" : "未保存";
+        const encryptionState = document.getElementById("settingsEncryptionState");
+        if (encryptionState) encryptionState.textContent = S.settings.encryptionKeyConfigured ? "已配置" : "未配置";
+        const storedEncryptionKey = document.getElementById("settingsStoredEncryptionKey");
+        if (storedEncryptionKey) storedEncryptionKey.textContent = S.encryptionKey ? "已保存" : "未保存";
+        const statTimezone = document.getElementById("settingsStatTimezone");
+        if (statTimezone) statTimezone.textContent = S.settings.statsTimezone || metrics.statsTimezone || "-";
+        const statPricingMode = document.getElementById("settingsStatPricingMode");
+        if (statPricingMode) statPricingMode.textContent = S.settings.pricingMode || metrics.pricingMode || "-";
+        const statCatalogVersion = document.getElementById("settingsStatCatalogVersion");
+        if (statCatalogVersion) statCatalogVersion.textContent = S.settings.pricingCatalogVersion || metrics.pricingCatalogVersion || "-";
+        const statTodayTokens = document.getElementById("settingsStatTodayTokens");
+        if (statTodayTokens) statTodayTokens.textContent = formatCompactNumber(metrics.todayTokens);
+        const statCachedTokens = document.getElementById("settingsStatCachedTokens");
+        if (statCachedTokens) statCachedTokens.textContent = formatCompactNumber(metrics.cachedInputTokens);
+        const statReasoningTokens = document.getElementById("settingsStatReasoningTokens");
+        if (statReasoningTokens) statReasoningTokens.textContent = formatCompactNumber(metrics.reasoningOutputTokens);
+        const statEstimatedCost = document.getElementById("settingsStatEstimatedCost");
+        if (statEstimatedCost) statEstimatedCost.textContent = formatUsd(metrics.estimatedCostUsd);
+        const statUnpriced = document.getElementById("settingsStatUnpriced");
+        if (statUnpriced) statUnpriced.textContent = formatCompactNumber(metrics.unpricedRequestCount);
+        const syncState = document.getElementById("settingsSyncState");
+        if (syncState) syncState.textContent = String(S.ui.syncMessage || (S.ui.syncState === "ready" ? "已同步" : "同步中"));
+        const realtimeState = document.getElementById("settingsRealtimeState");
+        if (realtimeState) {
+          realtimeState.textContent = S.usageEventReady ? "SSE 已连接" : S.usageFallbackActive ? "轮询刷新中" : S.service ? "未连接" : "离线";
+        }
+        const requestLogState = document.getElementById("settingsRequestLogState");
+        if (requestLogState) {
+          requestLogState.textContent = S.requestLogError
+            ? `异常：${S.requestLogError}`
+            : S.requestLogLoading
+              ? "同步中"
+              : S.requestLogsLoadedAt
+                ? `已加载 ${formatCompactNumber(S.requestLogsTotal)} 条 · ${dt(S.requestLogsLoadedAt)}`
+                : "未加载";
+        }
+        const systemLogState = document.getElementById("settingsSystemLogState");
+        if (systemLogState) systemLogState.textContent = `${formatCompactNumber(S.logs.length)} 条`;
+        const restartState = document.getElementById("settingsRestartState");
+        if (restartState) restartState.textContent = serviceSummary?.restartRequired === false ? "否" : "是";
+      }
+
+      function switchView(view) {
+        const nextView = view || "dashboard";
+        S.ui.currentView = nextView;
+        document.querySelectorAll("[data-view]").forEach((btn) => btn.classList.toggle("active", btn.dataset.view === nextView));
+        document.querySelectorAll("[data-pane]").forEach((pane) => pane.classList.toggle("active", pane.dataset.pane === nextView));
+        if (nextView === "logs") {
+          switchLogsTab(S.logsTab || "requests");
+        } else {
+          stopRequestLogPolling();
+        }
+        if (nextView === "settings") {
+          renderSettingsReadOnly();
+        }
+      }
+
+      function switchLogsTab(tab) {
+        const nextTab = tab === "system" ? "system" : "requests";
+        S.logsTab = nextTab;
+        const requestTabBtn = document.getElementById("logsTabRequests");
+        const systemTabBtn = document.getElementById("logsTabSystem");
+        const requestPanel = document.getElementById("requestLogsPanel");
+        const systemPanel = document.getElementById("systemLogsPanel");
+        if (requestTabBtn) {
+          requestTabBtn.classList.toggle("active", nextTab === "requests");
+          requestTabBtn.setAttribute("aria-selected", nextTab === "requests" ? "true" : "false");
+        }
+        if (systemTabBtn) {
+          systemTabBtn.classList.toggle("active", nextTab === "system");
+          systemTabBtn.setAttribute("aria-selected", nextTab === "system" ? "true" : "false");
+        }
+        if (requestPanel) requestPanel.classList.toggle("active", nextTab === "requests");
+        if (systemPanel) systemPanel.classList.toggle("active", nextTab === "system");
+        renderLogsActions();
+        if (nextTab === "requests") {
+          startRequestLogPolling();
+          if (!S.requestLogsLoadedAt && !S.requestLogLoading) {
+            void loadRequestLogs({ silent: true });
+          } else {
+            drawRequestLogsTable();
+          }
+        } else {
+          stopRequestLogPolling();
+          drawLogs();
+        }
+      }
+
+      async function handleClearSystemLogs() {
+        try {
+          await api("/api/bootstrap/logs/clear", { method: "POST" });
+        } catch (error) {
+          const msg = error instanceof Error ? error.message : String(error);
+          showToast(`清空系统日志失败: ${msg}`, "error", 3800);
+          return;
+        }
+        S.bootstrapLogs = [];
+        S.logs = [];
+        drawLogs();
+        renderSettingsReadOnly();
+        log("系统日志已清空");
+        showToast("系统日志已清空", "success");
+      }
+
+      async function handleClearRequestLogs() {
+        const ok = window.confirm("确认清空请求日志？该操作不会影响今日统计。");
+        if (!ok) return;
+        try {
+          await api("/api/audits/clear", { method: "POST" });
+          S.requestLogs = [];
+          S.requestLogsTotal = 0;
+          S.auditSummary = coerceAuditSummary(null);
+          S.requestLogsLoadedAt = Date.now();
+          S.requestLogPage = 1;
+          S.requestLogError = "";
+          drawRequestLogsTable();
+          renderTodayStats();
+          renderSettingsReadOnly();
+          showToast("请求日志已清空", "success");
+        } catch (error) {
+          showToast(`清空请求日志失败: ${toErrorMessage(error)}`, "error", 3800);
         }
       }
 
@@ -6354,6 +8165,7 @@
       }
 
       function bindStatic() {
+        hydrateV1Layouts();
         const sideFoot = document.querySelector(".side-foot");
         if (sideFoot && !sideFoot.querySelector(".side-foot-actions")) {
           const wrapper = document.createElement("div");
@@ -6404,18 +8216,54 @@
           drawTokenUsage();
           log("已刷新 Token 统计");
         });
-        setClick("clearLogs", async () => {
-          try {
-            await api("/api/bootstrap/logs/clear", { method: "POST" });
-          } catch (error) {
-            const msg = error instanceof Error ? error.message : String(error);
-            alert(`清空启动日志失败: ${msg}`);
+        setClick("refreshLogs", async () => {
+          if (S.logsTab === "system") {
+            await loadBootstrapLogs();
+            showToast("系统日志已刷新", "success");
             return;
           }
-          S.bootstrapLogs = [];
-          S.logs = [];
-          drawLogs();
-          log("日志已清空");
+          await loadRequestLogs({ rethrow: false });
+          if (!S.requestLogError) showToast("请求日志已刷新", "success");
+        });
+        setClick("clearLogs", async () => {
+          if (S.logsTab === "system") {
+            try {
+              await api("/api/bootstrap/logs/clear", { method: "POST" });
+            } catch (error) {
+              const msg = error instanceof Error ? error.message : String(error);
+              showToast(`清空系统日志失败: ${msg}`, "error", 3800);
+              return;
+            }
+            S.bootstrapLogs = [];
+            S.logs = [];
+            drawLogs();
+            log("系统日志已清空");
+            return;
+          }
+          try {
+            await api("/api/audits/clear", { method: "POST" });
+            S.requestLogs = [];
+            S.requestLogsLoadedAt = Date.now();
+            S.requestLogPage = 1;
+            S.requestLogError = "";
+            refreshRequestLogFilterOptions();
+            drawRequestLogsTable();
+            renderTodayStats();
+            renderSettingsReadOnly();
+            showToast("请求日志已清空", "success");
+          } catch (error) {
+            showToast(`清空请求日志失败: ${toErrorMessage(error)}`, "error", 3800);
+          }
+        });
+        setClick("logsTabRequests", () => switchLogsTab("requests"));
+        setClick("logsTabSystem", () => switchLogsTab("system"));
+        setClick("requestLogPrev", () => {
+          S.requestLogPage = Math.max(1, Number(S.requestLogPage || 1) - 1);
+          drawRequestLogsTable();
+        });
+        setClick("requestLogNext", () => {
+          S.requestLogPage = Number(S.requestLogPage || 1) + 1;
+          drawRequestLogsTable();
         });
 
         setClick("testClose", closeTestModal);
@@ -6490,6 +8338,16 @@
           S.keyQuery = e.target.value;
           drawKeysTable();
         });
+        document.getElementById("requestLogProviderFilter")?.addEventListener("change", (e) => {
+          S.requestLogProvider = e.target.value || "all";
+          S.requestLogPage = 1;
+          drawRequestLogsTable();
+        });
+        document.getElementById("requestLogRouteFilter")?.addEventListener("change", (e) => {
+          S.requestLogRoute = e.target.value || "all";
+          S.requestLogPage = 1;
+          drawRequestLogsTable();
+        });
         document.getElementById("serviceAddressInput")?.addEventListener("keydown", (e) => {
           if (e.key === "Enter") {
             e.preventDefault();
@@ -6510,10 +8368,81 @@
         });
         document.getElementById("accountRtImportInput")?.addEventListener("change", handleRtAccountImport);
         document.getElementById("accountJsonImportInput")?.addEventListener("change", handleJsonAccountImport);
+        const refreshLogsBtn = document.getElementById("refreshLogs");
+        if (refreshLogsBtn) {
+          refreshLogsBtn.onclick = async () => {
+            if (S.logsTab === "system") {
+              await loadBootstrapLogs();
+              renderSettingsReadOnly();
+              showToast("系统日志已刷新", "success");
+              return;
+            }
+            await loadRequestLogs({ rethrow: false });
+            if (!S.requestLogError) showToast("请求日志已刷新", "success");
+          };
+        }
+        const clearLogsBtn = document.getElementById("clearLogs");
+        if (clearLogsBtn) {
+          clearLogsBtn.onclick = async () => {
+            if (S.logsTab === "system") {
+              await handleClearSystemLogs();
+              return;
+            }
+            await handleClearRequestLogs();
+          };
+        }
+        const dangerClearRequestLogsBtn = document.getElementById("dangerClearRequestLogs");
+        if (dangerClearRequestLogsBtn) dangerClearRequestLogsBtn.onclick = handleClearRequestLogs;
+        const dangerClearSystemLogsBtn = document.getElementById("dangerClearSystemLogs");
+        if (dangerClearSystemLogsBtn) dangerClearSystemLogsBtn.onclick = handleClearSystemLogs;
+        const requestLogPrevBtn = document.getElementById("requestLogPrev");
+        if (requestLogPrevBtn) {
+          requestLogPrevBtn.onclick = () => {
+            S.requestLogPage = Math.max(1, Number(S.requestLogPage || 1) - 1);
+            void loadRequestLogs({ silent: true });
+          };
+        }
+        const requestLogNextBtn = document.getElementById("requestLogNext");
+        if (requestLogNextBtn) {
+          requestLogNextBtn.onclick = () => {
+            S.requestLogPage = Number(S.requestLogPage || 1) + 1;
+            void loadRequestLogs({ silent: true });
+          };
+        }
+        const requestLogQueryInput = document.getElementById("requestLogQuery");
+        if (requestLogQueryInput) {
+          requestLogQueryInput.oninput = (e) => {
+            S.requestLogQuery = e.target.value;
+            S.requestLogPage = 1;
+            if (S.ui.requestLogQueryTimer) clearTimeout(S.ui.requestLogQueryTimer);
+            S.ui.requestLogQueryTimer = setTimeout(() => {
+              S.ui.requestLogQueryTimer = null;
+              void loadRequestLogs({ silent: true });
+            }, 250);
+          };
+        }
+        const requestLogStatusSelect = document.getElementById("requestLogStatusFilter");
+        if (requestLogStatusSelect) {
+          requestLogStatusSelect.onchange = (e) => {
+            S.requestLogStatus = e.target.value || "all";
+            S.requestLogPage = 1;
+            void loadRequestLogs({ silent: true });
+          };
+        }
+        const requestLogPageSizeSelect = document.getElementById("requestLogPageSize");
+        if (requestLogPageSizeSelect) {
+          requestLogPageSizeSelect.onchange = (e) => {
+            S.requestLogPageSize = Math.max(1, Math.floor(Number(e.target.value || 20)));
+            S.requestLogPage = 1;
+            void loadRequestLogs({ silent: true });
+          };
+        }
         ensureEarlyAuthFormBinding();
 
         const origin = document.getElementById("origin");
         if (origin) origin.textContent = window.location.origin;
+        switchLogsTab(S.logsTab || "requests");
+        drawRequestLogsTable();
         renderSyncStatus();
         renderBulkDeleteButton();
         renderKeyAccountStateHint();
@@ -6534,10 +8463,12 @@
         drawStats();
         drawTokenUsage();
         drawLogs();
+        drawRequestLogsTable();
         drawSession();
         drawKeysTable();
         fillKeyAccountSelector();
         drawTestChatLog();
+        renderSettingsReadOnly();
         renderAuthShell();
         log(
           `启动上下文: origin=${window.location.origin} queryAdminToken=${queryAdminToken ? "present" : "missing"} storedAdminToken=${storedAdminTokenBeforeBoot ? "present" : "missing"} activeAdminToken=${S.adminToken ? "present" : "missing"}`,

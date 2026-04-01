@@ -50,6 +50,89 @@ const usageEventClients = new Map<
 >()
 let bootstrapLogState = ""
 
+type UsageMetrics = {
+  promptTokens: number
+  completionTokens: number
+  totalTokens: number
+  cachedInputTokens: number
+  reasoningOutputTokens: number
+  estimatedCostUsd: number | null
+  reasoningEffort: string | null
+}
+
+type RequestAuditCompatInput = {
+  route: string
+  method: string
+  providerId?: string | null
+  accountId?: string | null
+  virtualKeyId?: string | null
+  model?: string | null
+  sessionId?: string | null
+  requestBytes?: number
+  requestBody?: Uint8Array
+  responseBytes?: number
+  statusCode?: number
+  latencyMs?: number
+  upstreamRequestId?: string | null
+  error?: string | null
+  clientTag?: string | null
+  promptTokens?: number
+  completionTokens?: number
+  totalTokens?: number
+  cachedInputTokens?: number
+  reasoningOutputTokens?: number
+  estimatedCostUsd?: number | null
+  reasoningEffort?: string | null
+  usage?: UsageMetrics
+}
+
+type RequestAuditOverlay = {
+  promptTokens: number
+  completionTokens: number
+  totalTokens: number
+  cachedInputTokens: number
+  reasoningOutputTokens: number
+  estimatedCostUsd: number | null
+  reasoningEffort: string | null
+  updatedAt: number
+}
+
+const REQUEST_AUDIT_OVERLAY_LIMIT = 4000
+const requestAuditOverlays = new Map<string, RequestAuditOverlay>()
+const extendedUsageTotalsState = {
+  cachedInputTokens: 0,
+  reasoningOutputTokens: 0,
+  estimatedCostUsd: 0,
+  updatedAt: 0,
+}
+const PRICING_MODE = "builtin-default"
+const PRICING_CATALOG_VERSION = "builtin-v1"
+const STATS_TIMEZONE = Intl.DateTimeFormat().resolvedOptions().timeZone || "Asia/Shanghai"
+const GPT_5_4_INPUT_TIER_BREAKPOINT = 272_000
+const MODEL_PRICE_PER_1K_TOKENS: Array<[string, number, number, number]> = [
+  ["gpt-5.3-codex", 0.00175, 0.000175, 0.014],
+  ["gpt-5.2-codex", 0.00175, 0.000175, 0.014],
+  ["gpt-5.2", 0.00175, 0.000175, 0.014],
+  ["gpt-5.1-codex-mini", 0.00025, 0.000025, 0.002],
+  ["gpt-5.1-codex-max", 0.00125, 0.000125, 0.01],
+  ["gpt-5.1-codex", 0.00125, 0.000125, 0.01],
+  ["gpt-5.1", 0.00125, 0.000125, 0.01],
+  ["gpt-5-codex", 0.00125, 0.000125, 0.01],
+  ["gpt-5", 0.00125, 0.000125, 0.01],
+  ["gpt-4.1", 0.002, 0.002, 0.008],
+  ["gpt-4o", 0.0025, 0.0025, 0.01],
+  ["gpt-4", 0.03, 0.03, 0.06],
+  ["claude-3-7", 0.003, 0.003, 0.015],
+  ["claude-3-5", 0.003, 0.003, 0.015],
+  ["claude-3", 0.003, 0.003, 0.015],
+]
+
+type ModelPriceRates = {
+  inputUsdPer1K: number
+  cachedInputUsdPer1K: number
+  outputUsdPer1K: number
+}
+
 type AccountQuotaWindow = {
   usedPercent: number
   remainingPercent: number
@@ -115,24 +198,39 @@ type AccountAbnormalState = {
   deleteEligible: boolean
 }
 
+type AccountPlanCohort = "free" | "paid" | "unknown"
+
 type ProviderRoutingHints = {
   excludeAccountIds: string[]
   deprioritizedAccountIds: string[]
   headroomByAccountId: Map<string, number>
+  pressureScoreByAccountId: Map<string, number>
+  preferredPlanCohort: AccountPlanCohort | null
 }
 
 type ProviderRoutingHintsOptions = {
   allowTransientUnhealthy?: boolean
+  preferredPlanCohort?: AccountPlanCohort | null
 }
 
 const ACCOUNT_QUOTA_CACHE_TTL_MS = 90 * 1000
 const ACCOUNT_QUOTA_POLL_INTERVAL_MS = 60 * 1000
+const ACCOUNT_QUOTA_POLL_BATCH_SIZE = 8
 const ACCOUNT_SOFT_DRAIN_REMAINING_PERCENT_THRESHOLD = 10
 const ACCOUNT_TRANSIENT_HEALTH_COOLDOWN_MS = 60 * 1000
+const PROVIDER_PRESSURE_HINTS_TTL_MS = 1000
 const accountQuotaCache = new Map<string, AccountQuotaSnapshot>()
 const accountHealthCache = new Map<string, AccountHealthSnapshot>()
 const accountQuotaRefreshInFlight = new Set<string>()
 let accountQuotaPollInFlight = false
+let accountQuotaPollCursor = 0
+const providerPressureHintsCache = new Map<
+  string,
+  {
+    generatedAt: number
+    pressureScoreByAccountId: Map<string, number>
+  }
+>()
 
 const app = new Hono()
 
@@ -261,6 +359,8 @@ const FORWARD_PROXY_ALLOWED_HOSTS = String(
 const FORWARD_PROXY_ENFORCE_ALLOWLIST =
   String(process.env.OAUTH_APP_FORWARD_PROXY_ENFORCE_ALLOWLIST ?? "0").trim() === "1"
 let forwardProxy: RestrictedForwardProxy | null = null
+let server: ReturnType<typeof Bun.serve> | null = null
+let fatalShutdown = false
 
 type UpstreamProfile = {
   providerMode: "chatgpt" | "openai"
@@ -310,6 +410,22 @@ function resolveUpstreamProfileForAccount(account: Pick<StoredAccount, "provider
 const OFFICIAL_UPSTREAM_RETRY_POLICY: UpstreamRetryPolicy = {
   maxAttempts: 4,
   baseDelayMs: 200,
+  retry429: false,
+  retry5xx: true,
+  retryTransport: true,
+}
+
+const INTERACTIVE_FAST_RETRY_POLICY: Partial<UpstreamRetryPolicy> = {
+  maxAttempts: 1,
+  baseDelayMs: 120,
+  retry429: false,
+  retry5xx: true,
+  retryTransport: true,
+}
+
+const POOL_FAIL_FAST_RETRY_POLICY: Partial<UpstreamRetryPolicy> = {
+  maxAttempts: 0,
+  baseDelayMs: 80,
   retry429: false,
   retry5xx: true,
   retryTransport: true,
@@ -900,17 +1016,287 @@ function isTokenExpired(account: StoredAccount) {
   return account.expiresAt < Date.now()
 }
 
-function normalizeUsage(payload: unknown) {
-  const usage = (payload as { usage?: Record<string, unknown> })?.usage ?? {}
-  const promptTokens = Number((usage as Record<string, unknown>).input_tokens ?? (usage as Record<string, unknown>).prompt_tokens ?? 0)
-  const completionTokens = Number(
-    (usage as Record<string, unknown>).output_tokens ?? (usage as Record<string, unknown>).completion_tokens ?? 0,
+function asRecord(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null
+  return value as Record<string, unknown>
+}
+
+function hasOwnKey(record: Record<string, unknown> | null | undefined, key: string) {
+  return Boolean(record) && Object.prototype.hasOwnProperty.call(record, key)
+}
+
+function pickFirstDefinedValue(...values: unknown[]) {
+  for (const value of values) {
+    if (value !== undefined && value !== null) return value
+  }
+  return undefined
+}
+
+function normalizeNonNegativeInt(value: unknown) {
+  const numeric = Number(value ?? 0)
+  if (!Number.isFinite(numeric)) return 0
+  return Math.max(0, Math.floor(numeric))
+}
+
+function normalizeNullableNonNegativeNumber(value: unknown) {
+  if (value === undefined || value === null || value === "") return null
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric)) return null
+  return Math.max(0, numeric)
+}
+
+function normalizeNullableString(value: unknown, maxLength = 240) {
+  if (typeof value !== "string") return null
+  const trimmed = value.trim()
+  if (!trimmed) return null
+  return trimmed.slice(0, maxLength)
+}
+
+function normalizeReasoningEffort(value: unknown): string | null {
+  if (typeof value === "string") {
+    const trimmed = value.trim()
+    if (!trimmed) return null
+    return trimmed.slice(0, 64)
+  }
+  const record = asRecord(value)
+  if (!record) return null
+  return normalizeReasoningEffort(
+    pickFirstDefinedValue(record.effort, record.level, record.value, record.reasoning_effort, record.reasoningEffort),
   )
-  const totalTokens = Number((usage as Record<string, unknown>).total_tokens ?? promptTokens + completionTokens)
+}
+
+function readFirstValue(record: Record<string, unknown> | null | undefined, keys: string[]) {
+  if (!record) return undefined
+  for (const key of keys) {
+    if (hasOwnKey(record, key)) return record[key]
+  }
+  return undefined
+}
+
+function emptyUsageMetrics(): UsageMetrics {
   return {
-    promptTokens: Number.isFinite(promptTokens) ? Math.max(0, Math.floor(promptTokens)) : 0,
-    completionTokens: Number.isFinite(completionTokens) ? Math.max(0, Math.floor(completionTokens)) : 0,
-    totalTokens: Number.isFinite(totalTokens) ? Math.max(0, Math.floor(totalTokens)) : 0,
+    promptTokens: 0,
+    completionTokens: 0,
+    totalTokens: 0,
+    cachedInputTokens: 0,
+    reasoningOutputTokens: 0,
+    estimatedCostUsd: null,
+    reasoningEffort: null,
+  }
+}
+
+function resolveModelPricePer1K(model: string | null | undefined, inputTokensTotal: number): ModelPriceRates | null {
+  const normalized = String(model ?? "")
+    .trim()
+    .toLowerCase()
+  if (!normalized) return null
+
+  if (normalized.startsWith("gpt-5.4-pro")) {
+    if (inputTokensTotal > GPT_5_4_INPUT_TIER_BREAKPOINT) {
+      return {
+        inputUsdPer1K: 0.06,
+        cachedInputUsdPer1K: 0.06,
+        outputUsdPer1K: 0.27,
+      }
+    }
+    return {
+      inputUsdPer1K: 0.03,
+      cachedInputUsdPer1K: 0.03,
+      outputUsdPer1K: 0.18,
+    }
+  }
+
+  if (normalized.startsWith("gpt-5.4")) {
+    if (inputTokensTotal > GPT_5_4_INPUT_TIER_BREAKPOINT) {
+      return {
+        inputUsdPer1K: 0.005,
+        cachedInputUsdPer1K: 0.0005,
+        outputUsdPer1K: 0.0225,
+      }
+    }
+    return {
+      inputUsdPer1K: 0.0025,
+      cachedInputUsdPer1K: 0.00025,
+      outputUsdPer1K: 0.015,
+    }
+  }
+
+  for (const [prefix, inputUsdPer1K, cachedInputUsdPer1K, outputUsdPer1K] of MODEL_PRICE_PER_1K_TOKENS) {
+    if (!normalized.startsWith(prefix)) continue
+    return {
+      inputUsdPer1K,
+      cachedInputUsdPer1K,
+      outputUsdPer1K,
+    }
+  }
+
+  return null
+}
+
+function roundEstimatedCostUsd(value: number) {
+  return Math.round(value * 1_000_000_000) / 1_000_000_000
+}
+
+function estimateUsageCostUsd(input: {
+  model?: string | null
+  promptTokens?: number | null
+  cachedInputTokens?: number | null
+  completionTokens?: number | null
+}) {
+  const promptTokens = normalizeNonNegativeInt(input.promptTokens)
+  const cachedInputTokens = Math.min(promptTokens, normalizeNonNegativeInt(input.cachedInputTokens))
+  const completionTokens = normalizeNonNegativeInt(input.completionTokens)
+  if (promptTokens <= 0 && cachedInputTokens <= 0 && completionTokens <= 0) return null
+  const rates = resolveModelPricePer1K(input.model ?? null, promptTokens)
+  if (!rates) return null
+  const billableInputTokens = Math.max(0, promptTokens - cachedInputTokens)
+  return roundEstimatedCostUsd(
+    billableInputTokens / 1000 * rates.inputUsdPer1K +
+      cachedInputTokens / 1000 * rates.cachedInputUsdPer1K +
+      completionTokens / 1000 * rates.outputUsdPer1K,
+  )
+}
+
+function withEstimatedUsageCost(usage: UsageMetrics, model: string | null | undefined): UsageMetrics {
+  const normalizedEstimatedCostUsd = normalizeNullableNonNegativeNumber(usage.estimatedCostUsd)
+  if (normalizedEstimatedCostUsd !== null) {
+    return {
+      ...usage,
+      estimatedCostUsd: normalizedEstimatedCostUsd,
+    }
+  }
+  const estimatedCostUsd = estimateUsageCostUsd({
+    model,
+    promptTokens: usage.promptTokens,
+    cachedInputTokens: usage.cachedInputTokens,
+    completionTokens: usage.completionTokens,
+  })
+  if (estimatedCostUsd === null) return usage
+  return {
+    ...usage,
+    estimatedCostUsd,
+  }
+}
+
+function normalizeUsage(payload: unknown): UsageMetrics {
+  const payloadRecord = asRecord(payload)
+  const usageRecord = asRecord(payloadRecord?.usage)
+  const promptDetails = asRecord(
+    pickFirstDefinedValue(
+      readFirstValue(usageRecord, ["input_tokens_details", "inputTokenDetails", "prompt_tokens_details", "promptTokenDetails"]),
+      readFirstValue(payloadRecord, ["input_tokens_details", "inputTokenDetails", "prompt_tokens_details", "promptTokenDetails"]),
+    ),
+  )
+  const completionDetails = asRecord(
+    pickFirstDefinedValue(
+      readFirstValue(usageRecord, ["output_tokens_details", "outputTokenDetails", "completion_tokens_details", "completionTokenDetails"]),
+      readFirstValue(payloadRecord, ["output_tokens_details", "outputTokenDetails", "completion_tokens_details", "completionTokenDetails"]),
+    ),
+  )
+
+  const promptTokens = normalizeNonNegativeInt(
+    pickFirstDefinedValue(
+      readFirstValue(usageRecord, ["input_tokens", "inputTokens", "prompt_tokens", "promptTokens"]),
+      readFirstValue(payloadRecord, ["input_tokens", "inputTokens", "prompt_tokens", "promptTokens"]),
+    ),
+  )
+  const completionTokens = normalizeNonNegativeInt(
+    pickFirstDefinedValue(
+      readFirstValue(usageRecord, ["output_tokens", "outputTokens", "completion_tokens", "completionTokens"]),
+      readFirstValue(payloadRecord, ["output_tokens", "outputTokens", "completion_tokens", "completionTokens"]),
+    ),
+  )
+  const totalCandidate = normalizeNonNegativeInt(
+    pickFirstDefinedValue(
+      readFirstValue(usageRecord, ["total_tokens", "totalTokens"]),
+      readFirstValue(payloadRecord, ["total_tokens", "totalTokens"]),
+    ),
+  )
+  const totalTokens = totalCandidate > 0 ? totalCandidate : promptTokens + completionTokens
+  const cachedInputTokens = normalizeNonNegativeInt(
+    pickFirstDefinedValue(
+      readFirstValue(usageRecord, [
+        "cached_input_tokens",
+        "cachedInputTokens",
+        "input_cached_tokens",
+        "inputCachedTokens",
+        "cached_tokens",
+        "cachedTokens",
+      ]),
+      readFirstValue(promptDetails, ["cached_tokens", "cachedTokens", "cached_input_tokens", "cachedInputTokens"]),
+      readFirstValue(payloadRecord, [
+        "cached_input_tokens",
+        "cachedInputTokens",
+        "input_cached_tokens",
+        "inputCachedTokens",
+        "cached_tokens",
+        "cachedTokens",
+      ]),
+    ),
+  )
+  const reasoningOutputTokens = normalizeNonNegativeInt(
+    pickFirstDefinedValue(
+      readFirstValue(usageRecord, [
+        "reasoning_output_tokens",
+        "reasoningOutputTokens",
+        "output_reasoning_tokens",
+        "outputReasoningTokens",
+        "reasoning_tokens",
+        "reasoningTokens",
+      ]),
+      readFirstValue(completionDetails, [
+        "reasoning_tokens",
+        "reasoningTokens",
+        "reasoning_output_tokens",
+        "reasoningOutputTokens",
+      ]),
+      readFirstValue(payloadRecord, [
+        "reasoning_output_tokens",
+        "reasoningOutputTokens",
+        "output_reasoning_tokens",
+        "outputReasoningTokens",
+        "reasoning_tokens",
+        "reasoningTokens",
+      ]),
+    ),
+  )
+  const estimatedCostUsd = normalizeNullableNonNegativeNumber(
+    pickFirstDefinedValue(
+      readFirstValue(usageRecord, [
+        "estimated_cost_usd",
+        "estimatedCostUsd",
+        "cost_usd",
+        "costUsd",
+        "estimated_cost",
+        "estimatedCost",
+      ]),
+      readFirstValue(payloadRecord, [
+        "estimated_cost_usd",
+        "estimatedCostUsd",
+        "cost_usd",
+        "costUsd",
+        "estimated_cost",
+        "estimatedCost",
+      ]),
+      readFirstValue(asRecord(payloadRecord?.cost), ["usd", "estimated_usd", "estimatedUsd"]),
+    ),
+  )
+  const reasoningEffort = normalizeReasoningEffort(
+    pickFirstDefinedValue(
+      readFirstValue(usageRecord, ["reasoning_effort", "reasoningEffort"]),
+      readFirstValue(payloadRecord, ["reasoning_effort", "reasoningEffort"]),
+      payloadRecord?.reasoning,
+    ),
+  )
+
+  return {
+    promptTokens,
+    completionTokens,
+    totalTokens,
+    cachedInputTokens,
+    reasoningOutputTokens,
+    estimatedCostUsd,
+    reasoningEffort,
   }
 }
 
@@ -918,14 +1304,15 @@ function extractUsageFromUnknown(payload: unknown) {
   const direct = normalizeUsage(payload)
   if (hasUsageDelta(direct)) return direct
   if (payload && typeof payload === "object") {
-    const nested = normalizeUsage((payload as Record<string, unknown>).response)
-    if (hasUsageDelta(nested)) return nested
+    const record = payload as Record<string, unknown>
+    const nestedResponse = normalizeUsage(record.response)
+    if (hasUsageDelta(nestedResponse)) return nestedResponse
+    const nestedData = normalizeUsage(record.data)
+    if (hasUsageDelta(nestedData)) return nestedData
+    const nestedResult = normalizeUsage(record.result)
+    if (hasUsageDelta(nestedResult)) return nestedResult
   }
-  return {
-    promptTokens: 0,
-    completionTokens: 0,
-    totalTokens: 0,
-  }
+  return emptyUsageMetrics()
 }
 
 function tryParseJsonText(text: string) {
@@ -947,11 +1334,7 @@ async function readCodexStream(response: Response) {
   let deltaText = ""
   let doneText = ""
   let completedResponse: unknown = undefined
-  let latestUsage = {
-    promptTokens: 0,
-    completionTokens: 0,
-    totalTokens: 0,
-  }
+  let latestUsage = emptyUsageMetrics()
 
   const consumeSseChunk = (chunk: string) => {
     const data = chunk
@@ -1052,14 +1435,84 @@ function makeStatusError(statusCode: number, message: string) {
   return error
 }
 
-type UsageMetrics = {
-  promptTokens: number
-  completionTokens: number
-  totalTokens: number
+function hasUsageDelta(usage: UsageMetrics) {
+  return (
+    usage.totalTokens > 0 ||
+    usage.promptTokens > 0 ||
+    usage.completionTokens > 0 ||
+    usage.cachedInputTokens > 0 ||
+    usage.reasoningOutputTokens > 0 ||
+    usage.estimatedCostUsd !== null ||
+    Boolean(usage.reasoningEffort)
+  )
 }
 
-function hasUsageDelta(usage: UsageMetrics) {
+function hasLegacyUsageDelta(usage: UsageMetrics) {
   return usage.totalTokens > 0 || usage.promptTokens > 0 || usage.completionTokens > 0
+}
+
+function accumulateExtendedUsageTotals(usage: UsageMetrics, now = Date.now()) {
+  if (
+    usage.cachedInputTokens === 0 &&
+    usage.reasoningOutputTokens === 0 &&
+    usage.estimatedCostUsd === null
+  ) {
+    return
+  }
+  extendedUsageTotalsState.cachedInputTokens += usage.cachedInputTokens
+  extendedUsageTotalsState.reasoningOutputTokens += usage.reasoningOutputTokens
+  extendedUsageTotalsState.estimatedCostUsd += usage.estimatedCostUsd ?? 0
+  extendedUsageTotalsState.updatedAt = now
+}
+
+function getUsageTotalsSnapshot() {
+  const raw = asRecord(accountStore.getUsageTotals()) ?? {}
+  const hasCached =
+    hasOwnKey(raw, "cachedInputTokens") ||
+    hasOwnKey(raw, "cached_input_tokens") ||
+    hasOwnKey(raw, "cachedTokens") ||
+    hasOwnKey(raw, "cached_tokens")
+  const hasReasoning =
+    hasOwnKey(raw, "reasoningOutputTokens") ||
+    hasOwnKey(raw, "reasoning_output_tokens") ||
+    hasOwnKey(raw, "reasoningTokens") ||
+    hasOwnKey(raw, "reasoning_tokens")
+  const hasCost =
+    hasOwnKey(raw, "estimatedCostUsd") ||
+    hasOwnKey(raw, "estimated_cost_usd") ||
+    hasOwnKey(raw, "costUsd") ||
+    hasOwnKey(raw, "cost_usd")
+
+  return {
+    ...raw,
+    promptTokens: normalizeNonNegativeInt(pickFirstDefinedValue(raw.promptTokens, raw.prompt_tokens)),
+    completionTokens: normalizeNonNegativeInt(pickFirstDefinedValue(raw.completionTokens, raw.completion_tokens)),
+    totalTokens: normalizeNonNegativeInt(pickFirstDefinedValue(raw.totalTokens, raw.total_tokens)),
+    cachedInputTokens: hasCached
+      ? normalizeNonNegativeInt(
+          pickFirstDefinedValue(raw.cachedInputTokens, raw.cached_input_tokens, raw.cachedTokens, raw.cached_tokens),
+        )
+      : extendedUsageTotalsState.cachedInputTokens,
+    reasoningOutputTokens: hasReasoning
+      ? normalizeNonNegativeInt(
+          pickFirstDefinedValue(
+            raw.reasoningOutputTokens,
+            raw.reasoning_output_tokens,
+            raw.reasoningTokens,
+            raw.reasoning_tokens,
+          ),
+        )
+      : extendedUsageTotalsState.reasoningOutputTokens,
+    estimatedCostUsd: hasCost
+      ? normalizeNullableNonNegativeNumber(
+          pickFirstDefinedValue(raw.estimatedCostUsd, raw.estimated_cost_usd, raw.costUsd, raw.cost_usd),
+        ) ?? 0
+      : extendedUsageTotalsState.estimatedCostUsd,
+    updatedAt: Math.max(
+      normalizeNonNegativeInt(pickFirstDefinedValue(raw.updatedAt, raw.updated_at)),
+      extendedUsageTotalsState.updatedAt,
+    ),
+  }
 }
 
 function emitServerEvent(event: string, payload: Record<string, unknown>) {
@@ -1076,7 +1529,7 @@ function emitServerEvent(event: string, payload: Record<string, unknown>) {
 
 function emitUsageUpdated(input: { accountId: string; keyId?: string; usage: UsageMetrics; source: string }) {
   if (!hasUsageDelta(input.usage)) return
-  const usageTotals = accountStore.getUsageTotals()
+  const usageTotals = getUsageTotalsSnapshot()
   const payload = {
     type: "usage-updated",
     at: Date.now(),
@@ -1086,9 +1539,87 @@ function emitUsageUpdated(input: { accountId: string; keyId?: string; usage: Usa
     promptTokens: input.usage.promptTokens,
     completionTokens: input.usage.completionTokens,
     totalTokens: input.usage.totalTokens,
+    cachedInputTokens: input.usage.cachedInputTokens,
+    reasoningOutputTokens: input.usage.reasoningOutputTokens,
+    estimatedCostUsd: input.usage.estimatedCostUsd,
+    reasoningEffort: input.usage.reasoningEffort,
     usageTotals,
   }
   emitServerEvent("usage", payload)
+}
+
+function recordUsageMetrics(input: {
+  accountId: string
+  keyId?: string
+  usage: UsageMetrics
+  source: string
+  auditId?: string
+  providerId?: string | null
+  virtualKeyId?: string | null
+  model?: string | null
+  sessionId?: string | null
+  reasoningEffort?: string | null
+}) {
+  const usage = withEstimatedUsageCost(input.usage, input.model ?? null)
+  if (!hasUsageDelta(usage)) return
+
+  if (hasLegacyUsageDelta(usage)) {
+    accountStore.addUsage({
+      id: input.accountId,
+      promptTokens: usage.promptTokens,
+      completionTokens: usage.completionTokens,
+      totalTokens: usage.totalTokens,
+      cachedInputTokens: usage.cachedInputTokens,
+      reasoningOutputTokens: usage.reasoningOutputTokens,
+      estimatedCostUsd: usage.estimatedCostUsd,
+      reasoningEffort: input.reasoningEffort ?? usage.reasoningEffort ?? null,
+    } as any)
+    if (input.keyId) {
+      accountStore.addVirtualKeyUsage({
+        id: input.keyId,
+        promptTokens: usage.promptTokens,
+        completionTokens: usage.completionTokens,
+        totalTokens: usage.totalTokens,
+        cachedInputTokens: usage.cachedInputTokens,
+        reasoningOutputTokens: usage.reasoningOutputTokens,
+        estimatedCostUsd: usage.estimatedCostUsd,
+        reasoningEffort: input.reasoningEffort ?? usage.reasoningEffort ?? null,
+      } as any)
+    }
+  }
+
+  accumulateExtendedUsageTotals(usage)
+
+  if (input.auditId) {
+    updateRequestAuditUsageCompat({
+      auditId: input.auditId,
+      accountId: input.accountId,
+      providerId: input.providerId ?? null,
+      virtualKeyId: input.virtualKeyId ?? input.keyId ?? null,
+      model: input.model ?? null,
+      sessionId: input.sessionId ?? null,
+      reasoningEffort: input.reasoningEffort ?? usage.reasoningEffort ?? null,
+      usage,
+    })
+  }
+
+  emitUsageUpdated({
+    accountId: input.accountId,
+    keyId: input.keyId,
+    usage: {
+      ...usage,
+      reasoningEffort: input.reasoningEffort ?? usage.reasoningEffort ?? null,
+    },
+    source: input.source,
+  })
+}
+
+function logBackgroundError(label: string, error: unknown) {
+  console.error(`[oauth-multi-login] background task failed (${label})`, error)
+}
+
+function handleBackgroundPromise(label: string, promise: Promise<unknown>) {
+  promise.catch((error) => logBackgroundError(label, error))
 }
 
 function emitAccountRateLimitsUpdated(input: { accountId: string; source: string; quota: AccountQuotaSnapshot }) {
@@ -1509,7 +2040,7 @@ function markAccountUnhealthy(accountId: string, reason: string, source: string)
     expiresAt,
   })
   const account = accountStore.get(normalizedAccountId)
-  if (account) invalidatePoolConsistency(account.providerId)
+  if (account) invalidatePoolConsistency(account.providerId, { account })
   emitAccountHealthUpdated({
     accountId: normalizedAccountId,
     source,
@@ -1522,7 +2053,7 @@ function markAccountHealthy(accountId: string, source: string) {
   const deleted = accountHealthCache.delete(normalizedAccountId)
   if (!deleted) return
   const account = accountStore.get(normalizedAccountId)
-  if (account) invalidatePoolConsistency(account.providerId)
+  if (account) invalidatePoolConsistency(account.providerId, { account })
   emitAccountHealthUpdated({
     accountId: normalizedAccountId,
     source,
@@ -1550,6 +2081,8 @@ async function refreshAndEmitAccountQuota(accountID: string, source: string) {
         quota,
       })
     }
+  } catch (error) {
+    logBackgroundError(`refreshAndEmitAccountQuota:${source}:${normalizedAccountID}`, error)
   } finally {
     accountQuotaRefreshInFlight.delete(normalizedAccountID)
   }
@@ -1557,13 +2090,32 @@ async function refreshAndEmitAccountQuota(accountID: string, source: string) {
 
 async function pollAndEmitAccountQuota(source: string) {
   if (accountQuotaPollInFlight) return
-  const accounts = accountStore.list().filter((account) => account.providerId === "chatgpt")
+  const accounts = accountStore
+    .list()
+    .filter((account) => account.providerId === "chatgpt")
+    .sort((left, right) => {
+      const cohortPriorityDelta =
+        resolvePlanCohortPriority(resolveAccountPlanCohort(left)) -
+        resolvePlanCohortPriority(resolveAccountPlanCohort(right))
+      if (cohortPriorityDelta !== 0) return cohortPriorityDelta
+      const leftFetchedAt = Number(accountQuotaCache.get(left.id)?.fetchedAt || 0)
+      const rightFetchedAt = Number(accountQuotaCache.get(right.id)?.fetchedAt || 0)
+      if (leftFetchedAt !== rightFetchedAt) return leftFetchedAt - rightFetchedAt
+      return left.id.localeCompare(right.id)
+    })
   if (accounts.length === 0) return
+  const batchSize = Math.max(1, Math.min(ACCOUNT_QUOTA_POLL_BATCH_SIZE, accounts.length))
+  const startIndex = accountQuotaPollCursor % accounts.length
+  const polledAccounts =
+    batchSize >= accounts.length
+      ? accounts
+      : [...accounts.slice(startIndex, startIndex + batchSize), ...accounts.slice(0, Math.max(0, startIndex + batchSize - accounts.length))]
+  accountQuotaPollCursor = (startIndex + batchSize) % accounts.length
 
   accountQuotaPollInFlight = true
   try {
-    await refreshAccountQuotaCache(accounts, { force: true })
-    for (const account of accounts) {
+    await refreshAccountQuotaCache(polledAccounts, { force: true })
+    for (const account of polledAccounts) {
       const quota = accountQuotaCache.get(account.id)
       if (!quota) continue
       emitAccountRateLimitsUpdated({
@@ -1572,6 +2124,8 @@ async function pollAndEmitAccountQuota(source: string) {
         quota,
       })
     }
+  } catch (error) {
+    logBackgroundError(`pollAndEmitAccountQuota:${source}`, error)
   } finally {
     accountQuotaPollInFlight = false
   }
@@ -1606,9 +2160,12 @@ function startServerEventHooks() {
     if (session.status === "completed" && session.accountId) {
       const account = accountStore.get(session.accountId)
       if (account) {
-        invalidatePoolConsistency(account.providerId)
+        invalidatePoolConsistency(account.providerId, { account })
       }
-      void refreshAndEmitAccountQuota(session.accountId, "login-session")
+      handleBackgroundPromise(
+        "refreshAndEmitAccountQuota:login-session",
+        refreshAndEmitAccountQuota(session.accountId, "login-session"),
+      )
     }
   })
 
@@ -1630,7 +2187,7 @@ function startServerEventHooks() {
   healthTimer.unref?.()
 
   const quotaTimer = setInterval(() => {
-    void pollAndEmitAccountQuota("quota-poll")
+    handleBackgroundPromise("pollAndEmitAccountQuota:quota-poll", pollAndEmitAccountQuota("quota-poll"))
   }, ACCOUNT_QUOTA_POLL_INTERVAL_MS)
   quotaTimer.unref?.()
 }
@@ -1839,6 +2396,115 @@ function resolveQuotaSnapshotHeadroomPercent(snapshot: AccountQuotaSnapshot | nu
   return Math.max(0, Math.min(...values))
 }
 
+function normalizeChatgptPlanType(value: unknown) {
+  return normalizeIdentity(String(value ?? "")) || null
+}
+
+function resolveAccountPlanCohort(account: StoredAccount): AccountPlanCohort {
+  if (String(account.providerId ?? "").trim().toLowerCase() !== "chatgpt") {
+    return "unknown"
+  }
+  const metadata = account.metadata && typeof account.metadata === "object" ? account.metadata : {}
+  const raw = normalizeChatgptPlanType(
+    (metadata as Record<string, unknown>).chatgptPlanType ??
+      (metadata as Record<string, unknown>).chatgpt_plan_type ??
+      "",
+  )
+  if (!raw) return "unknown"
+  if (raw.includes("free")) return "free"
+  if (
+    raw.includes("business") ||
+    raw.includes("team") ||
+    raw.includes("enterprise") ||
+    raw.includes("pro") ||
+    raw.includes("plus") ||
+    raw.includes("paid")
+  ) {
+    return "paid"
+  }
+  return "unknown"
+}
+
+function resolvePlanCohortPriority(cohort: AccountPlanCohort) {
+  switch (cohort) {
+    case "paid":
+      return 0
+    case "unknown":
+      return 1
+    default:
+      return 2
+  }
+}
+
+function selectPreferredPlanCohort(input: {
+  candidates: StoredAccount[]
+  pressureScoreByAccountId: Map<string, number>
+  headroomByAccountId: Map<string, number>
+  preferredPlanCohort?: AccountPlanCohort | null
+}) {
+  const groups = new Map<
+    AccountPlanCohort,
+    {
+      cohort: AccountPlanCohort
+      accounts: StoredAccount[]
+      pressureValues: number[]
+      headroomValues: number[]
+    }
+  >()
+
+  for (const account of input.candidates) {
+    const cohort = resolveAccountPlanCohort(account)
+    const existing = groups.get(cohort) ?? {
+      cohort,
+      accounts: [],
+      pressureValues: [],
+      headroomValues: [],
+    }
+    existing.accounts.push(account)
+    const pressure = input.pressureScoreByAccountId.get(account.id)
+    if (Number.isFinite(pressure)) existing.pressureValues.push(Number(pressure))
+    const headroom = input.headroomByAccountId.get(account.id)
+    if (Number.isFinite(headroom)) existing.headroomValues.push(Number(headroom))
+    groups.set(cohort, existing)
+  }
+
+  const preferred = input.preferredPlanCohort ?? null
+  if (preferred && groups.has(preferred)) {
+    return preferred
+  }
+
+  const ranked = [...groups.values()].sort((a, b) => {
+    const cohortPriorityA = resolvePlanCohortPriority(a.cohort)
+    const cohortPriorityB = resolvePlanCohortPriority(b.cohort)
+    if (cohortPriorityA !== cohortPriorityB) return cohortPriorityA - cohortPriorityB
+
+    const avgPressureA =
+      a.pressureValues.length > 0
+        ? a.pressureValues.reduce((sum, value) => sum + value, 0) / a.pressureValues.length
+        : Number.POSITIVE_INFINITY
+    const avgPressureB =
+      b.pressureValues.length > 0
+        ? b.pressureValues.reduce((sum, value) => sum + value, 0) / b.pressureValues.length
+        : Number.POSITIVE_INFINITY
+    if (avgPressureA !== avgPressureB) return avgPressureA - avgPressureB
+
+    const avgHeadroomA =
+      a.headroomValues.length > 0
+        ? a.headroomValues.reduce((sum, value) => sum + value, 0) / a.headroomValues.length
+        : Number.NEGATIVE_INFINITY
+    const avgHeadroomB =
+      b.headroomValues.length > 0
+        ? b.headroomValues.reduce((sum, value) => sum + value, 0) / b.headroomValues.length
+        : Number.NEGATIVE_INFINITY
+    if (avgHeadroomA !== avgHeadroomB) return avgHeadroomB - avgHeadroomA
+
+    if (a.accounts.length !== b.accounts.length) return b.accounts.length - a.accounts.length
+    return 0
+  })
+
+  return ranked[0]?.cohort ?? null
+}
+
 function buildProviderQuotaRoutingHints(providerId: string, now = Date.now()) {
   const normalizedProviderId = normalizeIdentity(providerId)?.toLowerCase()
   const headroomByAccountId = new Map<string, number>()
@@ -1862,7 +2528,7 @@ function buildProviderQuotaRoutingHints(providerId: string, now = Date.now()) {
       continue
     }
     if (Number(headroom) <= ACCOUNT_SOFT_DRAIN_REMAINING_PERCENT_THRESHOLD) {
-      deprioritizedAccountIds.push(account.id)
+      excludeAccountIds.push(account.id)
     }
   }
 
@@ -1873,32 +2539,100 @@ function buildProviderQuotaRoutingHints(providerId: string, now = Date.now()) {
   }
 }
 
+function buildProviderPressureRoutingHints(providerId: string, now = Date.now()) {
+  const normalizedProviderId = normalizeIdentity(providerId)?.toLowerCase()
+  const pressureScoreByAccountId = new Map<string, number>()
+  if (!normalizedProviderId) {
+    return {
+      pressureScoreByAccountId,
+    }
+  }
+
+  const cached = providerPressureHintsCache.get(normalizedProviderId)
+  if (cached && now - cached.generatedAt <= PROVIDER_PRESSURE_HINTS_TTL_MS) {
+    return {
+      pressureScoreByAccountId: new Map(cached.pressureScoreByAccountId),
+    }
+  }
+
+  for (const account of accountStore.list()) {
+    if (account.providerId.toLowerCase() !== normalizedProviderId) continue
+    const pressure = behaviorController.inspect({
+      accountId: account.id,
+      now,
+    })
+    pressureScoreByAccountId.set(account.id, pressure.pressureScore)
+  }
+
+  providerPressureHintsCache.set(normalizedProviderId, {
+    generatedAt: now,
+    pressureScoreByAccountId: new Map(pressureScoreByAccountId),
+  })
+
+  return {
+    pressureScoreByAccountId,
+  }
+}
+
 function buildProviderRoutingHints(
   providerId: string,
   now = Date.now(),
   options?: ProviderRoutingHintsOptions,
 ): ProviderRoutingHints {
   const quotaHints = buildProviderQuotaRoutingHints(providerId, now)
-  const consistencyExclusions = collectProviderConsistencyExclusions(providerId, now)
+  const pressureHints = buildProviderPressureRoutingHints(providerId, now)
   const excluded = new Set([
     ...collectProviderQuotaExhaustedExclusions(providerId, now),
     ...collectProviderUnhealthyExclusions(providerId, {
       includeTransient: options?.allowTransientUnhealthy !== true,
     }),
     ...quotaHints.excludeAccountIds,
-    ...consistencyExclusions,
   ])
+  let preferredPlanCohort: AccountPlanCohort | null = options?.preferredPlanCohort ?? null
+  if ((normalizeIdentity(providerId) ?? "chatgpt").toLowerCase() === "chatgpt") {
+    const candidates = accountStore
+      .list()
+      .filter(
+        (account) =>
+          account.providerId.toLowerCase() === "chatgpt" &&
+          Boolean(account.accessToken) &&
+          !excluded.has(account.id),
+      )
+    preferredPlanCohort = selectPreferredPlanCohort({
+      candidates,
+      pressureScoreByAccountId: pressureHints.pressureScoreByAccountId,
+      headroomByAccountId: quotaHints.headroomByAccountId,
+      preferredPlanCohort,
+    })
+    if (preferredPlanCohort) {
+      for (const account of candidates) {
+        if (resolveAccountPlanCohort(account) !== preferredPlanCohort) {
+          excluded.add(account.id)
+        }
+      }
+    }
+  }
+  const consistencyExclusions = collectProviderConsistencyExclusions(providerId, now, {
+    preferredPlanCohort,
+  })
+  for (const accountId of consistencyExclusions) {
+    excluded.add(accountId)
+  }
   return {
     excludeAccountIds: [...excluded],
     deprioritizedAccountIds: quotaHints.deprioritizedAccountIds.filter((accountId) => !excluded.has(accountId)),
     headroomByAccountId: quotaHints.headroomByAccountId,
+    pressureScoreByAccountId: pressureHints.pressureScoreByAccountId,
+    preferredPlanCohort,
   }
 }
 
-function buildRelaxedProviderRoutingHints(providerId: string, now = Date.now()) {
-  return buildProviderRoutingHints(providerId, now, {
-    allowTransientUnhealthy: true,
-  })
+function buildRelaxedProviderRoutingHints(
+  providerId: string,
+  now = Date.now(),
+  options?: ProviderRoutingHintsOptions,
+) {
+  return buildProviderRoutingHints(providerId, now, options)
 }
 
 function resolveAccountRoutingState(accountId: string, quota?: AccountQuotaSnapshot | null, now = Date.now()): AccountRoutingState {
@@ -1956,6 +2690,63 @@ function resolveAccountRoutingState(accountId: string, quota?: AccountQuotaSnaps
     headroomPercent,
     softDrainThresholdPercent: ACCOUNT_SOFT_DRAIN_REMAINING_PERCENT_THRESHOLD,
   }
+}
+
+function resolveAutomaticAccountAvailability(input: {
+  account: StoredAccount
+  quota?: AccountQuotaSnapshot | null
+  now?: number
+}) {
+  const now = input.now ?? Date.now()
+  if (!input.account.accessToken) {
+    return {
+      ok: false as const,
+      reason: "account_access_token_missing",
+      message: "Account access token is unavailable and cannot be used for routing",
+      derived: null as ReturnType<typeof resolvePublicAccountDerivedState> | null,
+    }
+  }
+
+  const quota = input.quota !== undefined ? input.quota : (accountQuotaCache.get(input.account.id) ?? null)
+  const derived = resolvePublicAccountDerivedState(input.account.id, quota)
+  if (derived.routing.state === "eligible") {
+    return {
+      ok: true as const,
+      reason: null,
+      message: null,
+      derived,
+    }
+  }
+
+  const reason = derived.routing.reason ?? derived.abnormalState?.reason ?? "routing_excluded"
+  let message = "Account is unavailable for routing"
+  if (derived.routing.state === "soft_drained") {
+    message = "Account quota is too low and has been excluded from routing"
+  } else {
+    switch (reason) {
+      case "quota_exhausted_cooldown":
+      case "quota_headroom_exhausted":
+        message = "Account quota is exhausted and has been excluded from routing"
+        break
+      default:
+        message = "Account is unhealthy and has been excluded from routing"
+        break
+    }
+  }
+  return {
+    ok: false as const,
+    reason,
+    message: `${message} (${reason})`,
+    derived,
+  }
+}
+
+function ensureAutomaticAccountAvailable(account: StoredAccount, statusCode = 503) {
+  const availability = resolveAutomaticAccountAvailability({ account })
+  if (!availability.ok) {
+    throw makeStatusError(statusCode, availability.message)
+  }
+  return availability
 }
 
 async function fetchAccountQuotaSnapshot(account: StoredAccount): Promise<AccountQuotaSnapshot> {
@@ -2324,8 +3115,12 @@ function importJsonOAuthAccount(input: z.infer<typeof ImportJsonAccountSchema>) 
     metadata: resolved.metadata,
   })
   markAccountHealthy(accountID, "codex-json-import")
-  invalidatePoolConsistency("chatgpt")
-  void refreshAndEmitAccountQuota(accountID, "codex-json-import")
+  const importedAccount = accountStore.get(accountID)
+  invalidatePoolConsistency("chatgpt", importedAccount ? { account: importedAccount } : undefined)
+  handleBackgroundPromise(
+    "refreshAndEmitAccountQuota:codex-json-import",
+    refreshAndEmitAccountQuota(accountID, "codex-json-import"),
+  )
   const account = accountStore.get(accountID)
   let virtualKey: { key: string; record: unknown } | undefined
   if (input.issueVirtualKey) {
@@ -2485,8 +3280,12 @@ async function importRefreshTokenOAuthAccount(input: z.infer<typeof ImportRtAcco
     },
   })
   markAccountHealthy(accountID, refreshed ? "refresh-token-import-refresh" : "refresh-token-import")
-  invalidatePoolConsistency(input.providerId)
-  void refreshAndEmitAccountQuota(accountID, "refresh-token-import")
+  const importedAccount = accountStore.get(accountID)
+  invalidatePoolConsistency(input.providerId, importedAccount ? { account: importedAccount } : undefined)
+  handleBackgroundPromise(
+    "refreshAndEmitAccountQuota:refresh-token-import",
+    refreshAndEmitAccountQuota(accountID, "refresh-token-import"),
+  )
   const account = accountStore.get(accountID)
   let virtualKey: { key: string; record: unknown } | undefined
   if (input.issueVirtualKey) {
@@ -2620,13 +3419,17 @@ function extractSessionRouteIDFromHeaders(headers?: Headers) {
     headers.get("session-id"),
     headers.get("x-session-id"),
     headers.get("sessionid"),
-    headers.get("previous_response_id"),
-    headers.get("previous-response-id"),
-    headers.get("previousresponseid"),
-    headers.get("conversation"),
     headers.get("prompt_cache_key"),
     headers.get("prompt-cache-key"),
     headers.get("x-prompt-cache-key"),
+    headers.get("thread_id"),
+    headers.get("thread-id"),
+    headers.get("conversation"),
+    headers.get("conversation_id"),
+    headers.get("conversation-id"),
+    headers.get("previous_response_id"),
+    headers.get("previous-response-id"),
+    headers.get("previousresponseid"),
   ]
   for (const candidate of candidates) {
     const normalized = normalizeSessionRouteID(candidate)
@@ -2643,15 +3446,15 @@ function extractSessionRouteIDFromRequestUrl(requestUrl?: string | null) {
     const candidates = [
       "session_id",
       "sessionId",
-      "previous_response_id",
-      "previousResponseId",
+      "prompt_cache_key",
+      "promptCacheKey",
+      "thread_id",
+      "threadId",
       "conversation",
       "conversation_id",
       "conversationId",
-      "thread_id",
-      "threadId",
-      "prompt_cache_key",
-      "promptCacheKey",
+      "previous_response_id",
+      "previousResponseId",
     ]
     for (const key of candidates) {
       const normalized = normalizeSessionRouteID(url.searchParams.get(key))
@@ -2687,7 +3490,14 @@ function resolveVirtualKeyContext(c: any) {
     sessionId,
   })
   if (!routed) {
-    return { error: "No healthy accounts available for pool routing" as const, status: 503 as const }
+    const unavailable = resolveAutomaticAccountAvailability({ account: resolved.account })
+    return {
+      error:
+        resolved.key.routingMode === "pool"
+          ? ("No healthy accounts available for pool routing" as const)
+          : (unavailable.ok ? "Upstream account is unavailable" : unavailable.message),
+      status: 503 as const,
+    }
   }
 
   return { resolved: routed, sessionId }
@@ -2719,23 +3529,25 @@ function rerouteResolvedPoolAccount(input: {
 }) {
   const failedAccountId = input.resolved.account.id
   return input.sessionId
-    ? accountStore.reassignVirtualKeySessionRoute({
-        keyId: input.resolved.key.id,
-        providerId: input.resolved.key.providerId,
-        sessionId: input.sessionId,
-        failedAccountId,
-        excludeAccountIds: input.routingHints.excludeAccountIds,
-        deprioritizedAccountIds: input.routingHints.deprioritizedAccountIds,
-        headroomByAccountId: input.routingHints.headroomByAccountId,
-      })
-    : accountStore.reassignVirtualKeyRoute({
-        keyId: input.resolved.key.id,
-        providerId: input.resolved.key.providerId,
-        failedAccountId,
-        excludeAccountIds: input.routingHints.excludeAccountIds,
-        deprioritizedAccountIds: input.routingHints.deprioritizedAccountIds,
-        headroomByAccountId: input.routingHints.headroomByAccountId,
-      })
+      ? accountStore.reassignVirtualKeySessionRoute({
+          keyId: input.resolved.key.id,
+          providerId: input.resolved.key.providerId,
+          sessionId: input.sessionId,
+          failedAccountId,
+          excludeAccountIds: input.routingHints.excludeAccountIds,
+          deprioritizedAccountIds: input.routingHints.deprioritizedAccountIds,
+          headroomByAccountId: input.routingHints.headroomByAccountId,
+          pressureScoreByAccountId: input.routingHints.pressureScoreByAccountId,
+        })
+      : accountStore.reassignVirtualKeyRoute({
+          keyId: input.resolved.key.id,
+          providerId: input.resolved.key.providerId,
+          failedAccountId,
+          excludeAccountIds: input.routingHints.excludeAccountIds,
+          deprioritizedAccountIds: input.routingHints.deprioritizedAccountIds,
+          headroomByAccountId: input.routingHints.headroomByAccountId,
+          pressureScoreByAccountId: input.routingHints.pressureScoreByAccountId,
+        })
 }
 
 function ensureResolvedPoolAccountEligible(input: {
@@ -2750,12 +3562,21 @@ function ensureResolvedPoolAccountEligible(input: {
   sessionId?: string | null
   routingHints?: ProviderRoutingHints
 }) {
+  const availability = resolveAutomaticAccountAvailability({ account: input.resolved.account })
   if (input.resolved.key.routingMode !== "pool") {
-    return input.resolved
+    return availability.ok ? input.resolved : null
   }
 
-  const routingHints = input.routingHints ?? buildProviderRoutingHints(input.resolved.key.providerId)
+  const preferredPlanCohort = resolveAccountPlanCohort(input.resolved.account)
+  const routingHints =
+    input.routingHints ??
+    buildProviderRoutingHints(input.resolved.key.providerId, Date.now(), {
+      preferredPlanCohort,
+    })
   const excluded = new Set<string>(routingHints.excludeAccountIds)
+  if (!availability.ok) {
+    excluded.add(input.resolved.account.id)
+  }
   if (!excluded.has(input.resolved.account.id)) {
     return input.resolved
   }
@@ -2768,11 +3589,18 @@ function ensureResolvedPoolAccountEligible(input: {
       excludeAccountIds: [...excluded],
       deprioritizedAccountIds: routingHints.deprioritizedAccountIds,
       headroomByAccountId: routingHints.headroomByAccountId,
+      pressureScoreByAccountId: routingHints.pressureScoreByAccountId,
+      preferredPlanCohort,
     },
   })
   if (!reroutedAccount) {
-    const relaxedHints = buildRelaxedProviderRoutingHints(input.resolved.key.providerId)
+    const relaxedHints = buildRelaxedProviderRoutingHints(input.resolved.key.providerId, Date.now(), {
+      preferredPlanCohort,
+    })
     const relaxedExcluded = new Set(relaxedHints.excludeAccountIds)
+    if (!availability.ok) {
+      relaxedExcluded.add(input.resolved.account.id)
+    }
     if (!relaxedExcluded.has(input.resolved.account.id)) {
       return input.resolved
     }
@@ -2813,14 +3641,50 @@ async function ensureResolvedPoolAccountConsistent(input: {
   if (input.resolved.key.routingMode !== "pool") {
     return { ok: true as const, resolved: input.resolved }
   }
-  const poolConsistency = await getProviderPoolConsistency(input.resolved.key.providerId)
-  if (!poolConsistency.ok) {
-    return { ok: false as const, type: "consistency" as const, poolConsistency }
+  const stickySessionId = normalizeSessionRouteID(input.sessionId)
+  const currentRoutingHints = buildProviderRoutingHints(input.resolved.key.providerId, Date.now())
+  const resolvedPlanCohort = resolveAccountPlanCohort(input.resolved.account)
+  const preferredPlanCohort = currentRoutingHints.preferredPlanCohort ?? resolvedPlanCohort
+  if (
+    stickySessionId &&
+    accountStore.hasEstablishedVirtualKeySessionRoute({
+      keyId: input.resolved.key.id,
+      sessionId: stickySessionId,
+      accountId: input.resolved.account.id,
+    })
+  ) {
+    if (!preferredPlanCohort || resolvedPlanCohort === preferredPlanCohort) {
+      return { ok: true as const, resolved: input.resolved }
+    }
+  }
+  const cachedPoolConsistency = getCachedPoolConsistencyResult(input.resolved.key.providerId, Date.now(), {
+    preferredPlanCohort,
+  })
+  if (!cachedPoolConsistency) {
+    refreshProviderPoolConsistencyInBackground(input.resolved.key.providerId, preferredPlanCohort)
+    const rerouted = ensureResolvedPoolAccountEligible({
+      resolved: input.resolved,
+      sessionId: input.sessionId,
+      routingHints: currentRoutingHints.preferredPlanCohort === preferredPlanCohort
+        ? currentRoutingHints
+        : buildProviderRoutingHints(input.resolved.key.providerId, Date.now(), {
+            preferredPlanCohort,
+          }),
+    })
+    return { ok: true as const, resolved: rerouted ?? input.resolved }
+  }
+  if (!cachedPoolConsistency.ok) {
+    refreshProviderPoolConsistencyInBackground(input.resolved.key.providerId, preferredPlanCohort)
+    return { ok: true as const, resolved: input.resolved }
   }
   const rerouted = ensureResolvedPoolAccountEligible({
     resolved: input.resolved,
     sessionId: input.sessionId,
-    routingHints: buildProviderRoutingHints(input.resolved.key.providerId),
+    routingHints: currentRoutingHints.preferredPlanCohort === preferredPlanCohort
+      ? currentRoutingHints
+      : buildProviderRoutingHints(input.resolved.key.providerId, Date.now(), {
+          preferredPlanCohort,
+        }),
   })
   if (!rerouted) {
     return { ok: false as const, type: "noHealthy" as const }
@@ -2831,7 +3695,7 @@ async function ensureResolvedPoolAccountConsistent(input: {
 function parseAuditRequestFields(input: { body: Uint8Array; contentType?: string | null }) {
   const contentType = String(input.contentType ?? "").toLowerCase()
   if (!contentType.includes("application/json")) {
-    return { model: null as string | null, sessionId: null as string | null }
+    return { model: null as string | null, sessionId: null as string | null, reasoningEffort: null as string | null }
   }
 
   try {
@@ -2842,21 +3706,24 @@ function parseAuditRequestFields(input: { body: Uint8Array; contentType?: string
     const sessionCandidates = [
       parsed.session_id,
       parsed.sessionId,
-      parsed.previous_response_id,
-      parsed.previousResponseId,
+      parsed.prompt_cache_key,
+      parsed.promptCacheKey,
+      parsed.thread_id,
+      parsed.threadId,
       parsed.conversation,
       parsed.conversation_id,
       parsed.conversationId,
-      parsed.thread_id,
-      parsed.threadId,
-      parsed.prompt_cache_key,
-      parsed.promptCacheKey,
+      parsed.previous_response_id,
+      parsed.previousResponseId,
     ]
     const sessionId =
       sessionCandidates.find((value) => typeof value === "string" && String(value).trim().length > 0)?.toString() ?? null
-    return { model, sessionId }
+    const reasoningEffort = normalizeReasoningEffort(
+      pickFirstDefinedValue(parsed.reasoning_effort, parsed.reasoningEffort, parsed.reasoning),
+    )
+    return { model, sessionId, reasoningEffort }
   } catch {
-    return { model: null as string | null, sessionId: null as string | null }
+    return { model: null as string | null, sessionId: null as string | null, reasoningEffort: null as string | null }
   }
 }
 
@@ -2870,11 +3737,7 @@ function extractUsageFromJsonLineText(text: string) {
   const normalized = String(text ?? "")
     .replace(/\r\n/g, "\n")
     .replace(/\r/g, "\n")
-  let latestUsage = {
-    promptTokens: 0,
-    completionTokens: 0,
-    totalTokens: 0,
-  }
+  let latestUsage = emptyUsageMetrics()
   let matched = false
 
   for (const rawLine of normalized.split("\n")) {
@@ -2916,11 +3779,7 @@ async function extractUsageFromStructuredResponseText(text: string) {
   if (lineUsage.matched) return lineUsage
 
   return {
-    usage: {
-      promptTokens: 0,
-      completionTokens: 0,
-      totalTokens: 0,
-    },
+    usage: emptyUsageMetrics(),
     matched: false,
   }
 }
@@ -2970,6 +3829,682 @@ function parseHeaderNumber(value?: string | null) {
   const numeric = Number(value ?? "")
   if (!Number.isFinite(numeric)) return 0
   return Math.max(0, Math.floor(numeric))
+}
+
+function usageHasTokenOrCostMetrics(usage: UsageMetrics) {
+  return (
+    usage.promptTokens > 0 ||
+    usage.completionTokens > 0 ||
+    usage.totalTokens > 0 ||
+    usage.cachedInputTokens > 0 ||
+    usage.reasoningOutputTokens > 0 ||
+    usage.estimatedCostUsd !== null
+  )
+}
+
+function normalizeUsageFromAuditInput(input: RequestAuditCompatInput): UsageMetrics {
+  const base = input.usage ? { ...emptyUsageMetrics(), ...input.usage } : emptyUsageMetrics()
+  const promptTokens = base.promptTokens || normalizeNonNegativeInt(input.promptTokens)
+  const completionTokens = base.completionTokens || normalizeNonNegativeInt(input.completionTokens)
+  const totalCandidate = base.totalTokens || normalizeNonNegativeInt(input.totalTokens)
+  return withEstimatedUsageCost({
+    promptTokens,
+    completionTokens,
+    totalTokens: totalCandidate > 0 ? totalCandidate : promptTokens + completionTokens,
+    cachedInputTokens: base.cachedInputTokens || normalizeNonNegativeInt(input.cachedInputTokens),
+    reasoningOutputTokens: base.reasoningOutputTokens || normalizeNonNegativeInt(input.reasoningOutputTokens),
+    estimatedCostUsd:
+      base.estimatedCostUsd !== null
+        ? base.estimatedCostUsd
+        : normalizeNullableNonNegativeNumber(input.estimatedCostUsd) ?? null,
+    reasoningEffort: normalizeReasoningEffort(input.reasoningEffort ?? base.reasoningEffort),
+  }, input.model ?? null)
+}
+
+function rememberRequestAuditOverlay(auditId: string, overlay: Partial<RequestAuditOverlay>) {
+  if (!auditId) return
+  const current = requestAuditOverlays.get(auditId) ?? {
+    promptTokens: 0,
+    completionTokens: 0,
+    totalTokens: 0,
+    cachedInputTokens: 0,
+    reasoningOutputTokens: 0,
+    estimatedCostUsd: null,
+    reasoningEffort: null,
+    updatedAt: 0,
+  }
+  requestAuditOverlays.set(auditId, {
+    promptTokens:
+      overlay.promptTokens !== undefined ? normalizeNonNegativeInt(overlay.promptTokens) : current.promptTokens,
+    completionTokens:
+      overlay.completionTokens !== undefined ? normalizeNonNegativeInt(overlay.completionTokens) : current.completionTokens,
+    totalTokens: overlay.totalTokens !== undefined ? normalizeNonNegativeInt(overlay.totalTokens) : current.totalTokens,
+    cachedInputTokens:
+      overlay.cachedInputTokens !== undefined ? normalizeNonNegativeInt(overlay.cachedInputTokens) : current.cachedInputTokens,
+    reasoningOutputTokens:
+      overlay.reasoningOutputTokens !== undefined
+        ? normalizeNonNegativeInt(overlay.reasoningOutputTokens)
+        : current.reasoningOutputTokens,
+    estimatedCostUsd:
+      overlay.estimatedCostUsd !== undefined
+        ? normalizeNullableNonNegativeNumber(overlay.estimatedCostUsd)
+        : current.estimatedCostUsd,
+    reasoningEffort:
+      overlay.reasoningEffort !== undefined
+        ? normalizeReasoningEffort(overlay.reasoningEffort)
+        : current.reasoningEffort,
+    updatedAt: Math.max(current.updatedAt, normalizeNonNegativeInt(overlay.updatedAt), Date.now()),
+  })
+
+  while (requestAuditOverlays.size > REQUEST_AUDIT_OVERLAY_LIMIT) {
+    const oldestKey = requestAuditOverlays.keys().next().value
+    if (!oldestKey) break
+    requestAuditOverlays.delete(oldestKey)
+  }
+}
+
+function buildRequestTokenStatPayload(auditId: string, input: RequestAuditCompatInput) {
+  const usage = normalizeUsageFromAuditInput(input)
+  if (!usageHasTokenOrCostMetrics(usage)) return null
+  return {
+    requestAuditId: auditId,
+    requestLogId: auditId,
+    auditId,
+    id: auditId,
+    keyId: input.virtualKeyId ?? null,
+    virtualKeyId: input.virtualKeyId ?? null,
+    accountId: input.accountId ?? null,
+    providerId: input.providerId ?? null,
+    model: input.model ?? null,
+    sessionId: input.sessionId ?? null,
+    inputTokens: usage.promptTokens,
+    promptTokens: usage.promptTokens,
+    cachedInputTokens: usage.cachedInputTokens,
+    outputTokens: usage.completionTokens,
+    completionTokens: usage.completionTokens,
+    totalTokens: usage.totalTokens,
+    reasoningOutputTokens: usage.reasoningOutputTokens,
+    estimatedCostUsd: usage.estimatedCostUsd,
+    createdAt: Date.now(),
+  }
+}
+
+function persistRequestTokenStatCompat(auditId: string, input: RequestAuditCompatInput) {
+  const payload = buildRequestTokenStatPayload(auditId, input)
+  if (!payload) return
+
+  const compatStore = accountStore as any
+  const methodNames = [
+    "addRequestTokenStat",
+    "addRequestTokenStats",
+    "recordRequestTokenStat",
+    "recordRequestTokenStats",
+    "upsertRequestTokenStat",
+    "attachRequestAuditUsage",
+    "updateRequestAuditUsage",
+  ]
+
+  for (const methodName of methodNames) {
+    if (typeof compatStore[methodName] !== "function") continue
+    try {
+      compatStore[methodName](payload)
+    } catch (error) {
+      console.warn(
+        `[oauth-multi-login] request token stat persist failed method=${methodName} audit=${auditId} reason=${errorMessage(error)}`,
+      )
+    }
+    return
+  }
+}
+
+function writeRequestAuditCompat(input: RequestAuditCompatInput) {
+  const usage = normalizeUsageFromAuditInput(input)
+  const normalizedReasoningEffort = normalizeReasoningEffort(input.reasoningEffort ?? usage.reasoningEffort)
+  const auditId = String(
+    accountStore.addRequestAudit({
+      ...input,
+      promptTokens: usage.promptTokens,
+      completionTokens: usage.completionTokens,
+      totalTokens: usage.totalTokens,
+      cachedInputTokens: usage.cachedInputTokens,
+      reasoningOutputTokens: usage.reasoningOutputTokens,
+      estimatedCostUsd: usage.estimatedCostUsd,
+      reasoningEffort: normalizedReasoningEffort,
+    } as any) ?? "",
+  )
+
+  if (!auditId) return auditId
+
+  if (usageHasTokenOrCostMetrics(usage) || normalizedReasoningEffort) {
+    rememberRequestAuditOverlay(auditId, {
+      promptTokens: usage.promptTokens,
+      completionTokens: usage.completionTokens,
+      totalTokens: usage.totalTokens,
+      cachedInputTokens: usage.cachedInputTokens,
+      reasoningOutputTokens: usage.reasoningOutputTokens,
+      estimatedCostUsd: usage.estimatedCostUsd,
+      reasoningEffort: normalizedReasoningEffort,
+      updatedAt: Date.now(),
+    })
+  }
+
+  persistRequestTokenStatCompat(auditId, {
+    ...input,
+    usage: {
+      ...usage,
+      reasoningEffort: normalizedReasoningEffort,
+    },
+  })
+
+  return auditId
+}
+
+function updateRequestAuditUsageCompat(input: {
+  auditId: string
+  accountId?: string | null
+  providerId?: string | null
+  virtualKeyId?: string | null
+  model?: string | null
+  sessionId?: string | null
+  reasoningEffort?: string | null
+  usage: UsageMetrics
+}) {
+  if (!input.auditId) return
+  const normalizedReasoningEffort = normalizeReasoningEffort(input.reasoningEffort ?? input.usage.reasoningEffort)
+  rememberRequestAuditOverlay(input.auditId, {
+    promptTokens: input.usage.promptTokens,
+    completionTokens: input.usage.completionTokens,
+    totalTokens: input.usage.totalTokens,
+    cachedInputTokens: input.usage.cachedInputTokens,
+    reasoningOutputTokens: input.usage.reasoningOutputTokens,
+    estimatedCostUsd: input.usage.estimatedCostUsd,
+    reasoningEffort: normalizedReasoningEffort,
+    updatedAt: Date.now(),
+  })
+  persistRequestTokenStatCompat(input.auditId, {
+    route: "",
+    method: "",
+    accountId: input.accountId ?? null,
+    providerId: input.providerId ?? null,
+    virtualKeyId: input.virtualKeyId ?? null,
+    model: input.model ?? null,
+    sessionId: input.sessionId ?? null,
+    reasoningEffort: normalizedReasoningEffort,
+    usage: {
+      ...input.usage,
+      reasoningEffort: normalizedReasoningEffort,
+    },
+  })
+}
+
+function normalizeAuditText(value: unknown) {
+  return String(value ?? "")
+    .trim()
+    .toLowerCase()
+}
+
+function matchesAuditText(value: unknown, needle: string) {
+  if (!needle) return true
+  return normalizeAuditText(value).includes(needle)
+}
+
+function matchesAuditStatus(statusCode: number, filterValue: string) {
+  if (!filterValue) return true
+  const terms = filterValue
+    .split(",")
+    .map((item) => item.trim().toLowerCase())
+    .filter(Boolean)
+  if (terms.length === 0) return true
+
+  return terms.some((term) => {
+    if (/^\d{3}$/.test(term)) return statusCode === Number(term)
+    if (/^[1-5]xx$/.test(term)) return String(statusCode).startsWith(term[0] ?? "")
+    if (term === "ok") return statusCode >= 200 && statusCode < 400
+    if (term === "error") return statusCode >= 400
+    if (term === "success") return statusCode >= 200 && statusCode < 300
+    return false
+  })
+}
+
+function parseBooleanQueryFlag(value?: string | null) {
+  const normalized = String(value ?? "")
+    .trim()
+    .toLowerCase()
+  if (!normalized) return null
+  if (normalized === "1" || normalized === "true" || normalized === "yes") return true
+  if (normalized === "0" || normalized === "false" || normalized === "no") return false
+  return null
+}
+
+function normalizeAuditLog(input: unknown) {
+  const raw = asRecord(input) ?? {}
+  const overlay = typeof raw.id === "string" ? requestAuditOverlays.get(raw.id) : undefined
+  const promptTokens = normalizeNonNegativeInt(
+    pickFirstDefinedValue(raw.promptTokens, raw.prompt_tokens, raw.inputTokens, raw.input_tokens, overlay?.promptTokens),
+  )
+  const completionTokens = normalizeNonNegativeInt(
+    pickFirstDefinedValue(
+      raw.completionTokens,
+      raw.completion_tokens,
+      raw.outputTokens,
+      raw.output_tokens,
+      overlay?.completionTokens,
+    ),
+  )
+  const totalCandidate = normalizeNonNegativeInt(
+    pickFirstDefinedValue(raw.totalTokens, raw.total_tokens, overlay?.totalTokens),
+  )
+  const totalTokens = totalCandidate > 0 ? totalCandidate : promptTokens + completionTokens
+  const cachedInputTokens = normalizeNonNegativeInt(
+    pickFirstDefinedValue(
+      raw.cachedInputTokens,
+      raw.cached_input_tokens,
+      raw.cachedTokens,
+      raw.cached_tokens,
+      overlay?.cachedInputTokens,
+    ),
+  )
+  const reasoningOutputTokens = normalizeNonNegativeInt(
+    pickFirstDefinedValue(
+      raw.reasoningOutputTokens,
+      raw.reasoning_output_tokens,
+      raw.reasoningTokens,
+      raw.reasoning_tokens,
+      overlay?.reasoningOutputTokens,
+    ),
+  )
+  const estimatedCostUsd =
+    normalizeNullableNonNegativeNumber(
+      pickFirstDefinedValue(raw.estimatedCostUsd, raw.estimated_cost_usd, raw.costUsd, raw.cost_usd, overlay?.estimatedCostUsd),
+    ) ?? null
+  const reasoningEffort = normalizeReasoningEffort(
+    pickFirstDefinedValue(raw.reasoningEffort, raw.reasoning_effort, overlay?.reasoningEffort),
+  )
+  const statusCode = normalizeNonNegativeInt(pickFirstDefinedValue(raw.statusCode, raw.status_code))
+  const latencyMs = normalizeNonNegativeInt(pickFirstDefinedValue(raw.latencyMs, raw.latency_ms, raw.durationMs, raw.duration_ms))
+  const route = String(pickFirstDefinedValue(raw.route, raw.requestPath, raw.request_path) ?? "")
+  const method = String(raw.method ?? "").trim().toUpperCase()
+
+  return {
+    ...raw,
+    id: String(raw.id ?? ""),
+    at: normalizeNonNegativeInt(raw.at),
+    route,
+    requestPath: route,
+    method,
+    providerId: normalizeNullableString(pickFirstDefinedValue(raw.providerId, raw.provider_id), 160),
+    accountId: normalizeNullableString(pickFirstDefinedValue(raw.accountId, raw.account_id), 200),
+    virtualKeyId: normalizeNullableString(pickFirstDefinedValue(raw.virtualKeyId, raw.virtual_key_id, raw.keyId, raw.key_id), 200),
+    keyId: normalizeNullableString(pickFirstDefinedValue(raw.virtualKeyId, raw.virtual_key_id, raw.keyId, raw.key_id), 200),
+    model: normalizeNullableString(raw.model, 200),
+    sessionId: normalizeNullableString(pickFirstDefinedValue(raw.sessionId, raw.session_id), 240),
+    requestHash: normalizeNullableString(pickFirstDefinedValue(raw.requestHash, raw.request_hash), 128),
+    requestBytes: normalizeNonNegativeInt(pickFirstDefinedValue(raw.requestBytes, raw.request_bytes)),
+    responseBytes: normalizeNonNegativeInt(pickFirstDefinedValue(raw.responseBytes, raw.response_bytes)),
+    statusCode,
+    statusFamily: statusCode >= 100 ? `${String(statusCode)[0]}xx` : "other",
+    latencyMs,
+    durationMs: latencyMs,
+    upstreamRequestId: normalizeNullableString(pickFirstDefinedValue(raw.upstreamRequestId, raw.upstream_request_id), 240),
+    error: normalizeNullableString(raw.error ?? raw.error_text, 2000),
+    hasError: Boolean(normalizeNullableString(raw.error ?? raw.error_text, 2000)),
+    clientTag: normalizeNullableString(pickFirstDefinedValue(raw.clientTag, raw.client_tag), 240),
+    inputTokens: promptTokens,
+    promptTokens,
+    outputTokens: completionTokens,
+    completionTokens,
+    totalTokens,
+    cachedInputTokens,
+    reasoningOutputTokens,
+    estimatedCostUsd,
+    reasoningEffort,
+  }
+}
+
+function matchesAuditQuery(log: ReturnType<typeof normalizeAuditLog>, query: string) {
+  const normalizedQuery = String(query ?? "").trim().toLowerCase()
+  if (!normalizedQuery) return true
+
+  const fulltext = [
+    log.id,
+    log.route,
+    log.method,
+    log.providerId,
+    log.accountId,
+    log.virtualKeyId,
+    log.model,
+    log.sessionId,
+    log.requestHash,
+    log.upstreamRequestId,
+    log.error,
+    log.clientTag,
+    log.reasoningEffort,
+    log.statusCode,
+  ]
+    .map((item) => String(item ?? ""))
+    .join(" ")
+    .toLowerCase()
+
+  return normalizedQuery
+    .split(/\s+/)
+    .filter(Boolean)
+    .every((token) => {
+      const separatorIndex = token.indexOf(":")
+      if (separatorIndex <= 0) return fulltext.includes(token)
+
+      const prefix = token.slice(0, separatorIndex)
+      const term = token.slice(separatorIndex + 1)
+      if (!term) return true
+
+      switch (prefix) {
+        case "route":
+        case "path":
+          return matchesAuditText(log.route, term)
+        case "method":
+          return matchesAuditText(log.method, term)
+        case "provider":
+        case "providerid":
+          return matchesAuditText(log.providerId, term)
+        case "account":
+        case "accountid":
+          return matchesAuditText(log.accountId, term)
+        case "key":
+        case "keyid":
+          return matchesAuditText(log.virtualKeyId, term)
+        case "model":
+          return matchesAuditText(log.model, term)
+        case "session":
+        case "sessionid":
+          return matchesAuditText(log.sessionId, term)
+        case "client":
+        case "clienttag":
+          return matchesAuditText(log.clientTag, term)
+        case "hash":
+        case "trace":
+          return matchesAuditText(log.requestHash, term) || matchesAuditText(log.id, term)
+        case "error":
+          return matchesAuditText(log.error, term)
+        case "status":
+          return matchesAuditStatus(log.statusCode, term)
+        default:
+          return fulltext.includes(token)
+      }
+    })
+}
+
+function sortAuditLogs(logs: ReturnType<typeof normalizeAuditLog>[], sortValue: string) {
+  const sorted = [...logs]
+  switch (sortValue) {
+    case "oldest":
+      sorted.sort((a, b) => a.at - b.at)
+      return sorted
+    case "latency_desc":
+      sorted.sort((a, b) => b.latencyMs - a.latencyMs || b.at - a.at)
+      return sorted
+    case "latency_asc":
+      sorted.sort((a, b) => a.latencyMs - b.latencyMs || b.at - a.at)
+      return sorted
+    case "status_desc":
+      sorted.sort((a, b) => b.statusCode - a.statusCode || b.at - a.at)
+      return sorted
+    case "status_asc":
+      sorted.sort((a, b) => a.statusCode - b.statusCode || b.at - a.at)
+      return sorted
+    default:
+      sorted.sort((a, b) => b.at - a.at)
+      return sorted
+  }
+}
+
+function buildAuditSummary(logs: ReturnType<typeof normalizeAuditLog>[]) {
+  const uniqueAccounts = new Set<string>()
+  const uniqueKeys = new Set<string>()
+  const uniqueModels = new Set<string>()
+  let success = 0
+  let clientError = 0
+  let serverError = 0
+  let other = 0
+  let latencyTotal = 0
+  let maxLatencyMs = 0
+  let requestBytes = 0
+  let responseBytes = 0
+  let promptTokens = 0
+  let completionTokens = 0
+  let totalTokens = 0
+  let cachedInputTokens = 0
+  let reasoningOutputTokens = 0
+  let estimatedCostUsd = 0
+  let oldestAt = 0
+  let newestAt = 0
+
+  for (const log of logs) {
+    if (log.accountId) uniqueAccounts.add(log.accountId)
+    if (log.virtualKeyId) uniqueKeys.add(log.virtualKeyId)
+    if (log.model) uniqueModels.add(log.model)
+
+    if (log.statusCode >= 200 && log.statusCode < 400) success += 1
+    else if (log.statusCode >= 400 && log.statusCode < 500) clientError += 1
+    else if (log.statusCode >= 500) serverError += 1
+    else other += 1
+
+    latencyTotal += log.latencyMs
+    maxLatencyMs = Math.max(maxLatencyMs, log.latencyMs)
+    requestBytes += log.requestBytes
+    responseBytes += log.responseBytes
+    promptTokens += log.promptTokens
+    completionTokens += log.completionTokens
+    totalTokens += log.totalTokens
+    cachedInputTokens += log.cachedInputTokens
+    reasoningOutputTokens += log.reasoningOutputTokens
+    estimatedCostUsd += log.estimatedCostUsd ?? 0
+    if (oldestAt === 0 || (log.at > 0 && log.at < oldestAt)) oldestAt = log.at
+    newestAt = Math.max(newestAt, log.at)
+  }
+
+  return {
+    total: logs.length,
+    success,
+    clientError,
+    serverError,
+    error: clientError + serverError,
+    other,
+    avgLatencyMs: logs.length > 0 ? Math.round(latencyTotal / logs.length) : 0,
+    maxLatencyMs,
+    requestBytes,
+    responseBytes,
+    inputTokens: promptTokens,
+    promptTokens,
+    outputTokens: completionTokens,
+    completionTokens,
+    totalTokens,
+    cachedInputTokens,
+    reasoningOutputTokens,
+    estimatedCostUsd,
+    uniqueAccounts: uniqueAccounts.size,
+    uniqueKeys: uniqueKeys.size,
+    uniqueModels: uniqueModels.size,
+    oldestAt,
+    newestAt,
+  }
+}
+
+function getNormalizedAuditLogs(limit: number) {
+  return accountStore
+    .listRequestAudits(Math.min(1000, Math.max(1, Math.floor(limit))))
+    .map((item) => normalizeAuditLog(item))
+}
+
+function normalizeQuotaWindowRemainingPercent(value: number | null | undefined) {
+  return Number.isFinite(value) ? Math.max(0, Math.min(100, Math.round(Number(value)))) : null
+}
+
+function resolveQuotaWindowRemainingPercent(snapshot: AccountQuotaSnapshot | null | undefined, window: "primary" | "secondary") {
+  if (!snapshot || snapshot.status !== "ok" || !isQuotaCacheFresh(snapshot)) return null
+  for (const entry of [snapshot.primary, ...snapshot.additional]) {
+    const remainingPercent =
+      window === "primary"
+        ? normalizeQuotaWindowRemainingPercent(entry?.primary?.remainingPercent)
+        : normalizeQuotaWindowRemainingPercent(entry?.secondary?.remainingPercent)
+    if (remainingPercent !== null) return remainingPercent
+  }
+  return null
+}
+
+function isChatGptOAuthAccount(account: Pick<StoredAccount, "providerId" | "methodId">) {
+  const provider = String(account.providerId ?? "")
+    .trim()
+    .toLowerCase()
+  const method = String(account.methodId ?? "")
+    .trim()
+    .toLowerCase()
+  return provider === "openai" && method !== "api" && method !== "api-key"
+}
+
+function buildPoolRemainingMetrics(now = Date.now()) {
+  const primaryValues: number[] = []
+  const secondaryValues: number[] = []
+  let eligibleAccountCount = 0
+  let quotaKnownAccountCount = 0
+
+  for (const account of accountStore.list()) {
+    if (!isChatGptOAuthAccount(account)) continue
+    const quota = accountQuotaCache.get(account.id) ?? null
+    const derived = resolvePublicAccountDerivedState(account.id, quota)
+    if (derived.routing.state !== "excluded") eligibleAccountCount += 1
+    const primaryRemainPercent = resolveQuotaWindowRemainingPercent(quota, "primary")
+    const secondaryRemainPercent = resolveQuotaWindowRemainingPercent(quota, "secondary")
+    if (primaryRemainPercent !== null) primaryValues.push(primaryRemainPercent)
+    if (secondaryRemainPercent !== null) secondaryValues.push(secondaryRemainPercent)
+    if (primaryRemainPercent !== null || secondaryRemainPercent !== null) quotaKnownAccountCount += 1
+  }
+
+  const average = (values: number[]) =>
+    values.length > 0 ? Math.max(0, Math.min(100, Math.round(values.reduce((sum, value) => sum + value, 0) / values.length))) : null
+
+  return {
+    primaryRemainPercent: average(primaryValues),
+    secondaryRemainPercent: average(secondaryValues),
+    knownPrimaryCount: primaryValues.length,
+    knownSecondaryCount: secondaryValues.length,
+    eligibleAccountCount,
+    quotaKnownAccountCount,
+    refreshedAt: now,
+  }
+}
+
+function buildServiceStatusSummary(now = Date.now()) {
+  const serviceInfo = getSafeServiceAddressInfo(AppConfig.host, AppConfig.port)
+  return {
+    serviceOnline: true,
+    activeLocalServiceAddress: serviceInfo.activeLocalServiceAddress,
+    bindServiceAddress: serviceInfo.bindServiceAddress,
+    preferredClientServiceAddress: serviceInfo.preferredClientServiceAddress,
+    lanServiceAddresses: serviceInfo.lanServiceAddresses,
+    managementAuthEnabled: Boolean(getEffectiveManagementToken()),
+    encryptionKeyConfigured: Boolean(getEffectiveEncryptionKey()),
+    upstreamPrivacyStrict: isStrictUpstreamPrivacyEnabled(),
+    restartRequired: true,
+    checkedAt: now,
+  }
+}
+
+function buildDashboardMetrics() {
+  const now = Date.now()
+  const accounts = accountStore.list()
+  const keys = accountStore.listVirtualApiKeys()
+  const todaySummary = accountStore.getTodayRequestTokenStatsSummary(now)
+  const todayStats = todaySummary.stats
+  const todayTokens = Math.max(0, Math.floor(Number(todayStats?.billableTokens ?? 0)))
+  const cachedInputTokens = Math.max(0, Math.floor(Number(todayStats?.cachedInputTokens ?? 0)))
+  const reasoningOutputTokens = Math.max(0, Math.floor(Number(todayStats?.reasoningOutputTokens ?? 0)))
+  const estimatedCostUsd = Math.max(0, Number(todayStats?.estimatedCostUsd ?? 0))
+  const todayRequestCount = Math.max(0, Math.floor(Number(todayStats?.requestCount ?? 0)))
+  const poolRemaining = buildPoolRemainingMetrics(now)
+  const abnormalByCategory: Record<string, number> = {
+    normal: 0,
+    quota_exhausted: 0,
+    banned: 0,
+    access_banned: 0,
+    auth_invalid: 0,
+    soft_drained: 0,
+    transient: 0,
+    unknown: 0,
+  }
+
+  let accountsHealthy = 0
+  let accountsUnhealthy = 0
+  let accountsEligible = 0
+  let accountsSoftDrained = 0
+  let accountsExcluded = 0
+
+  for (const account of accounts) {
+    const quota = accountQuotaCache.get(account.id) ?? null
+    const derived = resolvePublicAccountDerivedState(account.id, quota)
+    if (derived.health) accountsUnhealthy += 1
+    else accountsHealthy += 1
+
+    if (derived.routing.state === "eligible") accountsEligible += 1
+    else if (derived.routing.state === "soft_drained") accountsSoftDrained += 1
+    else accountsExcluded += 1
+
+    const category = derived.abnormalState?.category ?? "normal"
+    abnormalByCategory[category] = (abnormalByCategory[category] ?? 0) + 1
+  }
+
+  return {
+    refreshedAt: now,
+    providersTotal: providers.listPublic().length,
+    accountsTotal: accounts.length,
+    accountsActive: accounts.filter((item) => item.isActive).length,
+    accountsHealthy,
+    accountsUnhealthy,
+    accountsEligible,
+    accountsSoftDrained,
+    accountsExcluded,
+    abnormalByCategory,
+    virtualKeysTotal: keys.length,
+    virtualKeysRevoked: keys.filter((item) => item.isRevoked).length,
+    virtualKeysPool: keys.filter((item) => item.routingMode === "pool").length,
+    virtualKeysSingle: keys.filter((item) => item.routingMode === "single").length,
+    usageTotals: getUsageTotalsSnapshot(),
+    todayTokens,
+    cachedInputTokens,
+    reasoningOutputTokens,
+    estimatedCostUsd,
+    unpricedRequestCount: todaySummary.unpricedRequestCount,
+    todayRequestCount,
+    poolRemaining,
+    statsTimezone: STATS_TIMEZONE,
+    pricingMode: PRICING_MODE,
+    pricingCatalogVersion: PRICING_CATALOG_VERSION,
+    serviceStatusSummary: buildServiceStatusSummary(now),
+  }
+}
+
+function syncExtendedUsageTotalsStateFromAudits(now = Date.now()) {
+  const summary = accountStore.summarizeRequestAudits()
+  extendedUsageTotalsState.cachedInputTokens = Math.max(0, Math.floor(Number(summary.cachedInputTokens ?? 0)))
+  extendedUsageTotalsState.reasoningOutputTokens = Math.max(0, Math.floor(Number(summary.reasoningOutputTokens ?? 0)))
+  extendedUsageTotalsState.estimatedCostUsd = Math.max(0, Number(summary.estimatedCostUsd ?? 0))
+  extendedUsageTotalsState.updatedAt = now
+}
+
+function bootstrapEstimatedUsageCosts() {
+  const backfillResult = accountStore.backfillRequestAuditEstimatedCosts((audit) =>
+    estimateUsageCostUsd({
+      model: audit.model,
+      promptTokens: audit.inputTokens,
+      cachedInputTokens: audit.cachedInputTokens,
+      completionTokens: audit.outputTokens,
+    }),
+  )
+  accountStore.rebuildRequestTokenStats()
+  syncExtendedUsageTotalsStateFromAudits()
+  if (backfillResult.updatedCount > 0) {
+    console.log(
+      `[oauth-multi-login] backfilled estimated costs for ${backfillResult.updatedCount}/${backfillResult.scannedCount} request audits`,
+    )
+  }
 }
 
 function cleanupExpiredEventStreamTokens(now = Date.now()) {
@@ -3055,6 +4590,7 @@ const quotaExhaustedAccountCooldown = new Map<string, number>()
 type PoolConsistencySuccess = {
   ok: true
   providerId: string
+  cohort: AccountPlanCohort | null
   checkedAt: number
   accountCount: number
   eligibleAccountIds: string[]
@@ -3065,6 +4601,7 @@ type PoolConsistencySuccess = {
 type PoolConsistencyFailure = {
   ok: false
   providerId: string
+  cohort: AccountPlanCohort | null
   checkedAt: number
   code: "pool_consistency_violation"
   message: string
@@ -3090,6 +4627,7 @@ function extractModelID(value: unknown) {
 
 function emitPoolConsistencyWarnings(input: {
   providerId: string
+  cohort: AccountPlanCohort | null
   eligibleCount: number
   accountCount: number
   excludedAccountIds: string[]
@@ -3105,24 +4643,25 @@ function emitPoolConsistencyWarnings(input: {
 
   if (observationOnly) {
     const now = Date.now()
-    const fingerprint = `${input.providerId}:${details}`
-    const cached = poolConsistencyObservationLogCache.get(input.providerId)
+    const observationKey = buildPoolConsistencyCacheKey(input.providerId, input.cohort)
+    const fingerprint = `${observationKey}:${details}`
+    const cached = poolConsistencyObservationLogCache.get(observationKey)
     if (cached && cached.fingerprint === fingerprint && now - cached.loggedAt < POOL_CONSISTENCY_OBSERVATION_LOG_TTL_MS) {
       return
     }
-    poolConsistencyObservationLogCache.set(input.providerId, {
+    poolConsistencyObservationLogCache.set(observationKey, {
       fingerprint,
       loggedAt: now,
     })
     console.info(
-      `[oauth-multi-login] pool consistency observe provider=${input.providerId} eligible=${input.eligibleCount}/${input.accountCount} details=${details}`,
+      `[oauth-multi-login] pool consistency observe provider=${input.providerId} cohort=${input.cohort ?? "all"} eligible=${input.eligibleCount}/${input.accountCount} details=${details}`,
     )
     return
   }
 
-  poolConsistencyObservationLogCache.delete(input.providerId)
+  poolConsistencyObservationLogCache.delete(buildPoolConsistencyCacheKey(input.providerId, input.cohort))
   console.warn(
-    `[oauth-multi-login] pool consistency constrained provider=${input.providerId} eligible=${input.eligibleCount}/${input.accountCount} details=${details}`,
+    `[oauth-multi-login] pool consistency constrained provider=${input.providerId} cohort=${input.cohort ?? "all"} eligible=${input.eligibleCount}/${input.accountCount} details=${details}`,
   )
 }
 
@@ -3305,12 +4844,34 @@ function evictAccountModelsCache(accountId: string) {
   }
 }
 
-function invalidatePoolConsistency(providerId?: string | null) {
+function invalidatePoolConsistency(
+  providerId?: string | null,
+  options?: {
+    account?: StoredAccount | null
+    preferredPlanCohort?: AccountPlanCohort | null
+  },
+) {
   const normalizedProviderId = normalizeIdentity(providerId)?.toLowerCase()
   if (normalizedProviderId) {
-    poolConsistencyCache.delete(normalizedProviderId)
-    poolConsistencyRefreshInFlight.delete(normalizedProviderId)
-    poolConsistencyObservationLogCache.delete(normalizedProviderId)
+    const preferredPlanCohort =
+      options?.preferredPlanCohort ??
+      (options?.account ? resolveAccountPlanCohort(options.account) : null)
+    if (preferredPlanCohort) {
+      const cacheKey = buildPoolConsistencyCacheKey(normalizedProviderId, preferredPlanCohort)
+      poolConsistencyCache.delete(cacheKey)
+      poolConsistencyRefreshInFlight.delete(cacheKey)
+      poolConsistencyObservationLogCache.delete(cacheKey)
+      return
+    }
+    for (const key of [...poolConsistencyCache.keys()]) {
+      if (key.startsWith(`${normalizedProviderId}::`)) poolConsistencyCache.delete(key)
+    }
+    for (const key of [...poolConsistencyRefreshInFlight.keys()]) {
+      if (key.startsWith(`${normalizedProviderId}::`)) poolConsistencyRefreshInFlight.delete(key)
+    }
+    for (const key of [...poolConsistencyObservationLogCache.keys()]) {
+      if (key.startsWith(`${normalizedProviderId}::`)) poolConsistencyObservationLogCache.delete(key)
+    }
     return
   }
   poolConsistencyCache.clear()
@@ -3408,24 +4969,40 @@ function formatPoolConsistencyAccountIDs(accountIds: string[]) {
   return accountIds.map((accountId) => normalizeIdentity(accountId) ?? accountId).join(", ")
 }
 
-function getCachedPoolConsistencySuccess(providerId: string, now = Date.now()) {
+function buildPoolConsistencyCacheKey(providerId: string, cohort?: AccountPlanCohort | null) {
   const normalizedProviderId = (normalizeIdentity(providerId) ?? "chatgpt").toLowerCase()
-  const cached = poolConsistencyCache.get(normalizedProviderId)
+  const normalizedCohort = cohort ?? "all"
+  return `${normalizedProviderId}::${normalizedCohort}`
+}
+
+function getCachedPoolConsistencySuccess(
+  providerId: string,
+  now = Date.now(),
+  options?: { preferredPlanCohort?: AccountPlanCohort | null },
+) {
+  const cached = poolConsistencyCache.get(buildPoolConsistencyCacheKey(providerId, options?.preferredPlanCohort ?? null))
   if (!cached?.ok) return null
   if (now - cached.checkedAt > POOL_CONSISTENCY_TTL_MS) return null
   return cached
 }
 
-function getCachedPoolConsistencyResult(providerId: string, now = Date.now()) {
-  const normalizedProviderId = (normalizeIdentity(providerId) ?? "chatgpt").toLowerCase()
-  const cached = poolConsistencyCache.get(normalizedProviderId)
+function getCachedPoolConsistencyResult(
+  providerId: string,
+  now = Date.now(),
+  options?: { preferredPlanCohort?: AccountPlanCohort | null },
+) {
+  const cached = poolConsistencyCache.get(buildPoolConsistencyCacheKey(providerId, options?.preferredPlanCohort ?? null))
   if (!cached) return null
   if (now - cached.checkedAt > POOL_CONSISTENCY_TTL_MS) return null
   return cached
 }
 
-async function evaluateProviderPoolConsistency(providerId: string): Promise<PoolConsistencyResult> {
+async function evaluateProviderPoolConsistency(
+  providerId: string,
+  options?: { preferredPlanCohort?: AccountPlanCohort | null },
+): Promise<PoolConsistencyResult> {
   const normalizedProviderId = (normalizeIdentity(providerId) ?? "chatgpt").toLowerCase()
+  const preferredPlanCohort = options?.preferredPlanCohort ?? null
   const checkedAt = Date.now()
   const candidates = accountStore
     .list()
@@ -3433,6 +5010,7 @@ async function evaluateProviderPoolConsistency(providerId: string): Promise<Pool
       (account) =>
         account.providerId.toLowerCase() === normalizedProviderId &&
         Boolean(account.accessToken) &&
+        (preferredPlanCohort === null || resolveAccountPlanCohort(account) === preferredPlanCohort) &&
         !isStickyAccountHealthSnapshot(getActiveAccountHealthSnapshot(account.id, checkedAt)),
     )
 
@@ -3440,6 +5018,7 @@ async function evaluateProviderPoolConsistency(providerId: string): Promise<Pool
     return {
       ok: true,
       providerId: normalizedProviderId,
+      cohort: preferredPlanCohort,
       checkedAt,
       accountCount: candidates.length,
       eligibleAccountIds: candidates.map((account) => account.id),
@@ -3544,6 +5123,7 @@ async function evaluateProviderPoolConsistency(providerId: string): Promise<Pool
     return {
       ok: true,
       providerId: normalizedProviderId,
+      cohort: preferredPlanCohort,
       checkedAt,
       accountCount: candidates.length,
       eligibleAccountIds: eligibleAccounts.map((account) => account.id),
@@ -3588,6 +5168,7 @@ async function evaluateProviderPoolConsistency(providerId: string): Promise<Pool
 
   emitPoolConsistencyWarnings({
     providerId: normalizedProviderId,
+    cohort: preferredPlanCohort,
     eligibleCount: eligibleAccounts.length,
     accountCount: candidates.length,
     excludedAccountIds: [...excludedAccountIds],
@@ -3597,6 +5178,7 @@ async function evaluateProviderPoolConsistency(providerId: string): Promise<Pool
   return {
     ok: true,
     providerId: normalizedProviderId,
+    cohort: preferredPlanCohort,
     checkedAt,
     accountCount: candidates.length,
     eligibleAccountIds: eligibleAccounts.map((account) => account.id),
@@ -3605,31 +5187,48 @@ async function evaluateProviderPoolConsistency(providerId: string): Promise<Pool
   }
 }
 
-async function getProviderPoolConsistency(providerId: string, options?: { force?: boolean }) {
+async function getProviderPoolConsistency(
+  providerId: string,
+  options?: { force?: boolean; preferredPlanCohort?: AccountPlanCohort | null },
+) {
   const normalizedProviderId = (normalizeIdentity(providerId) ?? "chatgpt").toLowerCase()
+  const preferredPlanCohort = options?.preferredPlanCohort ?? null
+  const cacheKey = buildPoolConsistencyCacheKey(normalizedProviderId, preferredPlanCohort)
   const force = options?.force === true
   if (!force) {
-    const cached = poolConsistencyCache.get(normalizedProviderId)
+    const cached = poolConsistencyCache.get(cacheKey)
     if (cached && Date.now() - cached.checkedAt <= POOL_CONSISTENCY_TTL_MS) {
       return cached
     }
   }
 
-  const inFlight = poolConsistencyRefreshInFlight.get(normalizedProviderId)
+  const inFlight = poolConsistencyRefreshInFlight.get(cacheKey)
   if (inFlight) return inFlight
 
   const refreshTask = (async () => {
-    const result = await evaluateProviderPoolConsistency(normalizedProviderId)
-    poolConsistencyCache.set(normalizedProviderId, result)
+    const result = await evaluateProviderPoolConsistency(normalizedProviderId, {
+      preferredPlanCohort,
+    })
+    poolConsistencyCache.set(cacheKey, result)
     return result
   })()
 
-  poolConsistencyRefreshInFlight.set(normalizedProviderId, refreshTask)
+  poolConsistencyRefreshInFlight.set(cacheKey, refreshTask)
   try {
     return await refreshTask
   } finally {
-    poolConsistencyRefreshInFlight.delete(normalizedProviderId)
+    poolConsistencyRefreshInFlight.delete(cacheKey)
   }
+}
+
+function refreshProviderPoolConsistencyInBackground(providerId: string, preferredPlanCohort?: AccountPlanCohort | null) {
+  handleBackgroundPromise(
+    `refreshProviderPoolConsistency:${providerId}:${preferredPlanCohort ?? "all"}`,
+    getProviderPoolConsistency(providerId, {
+      force: true,
+      preferredPlanCohort: preferredPlanCohort ?? null,
+    }),
+  )
 }
 
 function toPoolConsistencyErrorResponse(result: PoolConsistencyFailure) {
@@ -3703,8 +5302,12 @@ function collectProviderUnhealthyExclusions(providerId: string, options?: { incl
   return excluded
 }
 
-function collectProviderConsistencyExclusions(providerId: string, now = Date.now()) {
-  const cached = getCachedPoolConsistencySuccess(providerId, now)
+function collectProviderConsistencyExclusions(
+  providerId: string,
+  now = Date.now(),
+  options?: { preferredPlanCohort?: AccountPlanCohort | null },
+) {
+  const cached = getCachedPoolConsistencySuccess(providerId, now, options)
   return cached?.excludedAccountIds ?? []
 }
 
@@ -3721,19 +5324,24 @@ function resolveAccountRoutingExclusionReason(accountId: string, now = Date.now(
   if (quotaExhaustedAccountCooldown.has(normalizedAccountId)) return "quota_exhausted_cooldown"
   const account = accountStore.get(normalizedAccountId)
   if (account) {
-    const consistency = getCachedPoolConsistencySuccess(account.providerId, now)
+    const consistency = getCachedPoolConsistencySuccess(account.providerId, now, {
+      preferredPlanCohort: resolveAccountPlanCohort(account),
+    })
     if (consistency?.excludedAccountIds.includes(normalizedAccountId)) {
       return "pool_consistency_excluded"
     }
   }
   const headroom = resolveQuotaSnapshotHeadroomPercent(accountQuotaCache.get(normalizedAccountId), now)
   if (Number.isFinite(headroom) && Number(headroom) <= 0) return "quota_headroom_exhausted"
+  if (Number.isFinite(headroom) && Number(headroom) <= ACCOUNT_SOFT_DRAIN_REMAINING_PERCENT_THRESHOLD) {
+    return "quota_headroom_low"
+  }
   return "routing_excluded"
 }
 
 async function detectQuotaExhaustedUpstreamResponse(response: Response) {
   const status = Number(response.status ?? 0)
-  if (status !== 429 && status !== 403) {
+  if (status !== 429 && status !== 403 && status !== 402) {
     return { matched: false as const }
   }
 
@@ -3799,7 +5407,7 @@ async function detectQuotaExhaustedUpstreamResponse(response: Response) {
 
 async function detectQuotaExhaustedChatError(error: unknown) {
   const status = Number((error as { statusCode?: unknown } | null)?.statusCode ?? NaN)
-  if (!Number.isFinite(status) || (status !== 429 && status !== 403)) {
+  if (!Number.isFinite(status) || (status !== 429 && status !== 403 && status !== 402)) {
     return { matched: false as const }
   }
 
@@ -4221,27 +5829,48 @@ async function requestUpstreamWithPolicy(input: {
   accountId?: string
   routeTag: string
   policyOverride?: Partial<UpstreamRetryPolicy>
+  recordBehaviorResult?: boolean
 }) {
   const policy: UpstreamRetryPolicy = {
     ...upstreamRetryPolicy,
     ...input.policyOverride,
   }
-  return fetchWithUpstreamRetry({
-    url: input.url,
-    method: input.method,
-    headers: input.headers,
-    body: input.body,
-    policy,
-    onRetry: (ctx) => {
-      const accountPart = input.accountId ? ` account=${input.accountId}` : ""
-      const message = `[oauth-multi-login] upstream retry route=${input.routeTag}${accountPart} attempt=${ctx.attempt}/${ctx.maxAttempts} reason=${ctx.reason} delay_ms=${ctx.delayMs}`
-      if (input.routeTag === "/api/accounts/quota") {
-        console.log(`${message} transient=true`)
-      } else {
-        console.warn(message)
-      }
-    },
-  })
+  const startedAt = Date.now()
+  try {
+    const result = await fetchWithUpstreamRetry({
+      url: input.url,
+      method: input.method,
+      headers: input.headers,
+      body: input.body,
+      policy,
+      onRetry: (ctx) => {
+        const accountPart = input.accountId ? ` account=${input.accountId}` : ""
+        const message = `[oauth-multi-login] upstream retry route=${input.routeTag}${accountPart} attempt=${ctx.attempt}/${ctx.maxAttempts} reason=${ctx.reason} delay_ms=${ctx.delayMs}`
+        if (input.routeTag === "/api/accounts/quota") {
+          console.log(`${message} transient=true`)
+        } else {
+          console.warn(message)
+        }
+      },
+    })
+    if (input.recordBehaviorResult && input.accountId) {
+      behaviorController.recordResult({
+        accountId: input.accountId,
+        latencyMs: Date.now() - startedAt,
+        failed: !result.response.ok,
+      })
+    }
+    return result
+  } catch (error) {
+    if (input.recordBehaviorResult && input.accountId) {
+      behaviorController.recordResult({
+        accountId: input.accountId,
+        latencyMs: Date.now() - startedAt,
+        failed: true,
+      })
+    }
+    throw error
+  }
 }
 
 async function fetchModelsSnapshotFromUpstream(input: {
@@ -4436,32 +6065,32 @@ async function proxyOpenAIModelsRequest(input: {
   })
 }
 
-async function trackUsageFromStream(input: { accountId: string; keyId?: string; stream: ReadableStream<Uint8Array> }) {
+async function trackUsageFromStream(input: {
+  accountId: string
+  keyId?: string
+  stream: ReadableStream<Uint8Array>
+  auditId?: string
+  providerId?: string | null
+  virtualKeyId?: string | null
+  model?: string | null
+  sessionId?: string | null
+  reasoningEffort?: string | null
+}) {
   try {
     const { payload, usage: streamUsage } = await readCodexStream(new Response(input.stream))
     const usage = hasUsageDelta(streamUsage) ? streamUsage : normalizeUsage(payload)
-    if (hasUsageDelta(usage)) {
-      accountStore.addUsage({
-        id: input.accountId,
-        promptTokens: usage.promptTokens,
-        completionTokens: usage.completionTokens,
-        totalTokens: usage.totalTokens,
-      })
-      if (input.keyId) {
-        accountStore.addVirtualKeyUsage({
-          id: input.keyId,
-          promptTokens: usage.promptTokens,
-          completionTokens: usage.completionTokens,
-          totalTokens: usage.totalTokens,
-        })
-      }
-      emitUsageUpdated({
-        accountId: input.accountId,
-        keyId: input.keyId,
-        usage,
-        source: "proxy-stream",
-      })
-    }
+    recordUsageMetrics({
+      accountId: input.accountId,
+      keyId: input.keyId,
+      usage,
+      source: "proxy-stream",
+      auditId: input.auditId,
+      providerId: input.providerId ?? null,
+      virtualKeyId: input.virtualKeyId ?? input.keyId ?? null,
+      model: input.model ?? null,
+      sessionId: input.sessionId ?? null,
+      reasoningEffort: input.reasoningEffort ?? null,
+    })
   } catch (error) {
     console.warn(
       `[oauth-multi-login] usage track failed source=proxy-stream account=${input.accountId} key=${input.keyId ?? "-"} reason=${errorMessage(error)}`,
@@ -4701,32 +6330,34 @@ async function resolveUpstreamAccountAuth(account: StoredAccount, options?: { fo
   return ensureChatgptAccountAccess(account)
 }
 
-async function trackUsageFromJsonStream(input: { accountId: string; keyId?: string; stream: ReadableStream<Uint8Array> }) {
+async function trackUsageFromJsonStream(input: {
+  accountId: string
+  keyId?: string
+  stream: ReadableStream<Uint8Array>
+  auditId?: string
+  providerId?: string | null
+  virtualKeyId?: string | null
+  model?: string | null
+  sessionId?: string | null
+  reasoningEffort?: string | null
+}) {
   try {
     const text = await new Response(input.stream).text()
     if (!text) return
     const parsed = await extractUsageFromStructuredResponseText(text)
     const usage = parsed.usage
     if (hasUsageDelta(usage)) {
-      accountStore.addUsage({
-        id: input.accountId,
-        promptTokens: usage.promptTokens,
-        completionTokens: usage.completionTokens,
-        totalTokens: usage.totalTokens,
-      })
-      if (input.keyId) {
-        accountStore.addVirtualKeyUsage({
-          id: input.keyId,
-          promptTokens: usage.promptTokens,
-          completionTokens: usage.completionTokens,
-          totalTokens: usage.totalTokens,
-        })
-      }
-      emitUsageUpdated({
+      recordUsageMetrics({
         accountId: input.accountId,
         keyId: input.keyId,
         usage,
         source: "proxy-json",
+        auditId: input.auditId,
+        providerId: input.providerId ?? null,
+        virtualKeyId: input.virtualKeyId ?? input.keyId ?? null,
+        model: input.model ?? null,
+        sessionId: input.sessionId ?? null,
+        reasoningEffort: input.reasoningEffort ?? null,
       })
       return
     }
@@ -4800,6 +6431,7 @@ async function runChatWithAccount(input: {
   if (input.account.providerId !== "chatgpt") {
     throw new Error("Only ChatGPT OAuth accounts support this chat endpoint")
   }
+  ensureAutomaticAccountAvailable(input.account)
 
   const sessionId = input.sessionId || crypto.randomUUID()
   const auth = await ensureChatgptAccountAccess(input.account)
@@ -4844,7 +6476,8 @@ async function runChatWithAccount(input: {
       body: requestBodyBytes,
       accountId: input.account.id,
       routeTag: "/api/chat",
-      policyOverride: input.keyId ? { retry5xx: false, retryTransport: false } : undefined,
+      policyOverride: INTERACTIVE_FAST_RETRY_POLICY,
+      recordBehaviorResult: true,
     })
   ).response
 
@@ -4865,18 +6498,31 @@ async function runChatWithAccount(input: {
         body: requestBodyBytes,
         accountId: input.account.id,
         routeTag: "/api/chat",
-        policyOverride: input.keyId ? { retry5xx: false, retryTransport: false } : undefined,
+        policyOverride: INTERACTIVE_FAST_RETRY_POLICY,
+        recordBehaviorResult: true,
       })
     ).response
   }
 
   if (!chatResponse.ok) {
     const body = await chatResponse.text().catch(() => "")
+    const quotaSignal = await detectQuotaExhaustedUpstreamResponse(
+      new Response(body, {
+        status: chatResponse.status,
+        headers: chatResponse.headers,
+      }),
+    )
     const blocked = detectRoutingBlockedAccount({
       statusCode: chatResponse.status,
       text: body,
     })
-    if (blocked.matched) {
+    if (quotaSignal.matched) {
+      markAccountQuotaExhausted(input.account.id)
+      handleBackgroundPromise(
+        "refreshAndEmitAccountQuota:chat-usage-limit-reached",
+        refreshAndEmitAccountQuota(input.account.id, "chat-usage-limit-reached"),
+      )
+    } else if (blocked.matched) {
       markAccountUnhealthy(input.account.id, blocked.reason, "chat")
       evictAccountModelsCache(input.account.id)
     }
@@ -4891,28 +6537,12 @@ async function runChatWithAccount(input: {
 
   const { payload, reply, usage: streamUsage } = await readCodexStream(chatResponse)
   const usage = hasUsageDelta(streamUsage) ? streamUsage : normalizeUsage(payload)
-  if (hasUsageDelta(usage)) {
-    accountStore.addUsage({
-      id: input.account.id,
-      promptTokens: usage.promptTokens,
-      completionTokens: usage.completionTokens,
-      totalTokens: usage.totalTokens,
-    })
-    if (input.keyId) {
-      accountStore.addVirtualKeyUsage({
-        id: input.keyId,
-        promptTokens: usage.promptTokens,
-        completionTokens: usage.completionTokens,
-        totalTokens: usage.totalTokens,
-      })
-    }
-    emitUsageUpdated({
-      accountId: input.account.id,
-      keyId: input.keyId,
-      usage,
-      source: input.keyId ? "virtual-key-chat" : "chat",
-    })
-  }
+  recordUsageMetrics({
+    accountId: input.account.id,
+    keyId: input.keyId,
+    usage,
+    source: input.keyId ? "virtual-key-chat" : "chat",
+  })
 
   history.push({ role: "user", text: input.message })
   if (reply) history.push({ role: "assistant", text: reply })
@@ -5006,6 +6636,7 @@ app.post("/api/events/token", (c) => {
 
 app.get("/api/settings", (c) =>
   {
+    const now = Date.now()
     const serviceInfo = getSafeServiceAddressInfo(AppConfig.host, AppConfig.port)
     return c.json({
       settings: {
@@ -5018,6 +6649,10 @@ app.get("/api/settings", (c) =>
         encryptionKeyConfigured: Boolean(getEffectiveEncryptionKey()),
         upstreamPrivacyStrict: isStrictUpstreamPrivacyEnabled(),
         restartRequired: true,
+        statsTimezone: STATS_TIMEZONE,
+        pricingMode: PRICING_MODE,
+        pricingCatalogVersion: PRICING_CATALOG_VERSION,
+        serviceStatusSummary: buildServiceStatusSummary(now),
       },
     })
   },
@@ -5061,6 +6696,10 @@ app.post("/api/settings", async (c) => {
         encryptionKeyConfigured: Boolean(getEffectiveEncryptionKey()),
         upstreamPrivacyStrict: isStrictUpstreamPrivacyEnabled(),
         restartRequired: true,
+        statsTimezone: STATS_TIMEZONE,
+        pricingMode: PRICING_MODE,
+        pricingCatalogVersion: PRICING_CATALOG_VERSION,
+        serviceStatusSummary: buildServiceStatusSummary(),
       },
       warnings,
     })
@@ -5122,15 +6761,60 @@ app.post("/api/bootstrap/logs/clear", async (c) => {
 })
 
 app.get("/api/audits", (c) => {
-  const limit = parseHeaderNumber(c.req.query("limit") ?? "200")
-  const logs = accountStore.listRequestAudits(limit > 0 ? limit : 200)
-  return c.json({ logs })
+  const query = String(c.req.query("query") ?? c.req.query("q") ?? "").trim()
+  const statusGroup = String(c.req.query("statusGroup") ?? c.req.query("status") ?? c.req.query("statusFamily") ?? "all").trim()
+  const page = Math.max(1, parseHeaderNumber(c.req.query("page") ?? "1") || 1)
+  const pageSize = Math.min(200, Math.max(1, parseHeaderNumber(c.req.query("pageSize") ?? "20") || 20))
+  const result = accountStore.listRequestAuditsPaginated({
+    query,
+    statusFilter: statusGroup,
+    page,
+    pageSize,
+  })
+  const logs = result.items.map((item) => normalizeAuditLog(item))
+  const summary = accountStore.summarizeRequestAudits({
+    query,
+    statusFilter: statusGroup,
+  })
+  return c.json({
+    logs,
+    items: logs,
+    total: result.total,
+    page: result.page,
+    pageSize: result.pageSize,
+    hasMore: result.page * result.pageSize < result.total,
+    summary,
+    filters: {
+      query,
+      statusGroup,
+    },
+  })
+})
+
+app.get("/api/audits/summary", (c) => {
+  const query = String(c.req.query("query") ?? c.req.query("q") ?? "").trim()
+  const statusGroup = String(c.req.query("statusGroup") ?? c.req.query("status") ?? c.req.query("statusFamily") ?? "all").trim()
+  const summary = accountStore.summarizeRequestAudits({
+    query,
+    statusFilter: statusGroup,
+  })
+  return c.json({
+    summary,
+    total: summary.filteredCount,
+    filters: {
+      query,
+      statusGroup,
+    },
+  })
 })
 
 app.post("/api/audits/clear", (c) => {
   accountStore.clearRequestAudits()
+  requestAuditOverlays.clear()
   return c.json({ success: true })
 })
+
+app.get("/api/dashboard/metrics", (c) => c.json({ metrics: buildDashboardMetrics() }))
 
 app.get("/api/providers", () =>
   Response.json({
@@ -5153,9 +6837,6 @@ app.get("/v1/models", async (c) => {
     sessionId: context.sessionId,
   })
   if (!consistentContext.ok) {
-    if (consistentContext.type === "consistency") {
-      return toPoolConsistencyErrorResponse(consistentContext.poolConsistency)
-    }
     return c.json({ error: "No healthy accounts available for pool routing" }, 503)
   }
   const resolvedContext = consistentContext.resolved
@@ -5242,9 +6923,6 @@ app.get("/v1/models/:id", async (c) => {
     sessionId: context.sessionId,
   })
   if (!consistentContext.ok) {
-    if (consistentContext.type === "consistency") {
-      return toPoolConsistencyErrorResponse(consistentContext.poolConsistency)
-    }
     return c.json({ error: "No healthy accounts available for pool routing" }, 503)
   }
   const resolvedContext = consistentContext.resolved
@@ -5339,7 +7017,8 @@ app.get("/api/accounts", async (c) => {
   }
   return c.json({
     accounts: accounts.map((account) => toPublicAccount(account, accountQuotaCache.get(account.id) ?? null)),
-    usageTotals: accountStore.getUsageTotals(),
+    usageTotals: getUsageTotalsSnapshot(),
+    dashboardMetrics: buildDashboardMetrics(),
   })
 })
 
@@ -5413,10 +7092,11 @@ app.post("/api/accounts/api-key", async (c) => {
         projectId: normalizeIdentity(input.projectId),
       },
     })
-    invalidatePoolConsistency(input.providerId)
+    const account = accountStore.get(accountID)
+    invalidatePoolConsistency(input.providerId, account ? { account } : undefined)
     return c.json({
       success: true,
-      account: accountStore.get(accountID),
+      account,
     })
   } catch (error) {
     return c.json({ error: errorMessage(error) }, 400)
@@ -5747,8 +7427,12 @@ app.post("/api/bridge/oauth/sync", async (c) => {
         isOrgOwner: resolvedIsOrgOwner,
       },
     })
-    invalidatePoolConsistency(input.providerId)
-    void refreshAndEmitAccountQuota(accountID, "bridge-oauth-sync")
+    const syncedAccount = accountStore.get(accountID)
+    invalidatePoolConsistency(input.providerId, syncedAccount ? { account: syncedAccount } : undefined)
+    handleBackgroundPromise(
+      "refreshAndEmitAccountQuota:bridge-oauth-sync",
+      refreshAndEmitAccountQuota(accountID, "bridge-oauth-sync"),
+    )
     const account = accountStore.get(accountID)
     let virtualKey: { key: string; record: unknown } | undefined
     if (input.issueVirtualKey) {
@@ -5839,8 +7523,12 @@ app.post("/api/accounts/:id/refresh", async (c) => {
       accountId: result.accountId ?? account.accountId,
     })
     markAccountHealthy(accountID, "account-refresh")
-    invalidatePoolConsistency(account.providerId)
-    void refreshAndEmitAccountQuota(accountID, "account-refresh")
+    const refreshedAccount = accountStore.get(accountID)
+    invalidatePoolConsistency(account.providerId, refreshedAccount ? { account: refreshedAccount } : undefined)
+    handleBackgroundPromise(
+      "refreshAndEmitAccountQuota:account-refresh",
+      refreshAndEmitAccountQuota(accountID, "account-refresh"),
+    )
 
     return c.json({
       success: true,
@@ -5883,16 +7571,22 @@ async function proxyVirtualKeyCodexRequest(c: any, upstreamPath = "/responses") 
   let auditKeyId: string | null = null
   let auditModel: string | null = null
   let auditSessionId: string | null = null
+  let auditReasoningEffort: string | null = null
   let outgoingBody: Uint8Array | undefined = undefined
   let behaviorRelease: (() => void) | null = null
   let auditRoutingMode = "single"
+  const writeAudit = (input: Omit<RequestAuditCompatInput, "route" | "method" | "reasoningEffort">) =>
+    writeRequestAuditCompat({
+      route,
+      method,
+      reasoningEffort: auditReasoningEffort,
+      ...input,
+    })
 
   try {
     const bearer = extractBearerToken(c.req.header("authorization"))
     if (!bearer) {
-      accountStore.addRequestAudit({
-        route,
-        method,
+      writeAudit({
         statusCode: 401,
         latencyMs: Date.now() - startedAt,
         error: "Missing Authorization Bearer token",
@@ -5908,6 +7602,7 @@ async function proxyVirtualKeyCodexRequest(c: any, upstreamPath = "/responses") 
       contentType: c.req.header("content-type"),
     })
     auditModel = auditFields.model
+    auditReasoningEffort = auditFields.reasoningEffort
     const sessionRouteId = resolveSessionRouteID({
       headers: c.req.raw.headers,
       requestUrl: c.req.url,
@@ -5917,9 +7612,7 @@ async function proxyVirtualKeyCodexRequest(c: any, upstreamPath = "/responses") 
 
     const resolved = resolveVirtualApiKeyWithPoolFallback(bearer, sessionRouteId)
     if (!resolved) {
-      accountStore.addRequestAudit({
-        route,
-        method,
+      writeAudit({
         statusCode: 401,
         latencyMs: Date.now() - startedAt,
         error: "Invalid, revoked, or expired virtual API key",
@@ -5933,9 +7626,7 @@ async function proxyVirtualKeyCodexRequest(c: any, upstreamPath = "/responses") 
       sessionId: sessionRouteId,
     })
     if (!eligibleResolved) {
-      accountStore.addRequestAudit({
-        route,
-        method,
+      writeAudit({
         virtualKeyId: resolved.key.id,
         providerId: resolved.key.providerId,
         statusCode: 503,
@@ -5951,27 +7642,7 @@ async function proxyVirtualKeyCodexRequest(c: any, upstreamPath = "/responses") 
       sessionId: sessionRouteId,
     })
     if (!consistentResolved.ok) {
-      if (consistentResolved.type === "consistency") {
-        accountStore.addRequestAudit({
-          route,
-          method,
-          providerId: auditProviderId,
-          accountId: auditAccountId,
-          virtualKeyId: auditKeyId,
-          model: auditModel,
-          sessionId: auditSessionId,
-          requestBytes: outgoingBody?.byteLength ?? 0,
-          requestBody: outgoingBody,
-          statusCode: 409,
-          latencyMs: Date.now() - startedAt,
-          error: `${consistentResolved.poolConsistency.code}: ${consistentResolved.poolConsistency.message}`,
-          clientTag,
-        })
-        return toPoolConsistencyErrorResponse(consistentResolved.poolConsistency)
-      }
-      accountStore.addRequestAudit({
-        route,
-        method,
+      writeAudit({
         virtualKeyId: eligibleResolved.key.id,
         providerId: eligibleResolved.key.providerId,
         statusCode: 503,
@@ -5996,9 +7667,7 @@ async function proxyVirtualKeyCodexRequest(c: any, upstreamPath = "/responses") 
     })
     if (!behaviorDecision.ok) {
       const retryAfterSeconds = behaviorDecision.retryAfterMs ? Math.max(1, Math.ceil(behaviorDecision.retryAfterMs / 1000)) : undefined
-      accountStore.addRequestAudit({
-        route,
-        method,
+      writeAudit({
         providerId: auditProviderId,
         accountId: auditAccountId,
         virtualKeyId: auditKeyId,
@@ -6041,9 +7710,7 @@ async function proxyVirtualKeyCodexRequest(c: any, upstreamPath = "/responses") 
       const normalizedFailure = buildUpstreamAccountUnavailableFailure({
         routingMode: key.routingMode,
       })
-      accountStore.addRequestAudit({
-        route,
-        method,
+      writeAudit({
         providerId: auditProviderId,
         accountId: auditAccountId,
         virtualKeyId: auditKeyId,
@@ -6063,7 +7730,11 @@ async function proxyVirtualKeyCodexRequest(c: any, upstreamPath = "/responses") 
       })
     }
     const selectReroutedPoolAccount = (failedAccountId: string) => {
-      const routingHints = buildProviderRoutingHints(key.providerId)
+      const failedAccount = accountStore.get(failedAccountId)
+      const preferredPlanCohort = failedAccount ? resolveAccountPlanCohort(failedAccount) : null
+      const routingHints = buildProviderRoutingHints(key.providerId, Date.now(), {
+        preferredPlanCohort,
+      })
       const excluded = new Set<string>([...routingHints.excludeAccountIds, ...rerouteTriedAccounts])
 
       let reRoutedAccount = sessionRouteId
@@ -6075,18 +7746,22 @@ async function proxyVirtualKeyCodexRequest(c: any, upstreamPath = "/responses") 
             excludeAccountIds: [...excluded],
             deprioritizedAccountIds: routingHints.deprioritizedAccountIds,
             headroomByAccountId: routingHints.headroomByAccountId,
+            pressureScoreByAccountId: routingHints.pressureScoreByAccountId,
           })
-        : accountStore.reassignVirtualKeyRoute({
-            keyId: key.id,
-            providerId: key.providerId,
-            failedAccountId,
-            excludeAccountIds: [...excluded],
-            deprioritizedAccountIds: routingHints.deprioritizedAccountIds,
-            headroomByAccountId: routingHints.headroomByAccountId,
-          })
+      : accountStore.reassignVirtualKeyRoute({
+          keyId: key.id,
+          providerId: key.providerId,
+          failedAccountId,
+          excludeAccountIds: [...excluded],
+          deprioritizedAccountIds: routingHints.deprioritizedAccountIds,
+          headroomByAccountId: routingHints.headroomByAccountId,
+          pressureScoreByAccountId: routingHints.pressureScoreByAccountId,
+        })
 
       if (!reRoutedAccount) {
-        const relaxedHints = buildRelaxedProviderRoutingHints(key.providerId)
+        const relaxedHints = buildRelaxedProviderRoutingHints(key.providerId, Date.now(), {
+          preferredPlanCohort,
+        })
         const relaxedExcluded = new Set<string>([...relaxedHints.excludeAccountIds, ...rerouteTriedAccounts])
         reRoutedAccount = sessionRouteId
           ? accountStore.reassignVirtualKeySessionRoute({
@@ -6097,15 +7772,17 @@ async function proxyVirtualKeyCodexRequest(c: any, upstreamPath = "/responses") 
               excludeAccountIds: [...relaxedExcluded],
               deprioritizedAccountIds: relaxedHints.deprioritizedAccountIds,
               headroomByAccountId: relaxedHints.headroomByAccountId,
+              pressureScoreByAccountId: relaxedHints.pressureScoreByAccountId,
             })
-          : accountStore.reassignVirtualKeyRoute({
-              keyId: key.id,
-              providerId: key.providerId,
-              failedAccountId,
-              excludeAccountIds: [...relaxedExcluded],
-              deprioritizedAccountIds: relaxedHints.deprioritizedAccountIds,
-              headroomByAccountId: relaxedHints.headroomByAccountId,
-            })
+        : accountStore.reassignVirtualKeyRoute({
+            keyId: key.id,
+            providerId: key.providerId,
+            failedAccountId,
+            excludeAccountIds: [...relaxedExcluded],
+            deprioritizedAccountIds: relaxedHints.deprioritizedAccountIds,
+            headroomByAccountId: relaxedHints.headroomByAccountId,
+            pressureScoreByAccountId: relaxedHints.pressureScoreByAccountId,
+          })
       }
 
       if (!reRoutedAccount || rerouteTriedAccounts.has(reRoutedAccount.id)) {
@@ -6116,23 +7793,34 @@ async function proxyVirtualKeyCodexRequest(c: any, upstreamPath = "/responses") 
 
     let auth: { accessToken: string; accountId?: string } = { accessToken: "" }
     let headers = new Headers()
+    const originalUpstreamRequestBody = outgoingBody
+      ? (() => {
+          const bodyCopy = new Uint8Array(outgoingBody.byteLength)
+          bodyCopy.set(outgoingBody)
+          return bodyCopy
+        })()
+      : undefined
     let upstreamRequestBody: Uint8Array | undefined
-    if (outgoingBody) {
-      const bodyCopy = new Uint8Array(outgoingBody.byteLength)
-      bodyCopy.set(outgoingBody)
-      upstreamRequestBody = bodyCopy
-    }
-    const bodySanitized = sanitizeUpstreamJsonBody({
-      body: upstreamRequestBody,
-      contentType: c.req.header("content-type"),
-      strictPrivacy: isStrictUpstreamPrivacyEnabled(),
-      accountId: account.id,
-    })
-    upstreamRequestBody = bodySanitized.body
-    if (bodySanitized.strippedFields.length > 0) {
-      console.log(
-        `[oauth-multi-login] strict-privacy sanitized request fields route=${route} key=${auditKeyId ?? "-"} fields=${bodySanitized.strippedFields.join(",")}`,
-      )
+    const buildRequestBodyForCurrentAccount = () => {
+      const source = originalUpstreamRequestBody
+        ? (() => {
+            const bodyCopy = new Uint8Array(originalUpstreamRequestBody.byteLength)
+            bodyCopy.set(originalUpstreamRequestBody)
+            return bodyCopy
+          })()
+        : undefined
+      const bodySanitized = sanitizeUpstreamJsonBody({
+        body: source,
+        contentType: c.req.header("content-type"),
+        strictPrivacy: isStrictUpstreamPrivacyEnabled(),
+        accountId: account.id,
+      })
+      if (bodySanitized.strippedFields.length > 0) {
+        console.log(
+          `[oauth-multi-login] strict-privacy sanitized request fields route=${route} key=${auditKeyId ?? "-"} account=${account.id} fields=${bodySanitized.strippedFields.join(",")}`,
+        )
+      }
+      return bodySanitized.body
     }
 
     const runUpstreamRequest = async (requestHeaders: Headers) =>
@@ -6150,19 +7838,22 @@ async function proxyVirtualKeyCodexRequest(c: any, upstreamPath = "/responses") 
           body: upstreamRequestBody,
           accountId: account.id,
           routeTag: route,
-          policyOverride: key.routingMode === "pool" ? { retry5xx: false, retryTransport: false } : undefined,
+          policyOverride: key.routingMode === "pool" ? POOL_FAIL_FAST_RETRY_POLICY : undefined,
+          recordBehaviorResult: true,
         })
       ).response
 
     const attemptUpstreamForCurrentAccount = async () => {
       auth = await resolveUpstreamAccountAuth(account)
       headers = buildHeadersForCurrentAccount(auth)
+      upstreamRequestBody = buildRequestBodyForCurrentAccount()
       let currentUpstream = await runUpstreamRequest(headers)
 
       if (currentUpstream.status === 401 && profile.canRefreshOn401) {
         const latest = accountStore.get(account.id) ?? account
         auth = await resolveUpstreamAccountAuth(latest, { forceRefresh: true })
         headers = buildHeadersForCurrentAccount(auth)
+        upstreamRequestBody = buildRequestBodyForCurrentAccount()
         currentUpstream = await runUpstreamRequest(headers)
       }
 
@@ -6227,7 +7918,10 @@ async function proxyVirtualKeyCodexRequest(c: any, upstreamPath = "/responses") 
           evictAccountModelsCache(failedAccountId)
         } else if (quotaSignal.matched) {
           markAccountQuotaExhausted(failedAccountId)
-          void refreshAndEmitAccountQuota(failedAccountId, "proxy-usage-limit-reached")
+          handleBackgroundPromise(
+            "refreshAndEmitAccountQuota:proxy-usage-limit-reached",
+            refreshAndEmitAccountQuota(failedAccountId, "proxy-usage-limit-reached"),
+          )
         } else {
           markAccountUnhealthy(failedAccountId, transientSignal.reason ?? "upstream_http_502", "responses")
         }
@@ -6249,11 +7943,13 @@ async function proxyVirtualKeyCodexRequest(c: any, upstreamPath = "/responses") 
 
           auth = await resolveUpstreamAccountAuth(account)
           headers = buildHeadersForCurrentAccount(auth)
+          upstreamRequestBody = buildRequestBodyForCurrentAccount()
           let reRoutedResponse = await runUpstreamRequest(headers)
           if (reRoutedResponse.status === 401 && profile.canRefreshOn401) {
             const latest = accountStore.get(account.id) ?? account
             auth = await resolveUpstreamAccountAuth(latest, { forceRefresh: true })
             headers = buildHeadersForCurrentAccount(auth)
+            upstreamRequestBody = buildRequestBodyForCurrentAccount()
             reRoutedResponse = await runUpstreamRequest(headers)
           }
           upstream = reRoutedResponse
@@ -6307,9 +8003,7 @@ async function proxyVirtualKeyCodexRequest(c: any, upstreamPath = "/responses") 
         bodyBytes: new Uint8Array(responseBuffer),
         routingMode: key.routingMode,
       })
-      accountStore.addRequestAudit({
-        route,
-        method,
+      writeAudit({
         providerId: auditProviderId,
         accountId: auditAccountId,
         virtualKeyId: auditKeyId,
@@ -6334,34 +8028,24 @@ async function proxyVirtualKeyCodexRequest(c: any, upstreamPath = "/responses") 
     if (!upstream.body) {
       const text = await upstream.text().catch(() => "")
       const responseBytes = new TextEncoder().encode(text).byteLength
+      let usage = emptyUsageMetrics()
       try {
-        const usage = (await extractUsageFromStructuredResponseText(text)).usage
-        if (hasUsageDelta(usage)) {
-          accountStore.addUsage({
-            id: account.id,
-            promptTokens: usage.promptTokens,
-            completionTokens: usage.completionTokens,
-            totalTokens: usage.totalTokens,
-          })
-          accountStore.addVirtualKeyUsage({
-            id: key.id,
-            promptTokens: usage.promptTokens,
-            completionTokens: usage.completionTokens,
-            totalTokens: usage.totalTokens,
-          })
-          emitUsageUpdated({
-            accountId: account.id,
-            keyId: key.id,
-            usage,
-            source: "proxy-single",
-          })
-        }
+        usage = (await extractUsageFromStructuredResponseText(text)).usage
+        recordUsageMetrics({
+          accountId: account.id,
+          keyId: key.id,
+          usage,
+          source: "proxy-single",
+          providerId: auditProviderId,
+          virtualKeyId: auditKeyId,
+          model: auditModel,
+          sessionId: auditSessionId,
+          reasoningEffort: auditReasoningEffort,
+        })
       } catch {
         // ignore usage parse errors
       }
-      accountStore.addRequestAudit({
-        route,
-        method,
+      writeAudit({
         providerId: auditProviderId,
         accountId: auditAccountId,
         virtualKeyId: auditKeyId,
@@ -6374,6 +8058,7 @@ async function proxyVirtualKeyCodexRequest(c: any, upstreamPath = "/responses") 
         latencyMs: Date.now() - startedAt,
         upstreamRequestId,
         clientTag,
+        usage,
       })
       return new Response(text, {
         status: upstream.status,
@@ -6382,23 +8067,7 @@ async function proxyVirtualKeyCodexRequest(c: any, upstreamPath = "/responses") 
     }
 
     const [clientStream, usageStream] = upstream.body.tee()
-    if (isEventStreamContentType(upstream.headers.get("content-type"))) {
-      void trackUsageFromStream({
-        accountId: account.id,
-        keyId: key.id,
-        stream: usageStream,
-      })
-    } else {
-      void trackUsageFromJsonStream({
-        accountId: account.id,
-        keyId: key.id,
-        stream: usageStream,
-      })
-    }
-
-    accountStore.addRequestAudit({
-      route,
-      method,
+    const auditId = writeAudit({
       providerId: auditProviderId,
       accountId: auditAccountId,
       virtualKeyId: auditKeyId,
@@ -6412,6 +8081,37 @@ async function proxyVirtualKeyCodexRequest(c: any, upstreamPath = "/responses") 
       upstreamRequestId,
       clientTag,
     })
+    if (isEventStreamContentType(upstream.headers.get("content-type"))) {
+      handleBackgroundPromise(
+        "trackUsageFromStream:responses",
+        trackUsageFromStream({
+          accountId: account.id,
+          keyId: key.id,
+          stream: usageStream,
+          auditId,
+          providerId: auditProviderId,
+          virtualKeyId: auditKeyId,
+          model: auditModel,
+          sessionId: auditSessionId,
+          reasoningEffort: auditReasoningEffort,
+        }),
+      )
+    } else {
+      handleBackgroundPromise(
+        "trackUsageFromJsonStream:responses",
+        trackUsageFromJsonStream({
+          accountId: account.id,
+          keyId: key.id,
+          stream: usageStream,
+          auditId,
+          providerId: auditProviderId,
+          virtualKeyId: auditKeyId,
+          model: auditModel,
+          sessionId: auditSessionId,
+          reasoningEffort: auditReasoningEffort,
+        }),
+      )
+    }
 
     return new Response(clientStream, {
       status: upstream.status,
@@ -6423,9 +8123,7 @@ async function proxyVirtualKeyCodexRequest(c: any, upstreamPath = "/responses") 
       routingMode: auditRoutingMode,
     })
     if (normalizedCaughtFailure) {
-      accountStore.addRequestAudit({
-        route,
-        method,
+      writeAudit({
         providerId: auditProviderId,
         accountId: auditAccountId,
         virtualKeyId: auditKeyId,
@@ -6445,9 +8143,7 @@ async function proxyVirtualKeyCodexRequest(c: any, upstreamPath = "/responses") 
       })
     }
     const finalStatus = getStatusErrorCode(error) ?? (isLikelyAuthError(error) ? 401 : 400)
-    accountStore.addRequestAudit({
-      route,
-      method,
+    writeAudit({
       providerId: auditProviderId,
       accountId: auditAccountId,
       virtualKeyId: auditKeyId,
@@ -6478,13 +8174,17 @@ async function proxyVirtualKeyRateLimitUsage(c: any) {
   let auditKeyId: string | null = null
   let behaviorRelease: (() => void) | null = null
   let auditRoutingMode = "single"
+  const writeAudit = (input: Omit<RequestAuditCompatInput, "route" | "method" | "reasoningEffort">) =>
+    writeRequestAuditCompat({
+      route,
+      method,
+      ...input,
+    })
 
   try {
     const bearer = extractBearerToken(c.req.header("authorization"))
     if (!bearer) {
-      accountStore.addRequestAudit({
-        route,
-        method,
+      writeAudit({
         statusCode: 401,
         latencyMs: Date.now() - startedAt,
         error: "Missing Authorization Bearer token",
@@ -6499,9 +8199,7 @@ async function proxyVirtualKeyRateLimitUsage(c: any) {
     })
     const resolved = resolveVirtualApiKeyWithPoolFallback(bearer, sessionRouteId)
     if (!resolved) {
-      accountStore.addRequestAudit({
-        route,
-        method,
+      writeAudit({
         statusCode: 401,
         latencyMs: Date.now() - startedAt,
         error: "Invalid, revoked, or expired virtual API key",
@@ -6515,9 +8213,7 @@ async function proxyVirtualKeyRateLimitUsage(c: any) {
       sessionId: sessionRouteId,
     })
     if (!eligibleResolved) {
-      accountStore.addRequestAudit({
-        route,
-        method,
+      writeAudit({
         virtualKeyId: resolved.key.id,
         providerId: resolved.key.providerId,
         statusCode: 503,
@@ -6533,24 +8229,7 @@ async function proxyVirtualKeyRateLimitUsage(c: any) {
       sessionId: sessionRouteId,
     })
     if (!consistentResolved.ok) {
-      if (consistentResolved.type === "consistency") {
-        accountStore.addRequestAudit({
-          route,
-          method,
-          providerId: auditProviderId,
-          accountId: auditAccountId,
-          virtualKeyId: auditKeyId,
-          sessionId: sessionRouteId ?? null,
-          statusCode: 409,
-          latencyMs: Date.now() - startedAt,
-          error: `${consistentResolved.poolConsistency.code}: ${consistentResolved.poolConsistency.message}`,
-          clientTag,
-        })
-        return toPoolConsistencyErrorResponse(consistentResolved.poolConsistency)
-      }
-      accountStore.addRequestAudit({
-        route,
-        method,
+      writeAudit({
         virtualKeyId: eligibleResolved.key.id,
         providerId: eligibleResolved.key.providerId,
         statusCode: 503,
@@ -6575,9 +8254,7 @@ async function proxyVirtualKeyRateLimitUsage(c: any) {
     })
     if (!behaviorDecision.ok) {
       const retryAfterSeconds = behaviorDecision.retryAfterMs ? Math.max(1, Math.ceil(behaviorDecision.retryAfterMs / 1000)) : undefined
-      accountStore.addRequestAudit({
-        route,
-        method,
+      writeAudit({
         providerId: auditProviderId,
         accountId: auditAccountId,
         virtualKeyId: auditKeyId,
@@ -6610,9 +8287,7 @@ async function proxyVirtualKeyRateLimitUsage(c: any) {
       accountId = auth.accountId
     } catch (error) {
       const message = errorMessage(error)
-      accountStore.addRequestAudit({
-        route,
-        method,
+      writeAudit({
         providerId: auditProviderId,
         accountId: auditAccountId,
         virtualKeyId: auditKeyId,
@@ -6688,9 +8363,7 @@ async function proxyVirtualKeyRateLimitUsage(c: any) {
     const responseBuffer = await upstream.arrayBuffer().catch(() => new ArrayBuffer(0))
     const responseBytes = responseBuffer.byteLength
 
-    accountStore.addRequestAudit({
-      route,
-      method,
+    writeAudit({
       providerId: auditProviderId,
       accountId: auditAccountId,
       virtualKeyId: auditKeyId,
@@ -6711,9 +8384,7 @@ async function proxyVirtualKeyRateLimitUsage(c: any) {
       routingMode: auditRoutingMode,
     })
     if (normalizedCaughtFailure) {
-      accountStore.addRequestAudit({
-        route,
-        method,
+      writeAudit({
         providerId: auditProviderId,
         accountId: auditAccountId,
         virtualKeyId: auditKeyId,
@@ -6728,9 +8399,7 @@ async function proxyVirtualKeyRateLimitUsage(c: any) {
       })
     }
     const finalStatus = getStatusErrorCode(error) ?? (isLikelyAuthError(error) ? 401 : 400)
-    accountStore.addRequestAudit({
-      route,
-      method,
+    writeAudit({
       providerId: auditProviderId,
       accountId: auditAccountId,
       virtualKeyId: auditKeyId,
@@ -6810,24 +8479,25 @@ app.post("/api/chat/virtual-key", async (c) => {
       sessionId: input.sessionId,
     })
     if (!eligibleResolved) {
-      return c.json({ error: "No healthy accounts available for pool routing" }, 503)
+      const unavailable = resolveAutomaticAccountAvailability({ account: resolved.account })
+      return c.json(
+        {
+          error:
+            resolved.key.routingMode === "pool"
+              ? "No healthy accounts available for pool routing"
+              : unavailable.ok
+                ? "Upstream account is unavailable"
+                : unavailable.message,
+        },
+        503,
+      )
     }
     const consistentResolved = await ensureResolvedPoolAccountConsistent({
       resolved: eligibleResolved,
       sessionId: input.sessionId,
     })
     if (!consistentResolved.ok) {
-      if (consistentResolved.type === "consistency") {
-        return c.json(
-          {
-            error: consistentResolved.poolConsistency.message,
-            code: consistentResolved.poolConsistency.code,
-            details: consistentResolved.poolConsistency.details,
-          },
-          409,
-        )
-      }
-      return c.json({ error: "No healthy accounts available for pool routing" }, 503)
+      return c.json({ error: "No healthy accounts available for pool routing", code: "no_healthy_accounts" }, 503)
     }
 
     let activeAccount = consistentResolved.resolved.account
@@ -6867,12 +8537,18 @@ app.post("/api/chat/virtual-key", async (c) => {
           evictAccountModelsCache(failedAccountId)
         } else if (quotaSignal.matched) {
           markAccountQuotaExhausted(failedAccountId)
-          void refreshAndEmitAccountQuota(failedAccountId, "chat-usage-limit-reached")
+          handleBackgroundPromise(
+            "refreshAndEmitAccountQuota:chat-usage-limit-reached",
+            refreshAndEmitAccountQuota(failedAccountId, "chat-usage-limit-reached"),
+          )
         } else {
           markAccountUnhealthy(failedAccountId, transientSignal.reason ?? "upstream_http_502", "chat")
         }
 
-        const routingHints = buildProviderRoutingHints(eligibleResolved.key.providerId)
+        const preferredPlanCohort = resolveAccountPlanCohort(activeAccount)
+        const routingHints = buildProviderRoutingHints(eligibleResolved.key.providerId, Date.now(), {
+          preferredPlanCohort,
+        })
         const excluded = new Set<string>([...routingHints.excludeAccountIds, ...rerouteTriedAccounts])
 
         let reRoutedAccount = input.sessionId
@@ -6884,18 +8560,22 @@ app.post("/api/chat/virtual-key", async (c) => {
               excludeAccountIds: [...excluded],
               deprioritizedAccountIds: routingHints.deprioritizedAccountIds,
               headroomByAccountId: routingHints.headroomByAccountId,
+              pressureScoreByAccountId: routingHints.pressureScoreByAccountId,
             })
-          : accountStore.reassignVirtualKeyRoute({
-              keyId: eligibleResolved.key.id,
-              providerId: eligibleResolved.key.providerId,
-              failedAccountId,
-              excludeAccountIds: [...excluded],
-              deprioritizedAccountIds: routingHints.deprioritizedAccountIds,
-              headroomByAccountId: routingHints.headroomByAccountId,
-            })
+        : accountStore.reassignVirtualKeyRoute({
+            keyId: eligibleResolved.key.id,
+            providerId: eligibleResolved.key.providerId,
+            failedAccountId,
+            excludeAccountIds: [...excluded],
+            deprioritizedAccountIds: routingHints.deprioritizedAccountIds,
+            headroomByAccountId: routingHints.headroomByAccountId,
+            pressureScoreByAccountId: routingHints.pressureScoreByAccountId,
+          })
 
         if (!reRoutedAccount) {
-          const relaxedHints = buildRelaxedProviderRoutingHints(eligibleResolved.key.providerId)
+          const relaxedHints = buildRelaxedProviderRoutingHints(eligibleResolved.key.providerId, Date.now(), {
+            preferredPlanCohort,
+          })
           const relaxedExcluded = new Set<string>([...relaxedHints.excludeAccountIds, ...rerouteTriedAccounts])
           reRoutedAccount = input.sessionId
             ? accountStore.reassignVirtualKeySessionRoute({
@@ -6906,15 +8586,17 @@ app.post("/api/chat/virtual-key", async (c) => {
                 excludeAccountIds: [...relaxedExcluded],
                 deprioritizedAccountIds: relaxedHints.deprioritizedAccountIds,
                 headroomByAccountId: relaxedHints.headroomByAccountId,
+                pressureScoreByAccountId: relaxedHints.pressureScoreByAccountId,
               })
-            : accountStore.reassignVirtualKeyRoute({
-                keyId: eligibleResolved.key.id,
-                providerId: eligibleResolved.key.providerId,
-                failedAccountId,
-                excludeAccountIds: [...relaxedExcluded],
-                deprioritizedAccountIds: relaxedHints.deprioritizedAccountIds,
-                headroomByAccountId: relaxedHints.headroomByAccountId,
-              })
+          : accountStore.reassignVirtualKeyRoute({
+              keyId: eligibleResolved.key.id,
+              providerId: eligibleResolved.key.providerId,
+              failedAccountId,
+              excludeAccountIds: [...relaxedExcluded],
+              deprioritizedAccountIds: relaxedHints.deprioritizedAccountIds,
+              headroomByAccountId: relaxedHints.headroomByAccountId,
+              pressureScoreByAccountId: relaxedHints.pressureScoreByAccountId,
+            })
         }
 
         if (!reRoutedAccount || rerouteTriedAccounts.has(reRoutedAccount.id)) {
@@ -6964,7 +8646,27 @@ app.post("/api/chat/virtual-key", async (c) => {
   }
 })
 
-const server = Bun.serve({
+function handleProcessFailure(event: string, error: unknown) {
+  if (fatalShutdown) return
+  fatalShutdown = true
+  console.error(`[oauth-multi-login] ${event}`, error)
+  forwardProxy?.stop()?.catch(() => undefined)
+  callbackServer.stop()?.catch(() => undefined)
+  server?.stop()
+  process.exit(1)
+}
+
+process.on("unhandledRejection", (reason) => handleProcessFailure("unhandledRejection", reason))
+process.on("uncaughtException", (error) => handleProcessFailure("uncaughtException", error))
+
+try {
+  bootstrapEstimatedUsageCosts()
+} catch (error) {
+  console.warn(`[oauth-multi-login] estimated cost bootstrap failed: ${errorMessage(error)}`)
+  syncExtendedUsageTotalsStateFromAudits()
+}
+
+server = Bun.serve({
   hostname: AppConfig.host,
   port: AppConfig.port,
   idleTimeout: 120,

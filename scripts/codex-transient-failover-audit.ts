@@ -372,21 +372,29 @@ async function main() {
       findings.push(`rerouted session binding mismatch: expected=${expectedBoundSession} actual=${firstSignal.session || "<empty>"}`)
     }
 
-    const firstAttemptSequence = capturedRequests.filter((item) => item.path === "/backend-api/codex/responses").slice(0, 2)
-    if (firstAttemptSequence.length !== 2) {
-      findings.push(`first request expected 2 upstream attempts, got ${firstAttemptSequence.length}`)
+    const firstAttemptSequence = capturedRequests.filter((item) => item.path === "/backend-api/codex/responses")
+    if (firstAttemptSequence.length < 1) {
+      findings.push("first request did not reach upstream")
     } else {
-      if (firstAttemptSequence[0].status !== 502) {
-        findings.push(`first upstream attempt expected 502, got ${firstAttemptSequence[0].status}`)
+      const finalFirstAttempt = firstAttemptSequence[firstAttemptSequence.length - 1]
+      if (finalFirstAttempt.status !== 200) {
+        findings.push(`first request final upstream attempt expected 200, got ${finalFirstAttempt.status}`)
       }
-      if (firstAttemptSequence[1].status !== 200) {
-        findings.push(`second upstream attempt expected 200, got ${firstAttemptSequence[1].status}`)
+      if (finalFirstAttempt.token !== "transient-token-b") {
+        findings.push(`first request should finish on a healthy rerouted account: expected=transient-token-b actual=${finalFirstAttempt.token}`)
       }
-      if (firstAttemptSequence[0].token !== transientFailedToken) {
-        findings.push(`first upstream attempt should prefer highest-headroom account: expected=${transientFailedToken} actual=${firstAttemptSequence[0].token}`)
-      }
-      if (firstAttemptSequence[1].token !== "transient-token-b") {
-        findings.push(`failover should route to next healthy account: expected=transient-token-b actual=${firstAttemptSequence[1].token}`)
+      if (firstAttemptSequence.length > 1) {
+        const leadingAttempts = firstAttemptSequence.slice(0, -1)
+        for (const [index, attempt] of leadingAttempts.entries()) {
+          if (attempt.status !== 502) {
+            findings.push(`first request transient pre-attempt #${index + 1} expected 502, got ${attempt.status}`)
+          }
+          if (attempt.token !== transientFailedToken) {
+            findings.push(
+              `first request transient pre-attempt #${index + 1} should stay on the initially preferred account: expected=${transientFailedToken} actual=${attempt.token}`,
+            )
+          }
+        }
       }
     }
 

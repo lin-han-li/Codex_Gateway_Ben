@@ -142,6 +142,10 @@ async function main() {
       },
     ],
   })
+  const rerouteProbeAuditCase = "pool-reroute-probe"
+  const rerouteAuditCase = "pool-reroute-body"
+  let rerouteFailedToken: string | null = null
+  let rerouteSucceededToken: string | null = null
 
   const upstreamServer = Bun.serve({
     hostname: "127.0.0.1",
@@ -175,6 +179,46 @@ async function main() {
             "x-upstream-test": "codex-compact-pass-through",
           },
         })
+      }
+      if (
+        (headers["x-audit-case"] === rerouteProbeAuditCase || headers["x-audit-case"] === rerouteAuditCase) &&
+        request.url.includes("/backend-api/codex/responses")
+      ) {
+        const accessToken = String(headers.authorization ?? "").replace(/^Bearer\s+/i, "")
+        if (headers["x-audit-case"] === rerouteAuditCase && rerouteFailedToken && accessToken === rerouteFailedToken) {
+          return new Response(
+            JSON.stringify({
+              error: {
+                message: "temporary upstream failure for reroute regression",
+                type: "server_error",
+              },
+            }),
+            {
+              status: 502,
+              headers: {
+                "Content-Type": "application/json",
+              },
+            },
+          )
+        }
+        return new Response(
+          JSON.stringify({
+            id: `resp_${crypto.randomUUID()}`,
+            object: "response",
+            output_text: `rerouted=${accessToken}`,
+            usage: {
+              input_tokens: 12,
+              output_tokens: 7,
+              total_tokens: 19,
+            },
+          }),
+          {
+            status: 200,
+            headers: {
+              "Content-Type": "application/json",
+            },
+          },
+        )
       }
       return new Response(upstreamErrorPayload, {
         status: 418,
@@ -411,6 +455,83 @@ async function main() {
       "Second models request should be served from local cache without upstream call",
     )
 
+    const secondSync = await requestJSON<SyncResponse>(`${origin}/api/bridge/oauth/sync`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        providerId: "chatgpt",
+        providerName: "ChatGPT",
+        methodId: "codex-oauth",
+        displayName: "Regression OAuth Secondary",
+        email: "regression-secondary@example.com",
+        accountId: "org-regression-account-secondary",
+        accessToken: "fake-access-token-secondary",
+        refreshToken: "fake-refresh-token-secondary",
+        expiresAt: Date.now() + 3600_000,
+      }),
+    })
+    assertCondition(secondSync.account?.id, "Missing secondary account id from sync response")
+
+    const poolProbe = await requestJSON<IssueKeyResponse>(`${origin}/api/virtual-keys/issue`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        providerId: "chatgpt",
+        routingMode: "pool",
+        name: "Regression Pool Probe Key",
+      }),
+    })
+    assertCondition(poolProbe.key?.startsWith("ocsk_live_"), "Pool probe key format mismatch")
+    const rerouteProbeBody = JSON.stringify({
+      model: "gpt-5.4",
+      input: [{ role: "user", content: [{ type: "input_text", text: "reroute-probe" }] }],
+      instructions: "reroute-probe",
+      prompt_cache_key: "sess-reroute-probe",
+      store: false,
+      stream: false,
+    })
+    const rerouteProbeResponse = await fetch(`${origin}/v1/responses`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${poolProbe.key ?? ""}`,
+        "openai-beta": "responses=v1",
+        "x-audit-case": rerouteProbeAuditCase,
+      },
+      body: rerouteProbeBody,
+    })
+    assertCondition(rerouteProbeResponse.status === 200, `Expected reroute probe status 200, got ${rerouteProbeResponse.status}`)
+    const rerouteProbeJson = (await rerouteProbeResponse.json()) as { output_text?: string }
+    const defaultSelectedToken = String(rerouteProbeJson.output_text ?? "").replace(/^rerouted=/, "")
+    assertCondition(defaultSelectedToken.length > 0, "Failed to detect default pool route token")
+    if (poolProbe.record?.id) {
+      await requestJSON<{ success: boolean }>(`${origin}/api/virtual-keys/${encodeURIComponent(poolProbe.record.id)}`, {
+        method: "DELETE",
+      })
+    }
+
+    const rerouteCandidates = [
+      {
+        accountId: sync.account.id,
+        accessToken: "fake-access-token",
+      },
+      {
+        accountId: secondSync.account.id,
+        accessToken: "fake-access-token-secondary",
+      },
+    ]
+    const rerouteFailed = rerouteCandidates.find((item) => item.accessToken === defaultSelectedToken) ?? null
+    const rerouteSucceeded = rerouteCandidates.find((item) => item.accessToken !== defaultSelectedToken) ?? null
+    rerouteFailedToken = rerouteFailed?.accessToken ?? null
+    rerouteSucceededToken = rerouteSucceeded?.accessToken ?? null
+    const rerouteFailedAccountId = rerouteFailed?.accountId ?? null
+    const rerouteSucceededAccountId = rerouteSucceeded?.accountId ?? null
+    assertCondition(rerouteFailedToken && rerouteSucceededToken, "Missing reroute token bindings")
+    assertCondition(rerouteFailedAccountId && rerouteSucceededAccountId, "Missing reroute account bindings")
     const poolIssued = await requestJSON<IssueKeyResponse>(`${origin}/api/virtual-keys/issue`, {
       method: "POST",
       headers: {
@@ -425,6 +546,52 @@ async function main() {
     assertCondition(poolIssued.key?.startsWith("ocsk_live_"), "Pool virtual key format mismatch")
     assertCondition(poolIssued.record?.routingMode === "pool", "Pool virtual key routing mode mismatch")
     assertCondition(poolIssued.record?.accountId == null, "Pool virtual key should not bind accountId")
+    const rerouteBody = JSON.stringify({
+      model: "gpt-5.4",
+      input: [{ role: "user", content: [{ type: "input_text", text: "reroute-check" }] }],
+      instructions: "reroute-check",
+      prompt_cache_key: "sess-reroute-check",
+      store: false,
+      stream: false,
+    })
+    const rerouteResponse = await fetch(`${origin}/v1/responses`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${poolIssued.key ?? ""}`,
+        "openai-beta": "responses=v1",
+        "x-audit-case": rerouteAuditCase,
+      },
+      body: rerouteBody,
+    })
+    assertCondition(rerouteResponse.status === 200, `Expected reroute regression status 200, got ${rerouteResponse.status}`)
+    const rerouteResponseJson = (await rerouteResponse.json()) as { output_text?: string }
+    assertCondition(
+      rerouteResponseJson.output_text === `rerouted=${rerouteSucceededToken}`,
+      `Expected rerouted token ${rerouteSucceededToken}, got ${rerouteResponseJson.output_text ?? "<missing>"}`,
+    )
+    const rerouteForwarded = capturedUpstreamRequests.filter((item) => item.headers["x-audit-case"] === rerouteAuditCase)
+    assertCondition(rerouteForwarded.length >= 2, `Expected at least 2 reroute upstream attempts, got ${rerouteForwarded.length}`)
+    const rerouteFirstAttempt = rerouteForwarded[0]
+    const rerouteFinalAttempt = rerouteForwarded.at(-1)
+    assertCondition(rerouteFirstAttempt, "Missing first reroute attempt")
+    assertCondition(rerouteFinalAttempt, "Missing final reroute attempt")
+    assertCondition(
+      rerouteFirstAttempt.headers.authorization === `Bearer ${rerouteFailedToken}`,
+      `Expected first reroute attempt on failed token ${rerouteFailedToken}, got ${rerouteFirstAttempt.headers.authorization ?? "<missing>"}`,
+    )
+    assertCondition(
+      rerouteFinalAttempt.headers.authorization === `Bearer ${rerouteSucceededToken}`,
+      `Expected final reroute attempt on rerouted token ${rerouteSucceededToken}, got ${rerouteFinalAttempt.headers.authorization ?? "<missing>"}`,
+    )
+    assertCondition(
+      rerouteFirstAttempt.body === rewriteExpectedSessionBody(rerouteBody, rerouteFailedAccountId),
+      "First reroute attempt body was not rewritten with the failed account-bound identifiers",
+    )
+    assertCondition(
+      rerouteFinalAttempt.body === rewriteExpectedSessionBody(rerouteBody, rerouteSucceededAccountId),
+      "Final reroute attempt body was not rewritten with the rerouted account-bound identifiers",
+    )
     if (poolIssued.record?.id) {
       await requestJSON<{ success: boolean }>(`${origin}/api/virtual-keys/${encodeURIComponent(poolIssued.record.id)}`, {
         method: "DELETE",

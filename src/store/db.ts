@@ -64,6 +64,64 @@ export type RequestAuditRecord = {
   upstreamRequestId: string | null
   error: string | null
   clientTag: string | null
+  inputTokens: number | null
+  cachedInputTokens: number | null
+  outputTokens: number | null
+  totalTokens: number | null
+  billableTokens: number | null
+  reasoningOutputTokens: number | null
+  estimatedCostUsd: number | null
+  reasoningEffort: string | null
+}
+
+export type RequestAuditListParams = {
+  query?: string | null
+  statusFilter?: string | null
+  page?: number
+  pageSize?: number
+}
+
+export type RequestAuditListResult = {
+  items: RequestAuditRecord[]
+  total: number
+  page: number
+  pageSize: number
+}
+
+export type RequestAuditFilterSummary = {
+  totalCount: number
+  filteredCount: number
+  successCount: number
+  errorCount: number
+  inputTokens: number
+  cachedInputTokens: number
+  outputTokens: number
+  totalTokens: number
+  billableTokens: number
+  reasoningOutputTokens: number
+  estimatedCostUsd: number
+  unpricedRequestCount: number
+}
+
+export type RequestTokenStatsDayRecord = {
+  dayKey: string
+  requestCount: number
+  successCount: number
+  errorCount: number
+  inputTokens: number
+  cachedInputTokens: number
+  outputTokens: number
+  totalTokens: number
+  billableTokens: number
+  reasoningOutputTokens: number
+  estimatedCostUsd: number
+  unpricedRequestCount: number
+  updatedAt: number
+}
+
+export type RequestTokenStatsDaySummary = {
+  stats: RequestTokenStatsDayRecord | null
+  unpricedRequestCount: number
 }
 
 type VirtualApiKeyRow = {
@@ -103,6 +161,39 @@ type RequestAuditRow = {
   upstream_request_id: string | null
   error_text: string | null
   client_tag: string | null
+  input_tokens: number | null
+  cached_input_tokens: number | null
+  output_tokens: number | null
+  total_tokens: number | null
+  billable_tokens: number | null
+  reasoning_output_tokens: number | null
+  estimated_cost_usd: number | null
+  reasoning_effort: string | null
+}
+
+type RequestAuditCostBackfillCandidate = {
+  id: string
+  model: string | null
+  input_tokens: number | null
+  cached_input_tokens: number | null
+  output_tokens: number | null
+  total_tokens: number | null
+}
+
+type RequestTokenStatsDayRow = {
+  day_key: string
+  request_count: number
+  success_count: number
+  error_count: number
+  input_tokens: number
+  cached_input_tokens: number
+  output_tokens: number
+  total_tokens: number
+  billable_tokens: number
+  reasoning_output_tokens: number
+  estimated_cost_usd: number
+  unpriced_request_count: number
+  updated_at: number
 }
 
 type VirtualKeyRouteRow = {
@@ -139,6 +230,30 @@ export type UsageTotals = {
 }
 
 const ROUTING_DEBUG_ENABLED = String(process.env.OAUTH_DEBUG_ROUTING ?? "0").trim() === "1"
+const REQUEST_AUDIT_SUCCESS_SQL = `CASE WHEN status_code >= 200 AND status_code <= 299 THEN 1 ELSE 0 END`
+const REQUEST_AUDIT_ERROR_SQL = `CASE WHEN status_code >= 400 OR TRIM(IFNULL(error_text, '')) <> '' THEN 1 ELSE 0 END`
+const REQUEST_AUDIT_TOTAL_TOKENS_SQL = `
+  CASE
+    WHEN total_tokens IS NOT NULL THEN CASE WHEN total_tokens > 0 THEN total_tokens ELSE 0 END
+    WHEN input_tokens IS NULL AND output_tokens IS NULL THEN 0
+    ELSE
+      CASE WHEN input_tokens IS NOT NULL AND input_tokens > 0 THEN input_tokens ELSE 0 END +
+      CASE WHEN output_tokens IS NOT NULL AND output_tokens > 0 THEN output_tokens ELSE 0 END
+  END
+`
+const REQUEST_AUDIT_BILLABLE_TOKENS_SQL = `
+  CASE
+    WHEN billable_tokens IS NOT NULL AND billable_tokens > 0 THEN billable_tokens
+    WHEN input_tokens IS NULL AND cached_input_tokens IS NULL AND output_tokens IS NULL THEN 0
+    ELSE
+      MAX(
+        (CASE WHEN input_tokens IS NOT NULL AND input_tokens > 0 THEN input_tokens ELSE 0 END) -
+        (CASE WHEN cached_input_tokens IS NOT NULL AND cached_input_tokens > 0 THEN cached_input_tokens ELSE 0 END),
+        0
+      ) +
+      MAX(CASE WHEN output_tokens IS NOT NULL AND output_tokens > 0 THEN output_tokens ELSE 0 END, 0)
+  END
+`
 
 function safeJson(input: string) {
   try {
@@ -208,6 +323,202 @@ function normalizeSessionRouteID(value?: string | null) {
   const normalized = String(value ?? "").trim()
   if (!normalized) return undefined
   return normalized.slice(0, 240)
+}
+
+type RequestAuditSqlFilters = {
+  whereClause: string
+  params: Array<string | number>
+}
+
+function normalizeNonNegativeInteger(value: number | null | undefined) {
+  if (value == null) return null
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) return null
+  return Math.max(0, Math.floor(parsed))
+}
+
+function normalizeNonNegativeNumber(value: number | null | undefined) {
+  if (value == null) return null
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) return null
+  return Math.max(0, parsed)
+}
+
+function normalizeAuditTimestamp(value: number | null | undefined) {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed) || parsed <= 0) return Date.now()
+  return Math.max(0, Math.floor(parsed))
+}
+
+function resolveAuditTotalTokens(
+  explicitTotalTokens: number | null,
+  inputTokens: number | null,
+  outputTokens: number | null,
+) {
+  if (explicitTotalTokens !== null) return explicitTotalTokens
+  if (inputTokens === null && outputTokens === null) return null
+  return Math.max(0, (inputTokens ?? 0) + (outputTokens ?? 0))
+}
+
+function resolveAuditBillableTokens(
+  explicitBillableTokens: number | null,
+  inputTokens: number | null,
+  cachedInputTokens: number | null,
+  outputTokens: number | null,
+) {
+  if (explicitBillableTokens !== null) return explicitBillableTokens
+  if (inputTokens === null && cachedInputTokens === null && outputTokens === null) return null
+  return Math.max(0, (inputTokens ?? 0) - (cachedInputTokens ?? 0)) + Math.max(0, outputTokens ?? 0)
+}
+
+function toLocalDayKey(timestampMs: number) {
+  const date = new Date(timestampMs)
+  const year = String(date.getFullYear())
+  const month = String(date.getMonth() + 1).padStart(2, "0")
+  const day = String(date.getDate()).padStart(2, "0")
+  return `${year}-${month}-${day}`
+}
+
+function toLocalDayBounds(timestampMs: number) {
+  const start = new Date(timestampMs)
+  start.setHours(0, 0, 0, 0)
+  const end = new Date(start.getTime())
+  end.setDate(end.getDate() + 1)
+  return {
+    startAt: start.getTime(),
+    endAt: end.getTime(),
+  }
+}
+
+function normalizeAuditPage(value: number | null | undefined, fallback: number) {
+  const parsed = normalizeNonNegativeInteger(value)
+  if (parsed === null || parsed < 1) return fallback
+  return parsed
+}
+
+function normalizeAuditPageSize(value: number | null | undefined, fallback: number) {
+  const parsed = normalizeNonNegativeInteger(value)
+  if (parsed === null || parsed < 1) return fallback
+  return Math.min(1000, parsed)
+}
+
+function buildRequestAuditFilters(query?: string | null, statusFilter?: string | null): RequestAuditSqlFilters {
+  const clauses: string[] = []
+  const params: Array<string | number> = []
+  const terms = String(query ?? "")
+    .trim()
+    .split(/\s+/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .slice(0, 8)
+
+  for (const term of terms) {
+    const pattern = `%${term}%`
+    clauses.push(`(
+      route LIKE ?
+      OR method LIKE ?
+      OR IFNULL(provider_id, '') LIKE ?
+      OR IFNULL(account_id, '') LIKE ?
+      OR IFNULL(virtual_key_id, '') LIKE ?
+      OR IFNULL(model, '') LIKE ?
+      OR IFNULL(session_id, '') LIKE ?
+      OR IFNULL(request_hash, '') LIKE ?
+      OR IFNULL(upstream_request_id, '') LIKE ?
+      OR IFNULL(error_text, '') LIKE ?
+      OR IFNULL(client_tag, '') LIKE ?
+      OR IFNULL(CAST(status_code AS TEXT), '') LIKE ?
+      OR IFNULL(CAST(input_tokens AS TEXT), '') LIKE ?
+      OR IFNULL(CAST(cached_input_tokens AS TEXT), '') LIKE ?
+      OR IFNULL(CAST(output_tokens AS TEXT), '') LIKE ?
+      OR IFNULL(CAST(total_tokens AS TEXT), '') LIKE ?
+      OR IFNULL(CAST(billable_tokens AS TEXT), '') LIKE ?
+      OR IFNULL(CAST(reasoning_output_tokens AS TEXT), '') LIKE ?
+      OR IFNULL(CAST(estimated_cost_usd AS TEXT), '') LIKE ?
+      OR IFNULL(reasoning_effort, '') LIKE ?
+    )`)
+    for (let index = 0; index < 20; index += 1) {
+      params.push(pattern)
+    }
+  }
+
+  switch (String(statusFilter ?? "").trim().toLowerCase()) {
+    case "":
+    case "all":
+      break
+    case "success":
+    case "2xx":
+      clauses.push("status_code >= ? AND status_code <= ?")
+      params.push(200, 299)
+      break
+    case "4xx":
+      clauses.push("status_code >= ? AND status_code <= ?")
+      params.push(400, 499)
+      break
+    case "5xx":
+      clauses.push("status_code >= ?")
+      params.push(500)
+      break
+    case "error":
+      clauses.push("(status_code >= ? OR TRIM(IFNULL(error_text, '')) <> '')")
+      params.push(400)
+      break
+    default:
+      break
+  }
+
+  return {
+    whereClause: clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "",
+    params,
+  }
+}
+
+function mapRequestAuditRow(row: RequestAuditRow): RequestAuditRecord {
+  return {
+    id: row.id,
+    at: row.at,
+    route: row.route,
+    method: row.method,
+    providerId: row.provider_id,
+    accountId: row.account_id,
+    virtualKeyId: row.virtual_key_id,
+    model: row.model,
+    sessionId: row.session_id,
+    requestHash: row.request_hash,
+    requestBytes: row.request_bytes ?? 0,
+    responseBytes: row.response_bytes ?? 0,
+    statusCode: row.status_code ?? 0,
+    latencyMs: row.latency_ms ?? 0,
+    upstreamRequestId: row.upstream_request_id,
+    error: row.error_text,
+    clientTag: row.client_tag,
+    inputTokens: row.input_tokens ?? null,
+    cachedInputTokens: row.cached_input_tokens ?? null,
+    outputTokens: row.output_tokens ?? null,
+    totalTokens: row.total_tokens ?? null,
+    billableTokens: row.billable_tokens ?? null,
+    reasoningOutputTokens: row.reasoning_output_tokens ?? null,
+    estimatedCostUsd: row.estimated_cost_usd ?? null,
+    reasoningEffort: row.reasoning_effort ?? null,
+  }
+}
+
+function mapRequestTokenStatsDayRow(row?: RequestTokenStatsDayRow | null): RequestTokenStatsDayRecord | null {
+  if (!row) return null
+  return {
+    dayKey: row.day_key,
+    requestCount: Math.max(0, Math.floor(Number(row.request_count ?? 0))),
+    successCount: Math.max(0, Math.floor(Number(row.success_count ?? 0))),
+    errorCount: Math.max(0, Math.floor(Number(row.error_count ?? 0))),
+    inputTokens: Math.max(0, Math.floor(Number(row.input_tokens ?? 0))),
+    cachedInputTokens: Math.max(0, Math.floor(Number(row.cached_input_tokens ?? 0))),
+    outputTokens: Math.max(0, Math.floor(Number(row.output_tokens ?? 0))),
+    totalTokens: Math.max(0, Math.floor(Number(row.total_tokens ?? 0))),
+    billableTokens: Math.max(0, Math.floor(Number(row.billable_tokens ?? 0))),
+    reasoningOutputTokens: Math.max(0, Math.floor(Number(row.reasoning_output_tokens ?? 0))),
+    estimatedCostUsd: Math.max(0, Number(row.estimated_cost_usd ?? 0)),
+    unpricedRequestCount: Math.max(0, Math.floor(Number(row.unpriced_request_count ?? 0))),
+    updatedAt: Math.max(0, Math.floor(Number(row.updated_at ?? 0))),
+  }
 }
 
 export class AccountStore {
@@ -313,11 +624,40 @@ export class AccountStore {
         latency_ms INTEGER NOT NULL DEFAULT 0,
         upstream_request_id TEXT,
         error_text TEXT,
-        client_tag TEXT
+        client_tag TEXT,
+        input_tokens INTEGER,
+        cached_input_tokens INTEGER,
+        output_tokens INTEGER,
+        total_tokens INTEGER,
+        billable_tokens INTEGER,
+        reasoning_output_tokens INTEGER,
+        estimated_cost_usd REAL,
+        reasoning_effort TEXT
       );
       CREATE INDEX IF NOT EXISTS idx_request_audits_at ON request_audits(at DESC);
       CREATE INDEX IF NOT EXISTS idx_request_audits_account ON request_audits(account_id, at DESC);
       CREATE INDEX IF NOT EXISTS idx_request_audits_key ON request_audits(virtual_key_id, at DESC);
+      CREATE INDEX IF NOT EXISTS idx_request_audits_status_at ON request_audits(status_code, at DESC);
+      CREATE INDEX IF NOT EXISTS idx_request_audits_route_at ON request_audits(route, at DESC);
+      CREATE INDEX IF NOT EXISTS idx_request_audits_provider_at ON request_audits(provider_id, at DESC);
+      CREATE INDEX IF NOT EXISTS idx_request_audits_method_at ON request_audits(method, at DESC);
+
+      CREATE TABLE IF NOT EXISTS request_token_stats (
+        day_key TEXT PRIMARY KEY,
+        request_count INTEGER NOT NULL DEFAULT 0,
+        success_count INTEGER NOT NULL DEFAULT 0,
+        error_count INTEGER NOT NULL DEFAULT 0,
+        input_tokens INTEGER NOT NULL DEFAULT 0,
+        cached_input_tokens INTEGER NOT NULL DEFAULT 0,
+        output_tokens INTEGER NOT NULL DEFAULT 0,
+        total_tokens INTEGER NOT NULL DEFAULT 0,
+        billable_tokens INTEGER NOT NULL DEFAULT 0,
+        reasoning_output_tokens INTEGER NOT NULL DEFAULT 0,
+        estimated_cost_usd REAL NOT NULL DEFAULT 0,
+        unpriced_request_count INTEGER NOT NULL DEFAULT 0,
+        updated_at INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE INDEX IF NOT EXISTS idx_request_token_stats_updated_at ON request_token_stats(updated_at DESC);
 
       CREATE TABLE IF NOT EXISTS global_usage_totals (
         id INTEGER PRIMARY KEY CHECK(id = 1),
@@ -339,8 +679,51 @@ export class AccountStore {
     this.ensureVirtualKeyColumn("total_tokens", "INTEGER NOT NULL DEFAULT 0")
     this.ensureVirtualKeyColumn("expires_at", "INTEGER")
     this.db.exec(`CREATE INDEX IF NOT EXISTS idx_virtual_api_keys_provider ON virtual_api_keys(provider_id);`)
+    this.ensureRequestAuditsSchema()
+    this.ensureRequestTokenStatsSchema()
     this.ensureGlobalUsageTotals()
     this.migrateSecretsToEncrypted()
+  }
+
+  private rebuildRequestTokenStatsFromAudits() {
+    this.db.exec(`
+      DELETE FROM request_token_stats;
+      INSERT OR IGNORE INTO request_token_stats (
+        day_key,
+        request_count,
+        success_count,
+        error_count,
+        input_tokens,
+        cached_input_tokens,
+        output_tokens,
+        total_tokens,
+        billable_tokens,
+        reasoning_output_tokens,
+        estimated_cost_usd,
+        unpriced_request_count,
+        updated_at
+      )
+      SELECT
+        strftime('%Y-%m-%d', at / 1000.0, 'unixepoch', 'localtime') AS day_key,
+        COUNT(*) AS request_count,
+        COALESCE(SUM(CASE WHEN status_code BETWEEN 200 AND 299 THEN 1 ELSE 0 END), 0) AS success_count,
+        COALESCE(SUM(CASE WHEN status_code >= 400 OR IFNULL(error_text, '') <> '' THEN 1 ELSE 0 END), 0) AS error_count,
+        COALESCE(SUM(CASE WHEN input_tokens IS NOT NULL AND input_tokens > 0 THEN input_tokens ELSE 0 END), 0) AS input_tokens,
+        COALESCE(SUM(CASE WHEN cached_input_tokens IS NOT NULL AND cached_input_tokens > 0 THEN cached_input_tokens ELSE 0 END), 0) AS cached_input_tokens,
+        COALESCE(SUM(CASE WHEN output_tokens IS NOT NULL AND output_tokens > 0 THEN output_tokens ELSE 0 END), 0) AS output_tokens,
+        COALESCE(SUM(${REQUEST_AUDIT_TOTAL_TOKENS_SQL}), 0) AS total_tokens,
+        COALESCE(SUM(${REQUEST_AUDIT_BILLABLE_TOKENS_SQL}), 0) AS billable_tokens,
+        COALESCE(SUM(CASE WHEN reasoning_output_tokens IS NOT NULL AND reasoning_output_tokens > 0 THEN reasoning_output_tokens ELSE 0 END), 0) AS reasoning_output_tokens,
+        COALESCE(SUM(CASE WHEN estimated_cost_usd IS NOT NULL AND estimated_cost_usd > 0 THEN estimated_cost_usd ELSE 0 END), 0) AS estimated_cost_usd,
+        COALESCE(SUM(CASE WHEN total_tokens IS NOT NULL AND total_tokens > 0 AND estimated_cost_usd IS NULL THEN 1 ELSE 0 END), 0) AS unpriced_request_count,
+        COALESCE(MAX(at), 0) AS updated_at
+      FROM request_audits
+      GROUP BY strftime('%Y-%m-%d', at / 1000.0, 'unixepoch', 'localtime');
+    `)
+  }
+
+  rebuildRequestTokenStats() {
+    this.rebuildRequestTokenStatsFromAudits()
   }
 
   private migrateSecretsToEncrypted() {
@@ -369,15 +752,106 @@ export class AccountStore {
   }
 
   private ensureColumn(name: string, definition: string) {
-    const columns = this.db.query<{ name: string }, []>(`PRAGMA table_info(accounts)`).all()
-    if (columns.some((column) => column.name === name)) return
-    this.db.exec(`ALTER TABLE accounts ADD COLUMN ${name} ${definition};`)
+    this.ensureTableColumn("accounts", name, definition)
   }
 
   private ensureVirtualKeyColumn(name: string, definition: string) {
-    const columns = this.db.query<{ name: string }, []>(`PRAGMA table_info(virtual_api_keys)`).all()
+    this.ensureTableColumn("virtual_api_keys", name, definition)
+  }
+
+  private listTableColumns(table: string) {
+    return this.db.query<TableInfoRow, []>(`PRAGMA table_info("${table.replaceAll('"', '""')}")`).all()
+  }
+
+  private ensureTableColumn(table: string, name: string, definition: string) {
+    const columns = this.listTableColumns(table)
     if (columns.some((column) => column.name === name)) return
-    this.db.exec(`ALTER TABLE virtual_api_keys ADD COLUMN ${name} ${definition};`)
+    const tableName = table.replaceAll('"', '""')
+    const columnName = name.replaceAll('"', '""')
+    this.db.exec(`ALTER TABLE "${tableName}" ADD COLUMN "${columnName}" ${definition};`)
+  }
+
+  private ensureRequestAuditsSchema() {
+    this.ensureTableColumn("request_audits", "input_tokens", "INTEGER")
+    this.ensureTableColumn("request_audits", "cached_input_tokens", "INTEGER")
+    this.ensureTableColumn("request_audits", "output_tokens", "INTEGER")
+    this.ensureTableColumn("request_audits", "total_tokens", "INTEGER")
+    this.ensureTableColumn("request_audits", "billable_tokens", "INTEGER")
+    this.ensureTableColumn("request_audits", "reasoning_output_tokens", "INTEGER")
+    this.ensureTableColumn("request_audits", "estimated_cost_usd", "REAL")
+    this.ensureTableColumn("request_audits", "reasoning_effort", "TEXT")
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_request_audits_status_at ON request_audits(status_code, at DESC);
+      CREATE INDEX IF NOT EXISTS idx_request_audits_route_at ON request_audits(route, at DESC);
+      CREATE INDEX IF NOT EXISTS idx_request_audits_provider_at ON request_audits(provider_id, at DESC);
+      CREATE INDEX IF NOT EXISTS idx_request_audits_method_at ON request_audits(method, at DESC);
+    `)
+  }
+
+  private ensureRequestTokenStatsSchema() {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS request_token_stats (
+        day_key TEXT PRIMARY KEY,
+        request_count INTEGER NOT NULL DEFAULT 0,
+        success_count INTEGER NOT NULL DEFAULT 0,
+        error_count INTEGER NOT NULL DEFAULT 0,
+        input_tokens INTEGER NOT NULL DEFAULT 0,
+        cached_input_tokens INTEGER NOT NULL DEFAULT 0,
+        output_tokens INTEGER NOT NULL DEFAULT 0,
+        total_tokens INTEGER NOT NULL DEFAULT 0,
+        billable_tokens INTEGER NOT NULL DEFAULT 0,
+        reasoning_output_tokens INTEGER NOT NULL DEFAULT 0,
+        estimated_cost_usd REAL NOT NULL DEFAULT 0,
+        unpriced_request_count INTEGER NOT NULL DEFAULT 0,
+        updated_at INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE INDEX IF NOT EXISTS idx_request_token_stats_updated_at ON request_token_stats(updated_at DESC);
+    `)
+    this.ensureTableColumn("request_token_stats", "request_count", "INTEGER NOT NULL DEFAULT 0")
+    this.ensureTableColumn("request_token_stats", "success_count", "INTEGER NOT NULL DEFAULT 0")
+    this.ensureTableColumn("request_token_stats", "error_count", "INTEGER NOT NULL DEFAULT 0")
+    this.ensureTableColumn("request_token_stats", "input_tokens", "INTEGER NOT NULL DEFAULT 0")
+    this.ensureTableColumn("request_token_stats", "cached_input_tokens", "INTEGER NOT NULL DEFAULT 0")
+    this.ensureTableColumn("request_token_stats", "output_tokens", "INTEGER NOT NULL DEFAULT 0")
+    this.ensureTableColumn("request_token_stats", "total_tokens", "INTEGER NOT NULL DEFAULT 0")
+    this.ensureTableColumn("request_token_stats", "billable_tokens", "INTEGER NOT NULL DEFAULT 0")
+    this.ensureTableColumn("request_token_stats", "reasoning_output_tokens", "INTEGER NOT NULL DEFAULT 0")
+    this.ensureTableColumn("request_token_stats", "estimated_cost_usd", "REAL NOT NULL DEFAULT 0")
+    this.ensureTableColumn("request_token_stats", "unpriced_request_count", "INTEGER NOT NULL DEFAULT 0")
+    this.ensureTableColumn("request_token_stats", "updated_at", "INTEGER NOT NULL DEFAULT 0")
+    this.db.exec(`
+      INSERT OR IGNORE INTO request_token_stats (
+        day_key,
+        request_count,
+        success_count,
+        error_count,
+        input_tokens,
+        cached_input_tokens,
+        output_tokens,
+        total_tokens,
+        billable_tokens,
+        reasoning_output_tokens,
+        estimated_cost_usd,
+        unpriced_request_count,
+        updated_at
+      )
+      SELECT
+        strftime('%Y-%m-%d', at / 1000.0, 'unixepoch', 'localtime') AS day_key,
+        COUNT(*) AS request_count,
+        COALESCE(SUM(${REQUEST_AUDIT_SUCCESS_SQL}), 0) AS success_count,
+        COALESCE(SUM(${REQUEST_AUDIT_ERROR_SQL}), 0) AS error_count,
+        COALESCE(SUM(CASE WHEN input_tokens IS NOT NULL AND input_tokens > 0 THEN input_tokens ELSE 0 END), 0) AS input_tokens,
+        COALESCE(SUM(CASE WHEN cached_input_tokens IS NOT NULL AND cached_input_tokens > 0 THEN cached_input_tokens ELSE 0 END), 0) AS cached_input_tokens,
+        COALESCE(SUM(CASE WHEN output_tokens IS NOT NULL AND output_tokens > 0 THEN output_tokens ELSE 0 END), 0) AS output_tokens,
+        COALESCE(SUM(${REQUEST_AUDIT_TOTAL_TOKENS_SQL}), 0) AS total_tokens,
+        COALESCE(SUM(${REQUEST_AUDIT_BILLABLE_TOKENS_SQL}), 0) AS billable_tokens,
+        COALESCE(SUM(CASE WHEN reasoning_output_tokens IS NOT NULL AND reasoning_output_tokens > 0 THEN reasoning_output_tokens ELSE 0 END), 0) AS reasoning_output_tokens,
+        COALESCE(SUM(CASE WHEN estimated_cost_usd IS NOT NULL AND estimated_cost_usd > 0 THEN estimated_cost_usd ELSE 0 END), 0) AS estimated_cost_usd,
+        COALESCE(SUM(CASE WHEN total_tokens IS NOT NULL AND total_tokens > 0 AND estimated_cost_usd IS NULL THEN 1 ELSE 0 END), 0) AS unpriced_request_count,
+        COALESCE(MAX(at), 0) AS updated_at
+      FROM request_audits
+      GROUP BY strftime('%Y-%m-%d', at / 1000.0, 'unixepoch', 'localtime');
+    `)
   }
 
   private ensureVirtualKeysSchemaV2() {
@@ -845,6 +1319,7 @@ export class AccountStore {
       excludeAccountIds?: string[]
       deprioritizedAccountIds?: string[]
       headroomByAccountId?: Map<string, number>
+      pressureScoreByAccountId?: Map<string, number>
       routeOptionsFactory?: (
         key: Pick<VirtualApiKeyRecord, "id" | "providerId" | "routingMode">,
       ) =>
@@ -852,6 +1327,7 @@ export class AccountStore {
             excludeAccountIds?: string[]
             deprioritizedAccountIds?: string[]
             headroomByAccountId?: Map<string, number>
+            pressureScoreByAccountId?: Map<string, number>
           }
         | null
         | undefined
@@ -900,10 +1376,18 @@ export class AccountStore {
     for (const [accountId, headroom] of derivedRouteOptions?.headroomByAccountId ?? []) {
       headroomByAccountId.set(accountId, headroom)
     }
+    const pressureScoreByAccountId = new Map<string, number>()
+    for (const [accountId, score] of options?.pressureScoreByAccountId ?? []) {
+      pressureScoreByAccountId.set(accountId, score)
+    }
+    for (const [accountId, score] of derivedRouteOptions?.pressureScoreByAccountId ?? []) {
+      pressureScoreByAccountId.set(accountId, score)
+    }
     const routeOptions = {
       excludeAccountIds,
       deprioritizedAccountIds,
       headroomByAccountId,
+      pressureScoreByAccountId,
     }
     const account =
       key.routingMode === "pool"
@@ -937,6 +1421,7 @@ export class AccountStore {
       excludeAccountIds?: Set<string>
       deprioritizedAccountIds?: Set<string>
       headroomByAccountId?: Map<string, number>
+      pressureScoreByAccountId?: Map<string, number>
     },
   ) {
     if (sessionId) {
@@ -982,11 +1467,13 @@ export class AccountStore {
       excludeAccountIds?: Set<string>
       deprioritizedAccountIds?: Set<string>
       headroomByAccountId?: Map<string, number>
+      pressureScoreByAccountId?: Map<string, number>
     },
   ) {
     const excluded = options?.excludeAccountIds ?? new Set<string>()
     const deprioritized = options?.deprioritizedAccountIds ?? new Set<string>()
     const headroomByAccountId = options?.headroomByAccountId ?? new Map<string, number>()
+    const pressureScoreByAccountId = options?.pressureScoreByAccountId ?? new Map<string, number>()
     const candidates = this.getAvailableAccountsForProvider(providerId).filter((account) => !excluded.has(account.id))
     if (candidates.length === 0) return null
 
@@ -1005,6 +1492,13 @@ export class AccountStore {
       const deprioritizedA = deprioritized.has(a.id) ? 1 : 0
       const deprioritizedB = deprioritized.has(b.id) ? 1 : 0
       if (deprioritizedA !== deprioritizedB) return deprioritizedA - deprioritizedB
+
+      const pressureA = pressureScoreByAccountId.get(a.id)
+      const pressureB = pressureScoreByAccountId.get(b.id)
+      const hasPressureA = Number.isFinite(pressureA)
+      const hasPressureB = Number.isFinite(pressureB)
+      if (hasPressureA !== hasPressureB) return hasPressureA ? -1 : 1
+      if (hasPressureA && hasPressureB && pressureA !== pressureB) return Number(pressureA) - Number(pressureB)
 
       const headroomA = headroomByAccountId.get(a.id)
       const headroomB = headroomByAccountId.get(b.id)
@@ -1032,7 +1526,8 @@ export class AccountStore {
           .map((account) => {
             const route = routeMap.get(account.id)
             const headroom = headroomByAccountId.get(account.id)
-            return `${account.id}{deprioritized=${deprioritized.has(account.id)},headroom=${headroom ?? "-"},count=${
+            const pressure = pressureScoreByAccountId.get(account.id)
+            return `${account.id}{deprioritized=${deprioritized.has(account.id)},pressure=${pressure ?? "-"},headroom=${headroom ?? "-"},count=${
               route?.request_count ?? 0
             },last=${route?.last_used_at ?? 0}}`
           })
@@ -1051,6 +1546,7 @@ export class AccountStore {
     excludeAccountIds?: string[]
     deprioritizedAccountIds?: string[]
     headroomByAccountId?: Map<string, number>
+    pressureScoreByAccountId?: Map<string, number>
   }) {
     const sessionId = normalizeSessionRouteID(input.sessionId)
     if (!sessionId) return null
@@ -1060,6 +1556,7 @@ export class AccountStore {
       excludeAccountIds: excluded,
       deprioritizedAccountIds: new Set(input.deprioritizedAccountIds ?? []),
       headroomByAccountId: input.headroomByAccountId,
+      pressureScoreByAccountId: input.pressureScoreByAccountId,
     })
     if (!selected) return null
 
@@ -1075,17 +1572,42 @@ export class AccountStore {
     excludeAccountIds?: string[]
     deprioritizedAccountIds?: string[]
     headroomByAccountId?: Map<string, number>
+    pressureScoreByAccountId?: Map<string, number>
   }) {
     const excluded = new Set<string>([input.failedAccountId, ...(input.excludeAccountIds ?? [])])
     const selected = this.pickPoolAccountCandidate(input.keyId, input.providerId, {
       excludeAccountIds: excluded,
       deprioritizedAccountIds: new Set(input.deprioritizedAccountIds ?? []),
       headroomByAccountId: input.headroomByAccountId,
+      pressureScoreByAccountId: input.pressureScoreByAccountId,
     })
     if (!selected) return null
 
     this.touchVirtualKeyRoute(input.keyId, selected.id)
     return selected
+  }
+
+  hasEstablishedVirtualKeySessionRoute(input: {
+    keyId: string
+    sessionId?: string | null
+    accountId?: string | null
+  }) {
+    const sessionId = normalizeSessionRouteID(input.sessionId)
+    const accountId = String(input.accountId ?? "").trim()
+    if (!sessionId || !accountId) return false
+
+    const row = this.db
+      .query<{ request_count: number }, [string, string, string]>(
+        `
+          SELECT request_count
+          FROM virtual_key_sessions
+          WHERE key_id = ? AND session_id = ? AND account_id = ?
+          LIMIT 1
+        `,
+      )
+      .get(input.keyId, sessionId, accountId)
+
+    return Number(row?.request_count ?? 0) > 1
   }
 
   private touchVirtualKeyRoute(keyID: string, accountID: string) {
@@ -1282,16 +1804,45 @@ export class AccountStore {
     upstreamRequestId?: string | null
     error?: string | null
     clientTag?: string | null
+    promptTokens?: number | null
+    at?: number | null
+    inputTokens?: number | null
+    cachedInputTokens?: number | null
+    completionTokens?: number | null
+    outputTokens?: number | null
+    totalTokens?: number | null
+    billableTokens?: number | null
+    reasoningOutputTokens?: number | null
+    estimatedCostUsd?: number | null
+    reasoningEffort?: string | null
   }) {
     const id = crypto.randomUUID()
-    const now = Date.now()
+    const now = normalizeAuditTimestamp(input.at)
     const requestBytes = Math.max(0, Math.floor(input.requestBytes ?? input.requestBody?.byteLength ?? 0))
     const responseBytes = Math.max(0, Math.floor(input.responseBytes ?? 0))
     const statusCode = Math.max(0, Math.floor(input.statusCode ?? 0))
     const latencyMs = Math.max(0, Math.floor(input.latencyMs ?? 0))
+    const inputTokens = normalizeNonNegativeInteger(input.inputTokens ?? input.promptTokens)
+    const cachedInputTokens = normalizeNonNegativeInteger(input.cachedInputTokens)
+    const outputTokens = normalizeNonNegativeInteger(input.outputTokens ?? input.completionTokens)
+    const totalTokens = resolveAuditTotalTokens(normalizeNonNegativeInteger(input.totalTokens), inputTokens, outputTokens)
+    const billableTokens = resolveAuditBillableTokens(
+      normalizeNonNegativeInteger(input.billableTokens),
+      inputTokens,
+      cachedInputTokens,
+      outputTokens,
+    )
+    const reasoningOutputTokens = normalizeNonNegativeInteger(input.reasoningOutputTokens)
+    const estimatedCostUsd = normalizeNonNegativeNumber(input.estimatedCostUsd)
+    const reasoningEffort = String(input.reasoningEffort ?? "").trim() || null
     const requestHash = hashRequestPayload(input.requestBody ?? new Uint8Array(0))
-    this.db
-      .query(
+    const successCount = statusCode >= 200 && statusCode <= 299 ? 1 : 0
+    const errorCount = statusCode >= 400 || String(input.error ?? "").trim() ? 1 : 0
+    const unpricedRequestCount = totalTokens != null && totalTokens > 0 && estimatedCostUsd == null ? 1 : 0
+    const dayKey = toLocalDayKey(now)
+    const tx = this.db.transaction(() => {
+      this.db
+        .query(
         `
           INSERT INTO request_audits (
             id,
@@ -1310,64 +1861,461 @@ export class AccountStore {
             latency_ms,
             upstream_request_id,
             error_text,
-            client_tag
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            client_tag,
+            input_tokens,
+            cached_input_tokens,
+            output_tokens,
+            total_tokens,
+            billable_tokens,
+            reasoning_output_tokens,
+            estimated_cost_usd,
+            reasoning_effort
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `,
-      )
-      .run(
-        id,
-        now,
-        input.route,
-        input.method,
-        input.providerId ?? null,
-        input.accountId ?? null,
-        input.virtualKeyId ?? null,
-        input.model ?? null,
-        input.sessionId ?? null,
-        requestHash,
-        requestBytes,
-        responseBytes,
-        statusCode,
-        latencyMs,
-        input.upstreamRequestId ?? null,
-        input.error ?? null,
-        input.clientTag ?? null,
-      )
+        )
+        .run(
+          id,
+          now,
+          input.route,
+          input.method,
+          input.providerId ?? null,
+          input.accountId ?? null,
+          input.virtualKeyId ?? null,
+          input.model ?? null,
+          input.sessionId ?? null,
+          requestHash,
+          requestBytes,
+          responseBytes,
+          statusCode,
+          latencyMs,
+          input.upstreamRequestId ?? null,
+          input.error ?? null,
+          input.clientTag ?? null,
+          inputTokens,
+          cachedInputTokens,
+          outputTokens,
+          totalTokens,
+          billableTokens,
+          reasoningOutputTokens,
+          estimatedCostUsd,
+          reasoningEffort,
+        )
+      this.db
+        .query(
+          `
+            INSERT INTO request_token_stats (
+              day_key,
+              request_count,
+              success_count,
+              error_count,
+              input_tokens,
+              cached_input_tokens,
+              output_tokens,
+              total_tokens,
+              billable_tokens,
+              reasoning_output_tokens,
+              estimated_cost_usd,
+              unpriced_request_count,
+              updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(day_key) DO UPDATE SET
+              request_count = request_token_stats.request_count + excluded.request_count,
+              success_count = request_token_stats.success_count + excluded.success_count,
+              error_count = request_token_stats.error_count + excluded.error_count,
+              input_tokens = request_token_stats.input_tokens + excluded.input_tokens,
+              cached_input_tokens = request_token_stats.cached_input_tokens + excluded.cached_input_tokens,
+              output_tokens = request_token_stats.output_tokens + excluded.output_tokens,
+              total_tokens = request_token_stats.total_tokens + excluded.total_tokens,
+              billable_tokens = request_token_stats.billable_tokens + excluded.billable_tokens,
+              reasoning_output_tokens = request_token_stats.reasoning_output_tokens + excluded.reasoning_output_tokens,
+              estimated_cost_usd = request_token_stats.estimated_cost_usd + excluded.estimated_cost_usd,
+              unpriced_request_count = request_token_stats.unpriced_request_count + excluded.unpriced_request_count,
+              updated_at = excluded.updated_at
+          `,
+        )
+        .run(
+          dayKey,
+          1,
+          successCount,
+          errorCount,
+          inputTokens ?? 0,
+          cachedInputTokens ?? 0,
+          outputTokens ?? 0,
+          totalTokens ?? 0,
+          billableTokens ?? 0,
+          reasoningOutputTokens ?? 0,
+          estimatedCostUsd ?? 0,
+          unpricedRequestCount,
+          Date.now(),
+        )
+    })
+    tx()
     return id
   }
 
-  listRequestAudits(limit = 200) {
-    const safeLimit = Math.min(1000, Math.max(1, Math.floor(limit)))
-    const rows = this.db
-      .query<RequestAuditRow, [number]>(
+  updateRequestAuditUsage(input: {
+    auditId: string
+    inputTokens?: number | null
+    promptTokens?: number | null
+    cachedInputTokens?: number | null
+    outputTokens?: number | null
+    completionTokens?: number | null
+    totalTokens?: number | null
+    billableTokens?: number | null
+    reasoningOutputTokens?: number | null
+    estimatedCostUsd?: number | null
+    reasoningEffort?: string | null
+  }) {
+    const auditId = String(input.auditId ?? "").trim()
+    if (!auditId) return
+    const existing = this.db
+      .query<RequestAuditRow, [string]>(
         `
           SELECT *
           FROM request_audits
+          WHERE id = ?
+          LIMIT 1
+        `,
+      )
+      .get(auditId)
+    if (!existing) return
+
+    const nextInputTokens = normalizeNonNegativeInteger(input.inputTokens ?? input.promptTokens)
+    const nextCachedInputTokens = normalizeNonNegativeInteger(input.cachedInputTokens)
+    const nextOutputTokens = normalizeNonNegativeInteger(input.outputTokens ?? input.completionTokens)
+    const resolvedInputTokens = nextInputTokens ?? existing.input_tokens ?? null
+    const resolvedCachedInputTokens = nextCachedInputTokens ?? existing.cached_input_tokens ?? null
+    const resolvedOutputTokens = nextOutputTokens ?? existing.output_tokens ?? null
+    const resolvedTotalTokens = resolveAuditTotalTokens(
+      normalizeNonNegativeInteger(input.totalTokens) ?? existing.total_tokens ?? null,
+      resolvedInputTokens,
+      resolvedOutputTokens,
+    )
+    const explicitBillableTokens = normalizeNonNegativeInteger(input.billableTokens)
+    const preservedExistingBillableTokens =
+      existing.billable_tokens != null && existing.billable_tokens > 0 ? existing.billable_tokens : null
+    const resolvedBillableTokens = resolveAuditBillableTokens(
+      explicitBillableTokens ?? preservedExistingBillableTokens,
+      resolvedInputTokens,
+      resolvedCachedInputTokens,
+      resolvedOutputTokens,
+    )
+    const resolvedReasoningOutputTokens =
+      normalizeNonNegativeInteger(input.reasoningOutputTokens) ?? existing.reasoning_output_tokens ?? null
+    const resolvedEstimatedCostUsd =
+      normalizeNonNegativeNumber(input.estimatedCostUsd) ?? normalizeNonNegativeNumber(existing.estimated_cost_usd)
+    const resolvedReasoningEffort = String(input.reasoningEffort ?? existing.reasoning_effort ?? "").trim() || null
+
+    const currentInputTokens = existing.input_tokens ?? null
+    const currentCachedInputTokens = existing.cached_input_tokens ?? null
+    const currentOutputTokens = existing.output_tokens ?? null
+    const currentTotalTokens = existing.total_tokens ?? null
+    const currentBillableTokens = existing.billable_tokens ?? null
+    const currentReasoningOutputTokens = existing.reasoning_output_tokens ?? null
+    const currentEstimatedCostUsd = normalizeNonNegativeNumber(existing.estimated_cost_usd)
+    const currentReasoningEffort = String(existing.reasoning_effort ?? "").trim() || null
+
+    const nothingChanged =
+      resolvedInputTokens === currentInputTokens &&
+      resolvedCachedInputTokens === currentCachedInputTokens &&
+      resolvedOutputTokens === currentOutputTokens &&
+      resolvedTotalTokens === currentTotalTokens &&
+      resolvedBillableTokens === currentBillableTokens &&
+      resolvedReasoningOutputTokens === currentReasoningOutputTokens &&
+      resolvedEstimatedCostUsd === currentEstimatedCostUsd &&
+      resolvedReasoningEffort === currentReasoningEffort
+
+    if (nothingChanged) return
+
+    const deltaInputTokens = (resolvedInputTokens ?? 0) - (currentInputTokens ?? 0)
+    const deltaCachedInputTokens = (resolvedCachedInputTokens ?? 0) - (currentCachedInputTokens ?? 0)
+    const deltaOutputTokens = (resolvedOutputTokens ?? 0) - (currentOutputTokens ?? 0)
+    const deltaTotalTokens = (resolvedTotalTokens ?? 0) - (currentTotalTokens ?? 0)
+    const deltaBillableTokens = (resolvedBillableTokens ?? 0) - (currentBillableTokens ?? 0)
+    const deltaReasoningOutputTokens = (resolvedReasoningOutputTokens ?? 0) - (currentReasoningOutputTokens ?? 0)
+    const deltaEstimatedCostUsd = (resolvedEstimatedCostUsd ?? 0) - (currentEstimatedCostUsd ?? 0)
+    const deltaUnpricedRequestCount =
+      (resolvedTotalTokens != null && resolvedTotalTokens > 0 && resolvedEstimatedCostUsd == null ? 1 : 0) -
+      (currentTotalTokens != null && currentTotalTokens > 0 && currentEstimatedCostUsd == null ? 1 : 0)
+    const dayKey = toLocalDayKey(existing.at)
+    const tx = this.db.transaction(() => {
+      this.db
+        .query(
+          `
+            UPDATE request_audits
+            SET
+              input_tokens = ?,
+              cached_input_tokens = ?,
+              output_tokens = ?,
+              total_tokens = ?,
+              billable_tokens = ?,
+              reasoning_output_tokens = ?,
+              estimated_cost_usd = ?,
+              reasoning_effort = ?
+            WHERE id = ?
+          `,
+        )
+        .run(
+          resolvedInputTokens,
+          resolvedCachedInputTokens,
+          resolvedOutputTokens,
+          resolvedTotalTokens,
+          resolvedBillableTokens,
+          resolvedReasoningOutputTokens,
+          resolvedEstimatedCostUsd,
+          resolvedReasoningEffort,
+          auditId,
+        )
+      this.db
+        .query(
+          `
+            UPDATE request_token_stats
+            SET
+              input_tokens = input_tokens + ?,
+              cached_input_tokens = cached_input_tokens + ?,
+              output_tokens = output_tokens + ?,
+              total_tokens = total_tokens + ?,
+              billable_tokens = billable_tokens + ?,
+              reasoning_output_tokens = reasoning_output_tokens + ?,
+              estimated_cost_usd = estimated_cost_usd + ?,
+              unpriced_request_count = unpriced_request_count + ?,
+              updated_at = ?
+            WHERE day_key = ?
+          `,
+        )
+        .run(
+          deltaInputTokens,
+          deltaCachedInputTokens,
+          deltaOutputTokens,
+          deltaTotalTokens,
+          deltaBillableTokens,
+          deltaReasoningOutputTokens,
+          deltaEstimatedCostUsd,
+          deltaUnpricedRequestCount,
+          Date.now(),
+          dayKey,
+        )
+    })
+    tx()
+  }
+
+  backfillRequestAuditEstimatedCosts(
+    estimateCostUsd: (audit: {
+      id: string
+      model: string | null
+      inputTokens: number | null
+      cachedInputTokens: number | null
+      outputTokens: number | null
+      totalTokens: number | null
+    }) => number | null,
+  ) {
+    const rows = this.db
+      .query<RequestAuditCostBackfillCandidate, []>(
+        `
+          SELECT
+            id,
+            model,
+            input_tokens,
+            cached_input_tokens,
+            output_tokens,
+            total_tokens
+          FROM request_audits
+          WHERE estimated_cost_usd IS NULL
+            AND total_tokens IS NOT NULL
+            AND total_tokens > 0
+        `,
+      )
+      .all()
+    if (rows.length === 0) {
+      return {
+        scannedCount: 0,
+        updatedCount: 0,
+      }
+    }
+
+    let updatedCount = 0
+    const tx = this.db.transaction(() => {
+      const updateStatement = this.db.query(`UPDATE request_audits SET estimated_cost_usd = ? WHERE id = ?`)
+      for (const row of rows) {
+        const estimatedCostUsd = normalizeNonNegativeNumber(
+          estimateCostUsd({
+            id: row.id,
+            model: row.model ?? null,
+            inputTokens: row.input_tokens ?? null,
+            cachedInputTokens: row.cached_input_tokens ?? null,
+            outputTokens: row.output_tokens ?? null,
+            totalTokens: row.total_tokens ?? null,
+          }),
+        )
+        if (estimatedCostUsd == null) continue
+        updateStatement.run(estimatedCostUsd, row.id)
+        updatedCount += 1
+      }
+      if (updatedCount > 0) {
+        this.rebuildRequestTokenStatsFromAudits()
+      }
+    })
+    tx()
+    return {
+      scannedCount: rows.length,
+      updatedCount,
+    }
+  }
+
+  listRequestAudits(limit = 200) {
+    return this.listRequestAuditsPaginated({ page: 1, pageSize: limit }).items
+  }
+
+  listRequestAuditsPaginated(params: RequestAuditListParams = {}): RequestAuditListResult {
+    const page = normalizeAuditPage(params.page, 1)
+    const pageSize = normalizeAuditPageSize(params.pageSize, 200)
+    const offset = (page - 1) * pageSize
+    const filters = buildRequestAuditFilters(params.query, params.statusFilter)
+    const countRow =
+      (this.db
+        .query(
+          `
+            SELECT COUNT(*) AS total
+            FROM request_audits
+            ${filters.whereClause}
+          `,
+        )
+        .get(...filters.params) as { total: number } | null) ?? { total: 0 }
+    const rows = this.db
+      .query(
+        `
+          SELECT *
+          FROM request_audits
+          ${filters.whereClause}
           ORDER BY at DESC
+          LIMIT ? OFFSET ?
+        `,
+      )
+      .all(...filters.params, pageSize, offset) as RequestAuditRow[]
+
+    return {
+      items: rows.map(mapRequestAuditRow),
+      total: Math.max(0, Math.floor(Number(countRow.total ?? 0))),
+      page,
+      pageSize,
+    }
+  }
+
+  summarizeRequestAudits(params: Pick<RequestAuditListParams, "query" | "statusFilter"> = {}): RequestAuditFilterSummary {
+    const filters = buildRequestAuditFilters(params.query, params.statusFilter)
+    const totalCountRow =
+      (this.db
+        .query(`SELECT COUNT(*) AS total FROM request_audits`)
+        .get() as { total: number } | null) ?? { total: 0 }
+    const summaryRow =
+      (this.db
+        .query(
+          `
+            SELECT
+              COUNT(*) AS filtered_count,
+              COALESCE(SUM(${REQUEST_AUDIT_SUCCESS_SQL}), 0) AS success_count,
+              COALESCE(SUM(${REQUEST_AUDIT_ERROR_SQL}), 0) AS error_count,
+              COALESCE(SUM(CASE WHEN input_tokens IS NOT NULL AND input_tokens > 0 THEN input_tokens ELSE 0 END), 0) AS input_tokens,
+              COALESCE(SUM(CASE WHEN cached_input_tokens IS NOT NULL AND cached_input_tokens > 0 THEN cached_input_tokens ELSE 0 END), 0) AS cached_input_tokens,
+              COALESCE(SUM(CASE WHEN output_tokens IS NOT NULL AND output_tokens > 0 THEN output_tokens ELSE 0 END), 0) AS output_tokens,
+              COALESCE(SUM(${REQUEST_AUDIT_TOTAL_TOKENS_SQL}), 0) AS total_tokens,
+              COALESCE(SUM(${REQUEST_AUDIT_BILLABLE_TOKENS_SQL}), 0) AS billable_tokens,
+              COALESCE(SUM(CASE WHEN reasoning_output_tokens IS NOT NULL AND reasoning_output_tokens > 0 THEN reasoning_output_tokens ELSE 0 END), 0) AS reasoning_output_tokens,
+              COALESCE(SUM(CASE WHEN estimated_cost_usd IS NOT NULL AND estimated_cost_usd > 0 THEN estimated_cost_usd ELSE 0 END), 0) AS estimated_cost_usd,
+              COALESCE(SUM(CASE WHEN total_tokens IS NOT NULL AND total_tokens > 0 AND estimated_cost_usd IS NULL THEN 1 ELSE 0 END), 0) AS unpriced_request_count
+            FROM request_audits
+            ${filters.whereClause}
+          `,
+        )
+        .get(...filters.params) as
+        | {
+            filtered_count: number
+            success_count: number
+            error_count: number
+            input_tokens: number
+            cached_input_tokens: number
+            output_tokens: number
+            total_tokens: number
+            billable_tokens: number
+            reasoning_output_tokens: number
+            estimated_cost_usd: number
+            unpriced_request_count: number
+          }
+        | null) ?? {
+        filtered_count: 0,
+        success_count: 0,
+        error_count: 0,
+        input_tokens: 0,
+        cached_input_tokens: 0,
+        output_tokens: 0,
+        total_tokens: 0,
+        billable_tokens: 0,
+        reasoning_output_tokens: 0,
+        estimated_cost_usd: 0,
+        unpriced_request_count: 0,
+      }
+
+    return {
+      totalCount: Math.max(0, Math.floor(Number(totalCountRow.total ?? 0))),
+      filteredCount: Math.max(0, Math.floor(Number(summaryRow.filtered_count ?? 0))),
+      successCount: Math.max(0, Math.floor(Number(summaryRow.success_count ?? 0))),
+      errorCount: Math.max(0, Math.floor(Number(summaryRow.error_count ?? 0))),
+      inputTokens: Math.max(0, Math.floor(Number(summaryRow.input_tokens ?? 0))),
+      cachedInputTokens: Math.max(0, Math.floor(Number(summaryRow.cached_input_tokens ?? 0))),
+      outputTokens: Math.max(0, Math.floor(Number(summaryRow.output_tokens ?? 0))),
+      totalTokens: Math.max(0, Math.floor(Number(summaryRow.total_tokens ?? 0))),
+      billableTokens: Math.max(0, Math.floor(Number(summaryRow.billable_tokens ?? 0))),
+      reasoningOutputTokens: Math.max(0, Math.floor(Number(summaryRow.reasoning_output_tokens ?? 0))),
+      estimatedCostUsd: Math.max(0, Number(summaryRow.estimated_cost_usd ?? 0)),
+      unpricedRequestCount: Math.max(0, Math.floor(Number(summaryRow.unpriced_request_count ?? 0))),
+    }
+  }
+
+  getRequestTokenStatsDay(dayKey: string) {
+    const normalizedDayKey = String(dayKey ?? "").trim()
+    if (!normalizedDayKey) return null
+    const row = this.db
+      .query<RequestTokenStatsDayRow, [string]>(
+        `
+          SELECT *
+          FROM request_token_stats
+          WHERE day_key = ?
+          LIMIT 1
+        `,
+      )
+      .get(normalizedDayKey)
+    return mapRequestTokenStatsDayRow(row)
+  }
+
+  getTodayRequestTokenStats(now = Date.now()) {
+    return this.getRequestTokenStatsDay(toLocalDayKey(normalizeAuditTimestamp(now)))
+  }
+
+  getTodayRequestTokenStatsSummary(now = Date.now()): RequestTokenStatsDaySummary {
+    const timestamp = normalizeAuditTimestamp(now)
+    const stats = this.getTodayRequestTokenStats(timestamp)
+    return {
+      stats,
+      unpricedRequestCount: Math.max(0, Math.floor(Number(stats?.unpricedRequestCount ?? 0))),
+    }
+  }
+
+  listRequestTokenStatsDays(limit = 30) {
+    const safeLimit = normalizeAuditPageSize(limit, 30)
+    const rows = this.db
+      .query<RequestTokenStatsDayRow, [number]>(
+        `
+          SELECT *
+          FROM request_token_stats
+          ORDER BY day_key DESC
           LIMIT ?
         `,
       )
       .all(safeLimit)
-
-    return rows.map((row): RequestAuditRecord => ({
-      id: row.id,
-      at: row.at,
-      route: row.route,
-      method: row.method,
-      providerId: row.provider_id,
-      accountId: row.account_id,
-      virtualKeyId: row.virtual_key_id,
-      model: row.model,
-      sessionId: row.session_id,
-      requestHash: row.request_hash,
-      requestBytes: row.request_bytes ?? 0,
-      responseBytes: row.response_bytes ?? 0,
-      statusCode: row.status_code ?? 0,
-      latencyMs: row.latency_ms ?? 0,
-      upstreamRequestId: row.upstream_request_id,
-      error: row.error_text,
-      clientTag: row.client_tag,
-    }))
+    return rows.flatMap((row) => {
+      const record = mapRequestTokenStatsDayRow(row)
+      return record ? [record] : []
+    })
   }
 
   clearRequestAudits() {

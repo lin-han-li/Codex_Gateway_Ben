@@ -269,12 +269,18 @@ async function main() {
     }
 
     const responseAttempts = capturedRequests.filter((item) => item.path === "/backend-api/codex/responses")
-    if (responseAttempts.length !== 2) {
-      findings.push(`expected exactly 2 upstream response attempts for 2 pool accounts, got ${responseAttempts.length}`)
+    if (responseAttempts.length < 2 || responseAttempts.length > 4) {
+      findings.push(`expected 2 to 4 upstream response attempts across 2 pool accounts, got ${responseAttempts.length}`)
     }
     const attemptedTokens = new Set(responseAttempts.map((item) => item.token))
     if (attemptedTokens.size !== 2) {
       findings.push(`expected both pool accounts to be attempted before exhaustion, got ${[...attemptedTokens].join(",") || "<none>"}`)
+    }
+    for (const token of attemptedTokens) {
+      const attemptsForToken = responseAttempts.filter((item) => item.token === token).length
+      if (attemptsForToken > 2) {
+        findings.push(`expected at most 2 transient micro-retries per account, token=${token} attempts=${attemptsForToken}`)
+      }
     }
 
     const reportDir = path.join(process.cwd(), "_tmp", "parity")

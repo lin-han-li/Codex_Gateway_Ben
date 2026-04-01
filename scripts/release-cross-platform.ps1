@@ -77,9 +77,7 @@ Write-Host ""
 
 if (-not $SkipChecks) {
   Invoke-Step "Version sync check" @("node", "scripts/assert-release-version-sync.mjs")
-  Invoke-Step "Type check" @("npm", "run", "check")
-  Invoke-Step "Request parity audit" @("bun", "run", "test:parity")
-  Invoke-Step "Session parity audit" @("bun", "run", "test:session-parity")
+  Invoke-Step "Release gate" @("bun", "run", "gate:release")
 }
 
 if ($PushBranch) {

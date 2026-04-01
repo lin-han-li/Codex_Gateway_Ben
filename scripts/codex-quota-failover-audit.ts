@@ -2,6 +2,7 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises"
 import { spawn } from "node:child_process"
 import os from "node:os"
 import path from "node:path"
+import { Database } from "bun:sqlite"
 import { resolveCodexClientVersion } from "../src/codex-version"
 import { buildCodexUserAgent } from "../src/codex-identity"
 import { bindClientIdentifierToAccount } from "../src/upstream-session-binding"
@@ -234,24 +235,28 @@ async function main() {
     },
   })
 
-  const child = spawn("bun", ["src/index.ts"], {
-    cwd: process.cwd(),
-    env: {
-      ...process.env,
-      OAUTH_APP_HOST: "127.0.0.1",
-      OAUTH_APP_PORT: bridgePort,
-      OAUTH_APP_FORWARD_PROXY_ENABLED: "0",
-      OAUTH_APP_DATA_DIR: tempDataDir,
-      OAUTH_CODEX_API_ENDPOINT: responsesEndpoint,
-      OAUTH_CODEX_CLIENT_VERSION: CODEX_CLIENT_VERSION,
-      OAUTH_CODEX_ORIGINATOR: CODEX_ORIGINATOR,
-      OAUTH_BEHAVIOR_ENABLED: "false",
-    },
-    stdio: ["ignore", "pipe", "pipe"],
-  })
+  const startBridge = () => {
+    const next = spawn("bun", ["src/index.ts"], {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        OAUTH_APP_HOST: "127.0.0.1",
+        OAUTH_APP_PORT: bridgePort,
+        OAUTH_APP_FORWARD_PROXY_ENABLED: "0",
+        OAUTH_APP_DATA_DIR: tempDataDir,
+        OAUTH_CODEX_API_ENDPOINT: responsesEndpoint,
+        OAUTH_CODEX_CLIENT_VERSION: CODEX_CLIENT_VERSION,
+        OAUTH_CODEX_ORIGINATOR: CODEX_ORIGINATOR,
+        OAUTH_BEHAVIOR_ENABLED: "false",
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    })
+    next.stdout.on("data", (chunk) => process.stdout.write(`[bridge] ${chunk}`))
+    next.stderr.on("data", (chunk) => process.stderr.write(`[bridge] ${chunk}`))
+    return next
+  }
 
-  child.stdout.on("data", (chunk) => process.stdout.write(`[bridge] ${chunk}`))
-  child.stderr.on("data", (chunk) => process.stderr.write(`[bridge] ${chunk}`))
+  let child = startBridge()
 
   const findings: string[] = []
 
@@ -311,6 +316,13 @@ async function main() {
       ["quota-token-b", syncB.account.id],
       ["quota-token-c", syncC.account.id],
     ])
+    const db = new Database(path.join(tempDataDir, "accounts.db"))
+    db.query(`UPDATE accounts SET is_active = 1 WHERE id IN (?, ?, ?)`).run(syncA.account.id, syncB.account.id, syncC.account.id)
+    db.close()
+    child.kill("SIGTERM")
+    await Bun.sleep(500)
+    child = startBridge()
+    await waitForHealth(bridgeOrigin, 20_000)
     const preferredAccessToken = "quota-token-a"
     const softDrainedAccessToken = "quota-token-b"
     const failoverAccessToken = "quota-token-c"
