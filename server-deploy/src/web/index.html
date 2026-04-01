@@ -2397,7 +2397,7 @@
       <aside class="sidebar">
         <div class="brand">
           <h1>Codex Gateway</h1>
-          <div class="ver">v1.1.23</div>
+          <div class="ver">v1.1.24</div>
         </div>
         <nav class="nav">
           <button class="nav-btn active" data-view="dashboard"><span>📊</span><span>仪表盘</span></button>
@@ -5810,8 +5810,9 @@
         modal.setAttribute("aria-hidden", "true");
       }
 
-      async function loadVirtualKeys() {
+      async function loadVirtualKeys(options = {}) {
         const requestId = beginRequest("virtualKeys");
+        const silent = options.silent === true;
         if (!silent) beginSync();
         try {
           const { keys } = await api("/api/virtual-keys");
@@ -7392,8 +7393,9 @@
         hydrateSettingsLayout();
       }
 
-      async function loadSettings() {
+      async function loadSettings(options = {}) {
         const requestId = beginRequest("settings");
+        const silent = options.silent === true;
         if (!silent) beginSync();
         try {
           const output = await api("/api/settings");
