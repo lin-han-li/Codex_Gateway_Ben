@@ -2865,6 +2865,7 @@
     </div>
 
     <script type="module">
+      import { initWebAppModules } from "./app/bootstrap.js";
       // state groups: server (backend truth), ui (interaction/runtime), draft (form intent)
       const S = {
         server: {
@@ -7633,6 +7634,55 @@
         hydrateSettingsLayout();
       }
 
+      const modularApp = initWebAppModules({
+        S,
+        api,
+        beginRequest,
+        isLatestRequest,
+        beginSync,
+        finishSyncSuccess,
+        finishSyncError,
+        coerceDashboardMetrics,
+        normalizeTokenDelta,
+        drawStats,
+        drawTokenUsage,
+        formatCompactNumber,
+        formatUsd,
+        dt,
+        coerceAuditSummary,
+        requestLogStatusMeta,
+        formatRequestLogAccount,
+        formatRequestLogKey,
+        formatLatencyMs,
+        esc,
+        makeId,
+        hydrateSettingsFromApi,
+        refreshSettingsUi,
+        normalizeQuery,
+        matchesVirtualKeyQuery,
+        isVirtualKeyExpired,
+        keyAccountLabel,
+        getVirtualKeyById,
+        getVirtualKeyClientModeLabel,
+        renderKeyUsageButtons,
+        closeKeyManageModal,
+        toggleRevealVirtualKey,
+        copyVirtualKey,
+        openKeyManageModal,
+        formatRemainingTime,
+        restoreVirtualKey,
+        revokeVirtualKey,
+        deleteVirtualKey,
+        openTestModal,
+        ts,
+        runBusyAction,
+        showToast,
+        toErrorMessage,
+        ensureTestHistory,
+        rememberTestModel,
+        log,
+      });
+
       async function loadSettings(options = {}) {
         const requestId = beginRequest("settings");
         const silent = options.silent === true;
@@ -9324,6 +9374,46 @@
           throw error;
         }
       }
+
+      loadSettings = async function (options = {}) {
+        return modularApp.loadSettings(options);
+      };
+
+      loadDashboardMetrics = async function (options = {}) {
+        return modularApp.loadDashboardMetrics(options);
+      };
+
+      renderTodayStats = function () {
+        return modularApp.renderTodayStats();
+      };
+
+      drawRequestLogsTable = function () {
+        return modularApp.drawRequestLogsTable();
+      };
+
+      loadRequestLogs = async function (options = {}) {
+        return modularApp.loadRequestLogs(options);
+      };
+
+      renderSettingsReadOnly = function () {
+        return modularApp.renderSettingsReadOnly();
+      };
+
+      drawKeysTable = function () {
+        return modularApp.drawKeysTable();
+      };
+
+      renderKeyManageModal = function () {
+        return modularApp.renderKeyManageModal();
+      };
+
+      drawTestChatLog = function () {
+        return modularApp.drawTestChatLog();
+      };
+
+      sendTestChat = async function () {
+        return modularApp.sendTestChat();
+      };
 
       ensureEarlyAuthFormBinding();
 

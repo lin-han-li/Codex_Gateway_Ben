@@ -9,6 +9,9 @@ import { readFile, writeFile } from "node:fs/promises"
 import { AppConfig, ensureAppDirs } from "./config"
 import { resolveCodexClientVersion, toWholeCodexClientVersion } from "./codex-version"
 import { buildCodexUserAgent, isFirstPartyCodexOriginator } from "./codex-identity"
+import { buildDashboardMetrics as buildAuditDashboardMetrics } from "./domain/audit/dashboard-metrics"
+import { estimateUsageCostUsd, PRICING_CATALOG_VERSION, PRICING_MODE, withEstimatedUsageCost } from "./domain/audit/pricing"
+import type { UsageMetrics } from "./domain/audit/types"
 import { BehaviorController, resolveBehaviorSignal, type BehaviorAcquireFailure, type BehaviorConfig } from "./behavior/control"
 import {
   buildUpstreamAccountUnavailableFailure,
@@ -32,6 +35,9 @@ import {
   bindClientIdentifierToAccount,
   isAccountBoundSessionFieldKey,
 } from "./upstream-session-binding"
+import { registerAuditRoutes } from "./routes/audits"
+import { registerDashboardRoutes } from "./routes/dashboard"
+import { registerSettingsRoutes } from "./routes/settings"
 
 await ensureAppDirs()
 
@@ -49,16 +55,6 @@ const usageEventClients = new Map<
   }
 >()
 let bootstrapLogState = ""
-
-type UsageMetrics = {
-  promptTokens: number
-  completionTokens: number
-  totalTokens: number
-  cachedInputTokens: number
-  reasoningOutputTokens: number
-  estimatedCostUsd: number | null
-  reasoningEffort: string | null
-}
 
 type RequestAuditCompatInput = {
   route: string
@@ -107,33 +103,7 @@ const extendedUsageTotalsState = {
   estimatedCostUsd: 0,
   updatedAt: 0,
 }
-const PRICING_MODE = "builtin-default"
-const PRICING_CATALOG_VERSION = "builtin-v1"
 const STATS_TIMEZONE = Intl.DateTimeFormat().resolvedOptions().timeZone || "Asia/Shanghai"
-const GPT_5_4_INPUT_TIER_BREAKPOINT = 272_000
-const MODEL_PRICE_PER_1K_TOKENS: Array<[string, number, number, number]> = [
-  ["gpt-5.3-codex", 0.00175, 0.000175, 0.014],
-  ["gpt-5.2-codex", 0.00175, 0.000175, 0.014],
-  ["gpt-5.2", 0.00175, 0.000175, 0.014],
-  ["gpt-5.1-codex-mini", 0.00025, 0.000025, 0.002],
-  ["gpt-5.1-codex-max", 0.00125, 0.000125, 0.01],
-  ["gpt-5.1-codex", 0.00125, 0.000125, 0.01],
-  ["gpt-5.1", 0.00125, 0.000125, 0.01],
-  ["gpt-5-codex", 0.00125, 0.000125, 0.01],
-  ["gpt-5", 0.00125, 0.000125, 0.01],
-  ["gpt-4.1", 0.002, 0.002, 0.008],
-  ["gpt-4o", 0.0025, 0.0025, 0.01],
-  ["gpt-4", 0.03, 0.03, 0.06],
-  ["claude-3-7", 0.003, 0.003, 0.015],
-  ["claude-3-5", 0.003, 0.003, 0.015],
-  ["claude-3", 0.003, 0.003, 0.015],
-]
-
-type ModelPriceRates = {
-  inputUsdPer1K: number
-  cachedInputUsdPer1K: number
-  outputUsdPer1K: number
-}
 
 type AccountQuotaWindow = {
   usedPercent: number
@@ -1205,99 +1175,6 @@ function emptyUsageMetrics(): UsageMetrics {
     reasoningOutputTokens: 0,
     estimatedCostUsd: null,
     reasoningEffort: null,
-  }
-}
-
-function resolveModelPricePer1K(model: string | null | undefined, inputTokensTotal: number): ModelPriceRates | null {
-  const normalized = String(model ?? "")
-    .trim()
-    .toLowerCase()
-  if (!normalized) return null
-
-  if (normalized.startsWith("gpt-5.4-pro")) {
-    if (inputTokensTotal > GPT_5_4_INPUT_TIER_BREAKPOINT) {
-      return {
-        inputUsdPer1K: 0.06,
-        cachedInputUsdPer1K: 0.06,
-        outputUsdPer1K: 0.27,
-      }
-    }
-    return {
-      inputUsdPer1K: 0.03,
-      cachedInputUsdPer1K: 0.03,
-      outputUsdPer1K: 0.18,
-    }
-  }
-
-  if (normalized.startsWith("gpt-5.4")) {
-    if (inputTokensTotal > GPT_5_4_INPUT_TIER_BREAKPOINT) {
-      return {
-        inputUsdPer1K: 0.005,
-        cachedInputUsdPer1K: 0.0005,
-        outputUsdPer1K: 0.0225,
-      }
-    }
-    return {
-      inputUsdPer1K: 0.0025,
-      cachedInputUsdPer1K: 0.00025,
-      outputUsdPer1K: 0.015,
-    }
-  }
-
-  for (const [prefix, inputUsdPer1K, cachedInputUsdPer1K, outputUsdPer1K] of MODEL_PRICE_PER_1K_TOKENS) {
-    if (!normalized.startsWith(prefix)) continue
-    return {
-      inputUsdPer1K,
-      cachedInputUsdPer1K,
-      outputUsdPer1K,
-    }
-  }
-
-  return null
-}
-
-function roundEstimatedCostUsd(value: number) {
-  return Math.round(value * 1_000_000_000) / 1_000_000_000
-}
-
-function estimateUsageCostUsd(input: {
-  model?: string | null
-  promptTokens?: number | null
-  cachedInputTokens?: number | null
-  completionTokens?: number | null
-}) {
-  const promptTokens = normalizeNonNegativeInt(input.promptTokens)
-  const cachedInputTokens = Math.min(promptTokens, normalizeNonNegativeInt(input.cachedInputTokens))
-  const completionTokens = normalizeNonNegativeInt(input.completionTokens)
-  if (promptTokens <= 0 && cachedInputTokens <= 0 && completionTokens <= 0) return null
-  const rates = resolveModelPricePer1K(input.model ?? null, promptTokens)
-  if (!rates) return null
-  const billableInputTokens = Math.max(0, promptTokens - cachedInputTokens)
-  return roundEstimatedCostUsd(
-    billableInputTokens / 1000 * rates.inputUsdPer1K +
-      cachedInputTokens / 1000 * rates.cachedInputUsdPer1K +
-      completionTokens / 1000 * rates.outputUsdPer1K,
-  )
-}
-
-function withEstimatedUsageCost(usage: UsageMetrics, model: string | null | undefined): UsageMetrics {
-  const normalizedEstimatedCostUsd = normalizeNullableNonNegativeNumber(usage.estimatedCostUsd)
-  if (normalizedEstimatedCostUsd !== null) {
-    return {
-      ...usage,
-      estimatedCostUsd: normalizedEstimatedCostUsd,
-    }
-  }
-  const estimatedCostUsd = estimateUsageCostUsd({
-    model,
-    promptTokens: usage.promptTokens,
-    cachedInputTokens: usage.cachedInputTokens,
-    completionTokens: usage.completionTokens,
-  })
-  if (estimatedCostUsd === null) return usage
-  return {
-    ...usage,
-    estimatedCostUsd,
   }
 }
 
@@ -4666,76 +4543,22 @@ function buildServiceStatusSummary(now = Date.now()) {
 }
 
 function buildDashboardMetrics() {
-  const now = Date.now()
-  const accounts = accountStore.list()
-  const keys = accountStore.listVirtualApiKeys()
-  const todaySummary = accountStore.getTodayRequestTokenStatsSummary(now)
-  const todayStats = todaySummary.stats
-  const todayTokens = Math.max(0, Math.floor(Number(todayStats?.billableTokens ?? 0)))
-  const cachedInputTokens = Math.max(0, Math.floor(Number(todayStats?.cachedInputTokens ?? 0)))
-  const reasoningOutputTokens = Math.max(0, Math.floor(Number(todayStats?.reasoningOutputTokens ?? 0)))
-  const estimatedCostUsd = Math.max(0, Number(todayStats?.estimatedCostUsd ?? 0))
-  const todayRequestCount = Math.max(0, Math.floor(Number(todayStats?.requestCount ?? 0)))
-  const poolRemaining = buildPoolRemainingMetrics(now)
-  const abnormalByCategory: Record<string, number> = {
-    normal: 0,
-    quota_exhausted: 0,
-    banned: 0,
-    access_banned: 0,
-    auth_invalid: 0,
-    soft_drained: 0,
-    transient: 0,
-    unknown: 0,
-  }
-
-  let accountsHealthy = 0
-  let accountsUnhealthy = 0
-  let accountsEligible = 0
-  let accountsSoftDrained = 0
-  let accountsExcluded = 0
-
-  for (const account of accounts) {
-    const quota = accountQuotaCache.get(account.id) ?? null
-    const derived = resolvePublicAccountDerivedState(account.id, quota)
-    if (derived.health) accountsUnhealthy += 1
-    else accountsHealthy += 1
-
-    if (derived.routing.state === "eligible") accountsEligible += 1
-    else if (derived.routing.state === "soft_drained") accountsSoftDrained += 1
-    else accountsExcluded += 1
-
-    const category = derived.abnormalState?.category ?? "normal"
-    abnormalByCategory[category] = (abnormalByCategory[category] ?? 0) + 1
-  }
-
-  return {
-    refreshedAt: now,
-    providersTotal: providers.listPublic().length,
-    accountsTotal: accounts.length,
-    accountsActive: accounts.filter((item) => item.isActive).length,
-    accountsHealthy,
-    accountsUnhealthy,
-    accountsEligible,
-    accountsSoftDrained,
-    accountsExcluded,
-    abnormalByCategory,
-    virtualKeysTotal: keys.length,
-    virtualKeysRevoked: keys.filter((item) => item.isRevoked).length,
-    virtualKeysPool: keys.filter((item) => item.routingMode === "pool").length,
-    virtualKeysSingle: keys.filter((item) => item.routingMode === "single").length,
-    usageTotals: getUsageTotalsSnapshot(),
-    todayTokens,
-    cachedInputTokens,
-    reasoningOutputTokens,
-    estimatedCostUsd,
-    unpricedRequestCount: todaySummary.unpricedRequestCount,
-    todayRequestCount,
-    poolRemaining,
+  return buildAuditDashboardMetrics({
+    listProviders: () => providers.listPublic(),
+    listAccounts: () => accountStore.list(),
+    listVirtualKeys: () => accountStore.listVirtualApiKeys(),
+    getTodaySummary: (now) => accountStore.getTodayRequestTokenStatsSummary(now),
+    buildPoolRemainingMetrics,
+    resolvePublicAccountDerivedState: (accountId) => {
+      const quota = accountQuotaCache.get(accountId) ?? null
+      return resolvePublicAccountDerivedState(accountId, quota)
+    },
+    getUsageTotalsSnapshot,
+    buildServiceStatusSummary,
     statsTimezone: STATS_TIMEZONE,
     pricingMode: PRICING_MODE,
     pricingCatalogVersion: PRICING_CATALOG_VERSION,
-    serviceStatusSummary: buildServiceStatusSummary(now),
-  }
+  })
 }
 
 function syncExtendedUsageTotalsStateFromAudits(now = Date.now()) {
@@ -7573,85 +7396,64 @@ app.post("/api/events/token", (c) => {
   })
 })
 
-app.get("/api/settings", (c) =>
-  {
-    const now = Date.now()
-    const serviceInfo = getSafeServiceAddressInfo(AppConfig.host, AppConfig.port)
-    return c.json({
-      settings: {
-        localServiceAddress: runtimeSettings.localServiceAddress,
-        activeLocalServiceAddress: serviceInfo.activeLocalServiceAddress,
-        bindServiceAddress: serviceInfo.bindServiceAddress,
-        lanServiceAddresses: serviceInfo.lanServiceAddresses,
-        preferredClientServiceAddress: serviceInfo.preferredClientServiceAddress,
-        managementAuthEnabled: Boolean(getEffectiveManagementToken()),
-        encryptionKeyConfigured: Boolean(getEffectiveEncryptionKey()),
-        upstreamPrivacyStrict: isStrictUpstreamPrivacyEnabled(),
-        officialStrictPassthrough: isOfficialStrictPassthroughEnabled(),
-        restartRequired: true,
-        statsTimezone: STATS_TIMEZONE,
-        pricingMode: PRICING_MODE,
-        pricingCatalogVersion: PRICING_CATALOG_VERSION,
-        serviceStatusSummary: buildServiceStatusSummary(now),
-      },
-    })
-  },
-)
-
-app.post("/api/settings", async (c) => {
-  try {
-    const raw = await c.req.json()
-    const input = UpdateSettingsSchema.parse(raw)
-    const normalized = normalizeLocalServiceAddress(input.localServiceAddress)
-    const nextAdminToken = input.adminToken === undefined ? String(runtimeSettings.adminToken ?? "").trim() : String(input.adminToken ?? "").trim()
-    const nextEncryptionKey =
-      input.encryptionKey === undefined ? String(runtimeSettings.encryptionKey ?? "").trim() : String(input.encryptionKey ?? "").trim()
-    const nextUpstreamPrivacyStrict =
-      input.upstreamPrivacyStrict === undefined ? runtimeSettings.upstreamPrivacyStrict !== false : Boolean(input.upstreamPrivacyStrict)
-    const nextOfficialStrictPassthrough =
-      input.officialStrictPassthrough === undefined
-        ? runtimeSettings.officialStrictPassthrough === true
-        : Boolean(input.officialStrictPassthrough)
-    const effectiveEncryptionKey = String(AppConfig.encryptionKey ?? "").trim() || nextEncryptionKey
-    const warnings: string[] = []
-    if (normalized) {
-      const parsed = new URL(normalized)
-      if (isNonLoopbackBindingHost(parsed.hostname) && !effectiveEncryptionKey) {
-        warnings.push(
-          "Non-loopback local service address was saved, but OAUTH_APP_ENCRYPTION_KEY is not configured. Desktop startup will fall back to 127.0.0.1.",
-        )
-      }
-    }
-    runtimeSettings.localServiceAddress = normalized
-    runtimeSettings.adminToken = nextAdminToken
-    runtimeSettings.encryptionKey = nextEncryptionKey
-    runtimeSettings.upstreamPrivacyStrict = nextUpstreamPrivacyStrict
-    runtimeSettings.officialStrictPassthrough = nextOfficialStrictPassthrough
-    await saveRuntimeSettings(runtimeSettings)
-    const serviceInfo = getSafeServiceAddressInfo(AppConfig.host, AppConfig.port)
-    return c.json({
-      success: true,
-      settings: {
-        localServiceAddress: runtimeSettings.localServiceAddress,
-        activeLocalServiceAddress: serviceInfo.activeLocalServiceAddress,
-        bindServiceAddress: serviceInfo.bindServiceAddress,
-        lanServiceAddresses: serviceInfo.lanServiceAddresses,
-        preferredClientServiceAddress: serviceInfo.preferredClientServiceAddress,
-        managementAuthEnabled: Boolean(getEffectiveManagementToken()),
-        encryptionKeyConfigured: Boolean(getEffectiveEncryptionKey()),
-        upstreamPrivacyStrict: isStrictUpstreamPrivacyEnabled(),
-        officialStrictPassthrough: isOfficialStrictPassthroughEnabled(),
-        restartRequired: true,
-        statsTimezone: STATS_TIMEZONE,
-        pricingMode: PRICING_MODE,
-        pricingCatalogVersion: PRICING_CATALOG_VERSION,
-        serviceStatusSummary: buildServiceStatusSummary(),
-      },
-      warnings,
-    })
-  } catch (error) {
-    return c.json({ error: errorMessage(error) }, 400)
+function buildSettingsPayload(now = Date.now()) {
+  const serviceInfo = getSafeServiceAddressInfo(AppConfig.host, AppConfig.port)
+  return {
+    localServiceAddress: runtimeSettings.localServiceAddress,
+    activeLocalServiceAddress: serviceInfo.activeLocalServiceAddress,
+    bindServiceAddress: serviceInfo.bindServiceAddress,
+    lanServiceAddresses: serviceInfo.lanServiceAddresses,
+    preferredClientServiceAddress: serviceInfo.preferredClientServiceAddress,
+    managementAuthEnabled: Boolean(getEffectiveManagementToken()),
+    encryptionKeyConfigured: Boolean(getEffectiveEncryptionKey()),
+    upstreamPrivacyStrict: isStrictUpstreamPrivacyEnabled(),
+    officialStrictPassthrough: isOfficialStrictPassthroughEnabled(),
+    restartRequired: true,
+    statsTimezone: STATS_TIMEZONE,
+    pricingMode: PRICING_MODE,
+    pricingCatalogVersion: PRICING_CATALOG_VERSION,
+    serviceStatusSummary: buildServiceStatusSummary(now),
   }
+}
+
+async function persistSettings(input: z.infer<typeof UpdateSettingsSchema>) {
+  const normalized = normalizeLocalServiceAddress(input.localServiceAddress)
+  const nextAdminToken = input.adminToken === undefined ? String(runtimeSettings.adminToken ?? "").trim() : String(input.adminToken ?? "").trim()
+  const nextEncryptionKey =
+    input.encryptionKey === undefined ? String(runtimeSettings.encryptionKey ?? "").trim() : String(input.encryptionKey ?? "").trim()
+  const nextUpstreamPrivacyStrict =
+    input.upstreamPrivacyStrict === undefined ? runtimeSettings.upstreamPrivacyStrict !== false : Boolean(input.upstreamPrivacyStrict)
+  const nextOfficialStrictPassthrough =
+    input.officialStrictPassthrough === undefined
+      ? runtimeSettings.officialStrictPassthrough === true
+      : Boolean(input.officialStrictPassthrough)
+  const effectiveEncryptionKey = String(AppConfig.encryptionKey ?? "").trim() || nextEncryptionKey
+  const warnings: string[] = []
+  if (normalized) {
+    const parsed = new URL(normalized)
+    if (isNonLoopbackBindingHost(parsed.hostname) && !effectiveEncryptionKey) {
+      warnings.push(
+        "Non-loopback local service address was saved, but OAUTH_APP_ENCRYPTION_KEY is not configured. Desktop startup will fall back to 127.0.0.1.",
+      )
+    }
+  }
+  runtimeSettings.localServiceAddress = normalized
+  runtimeSettings.adminToken = nextAdminToken
+  runtimeSettings.encryptionKey = nextEncryptionKey
+  runtimeSettings.upstreamPrivacyStrict = nextUpstreamPrivacyStrict
+  runtimeSettings.officialStrictPassthrough = nextOfficialStrictPassthrough
+  await saveRuntimeSettings(runtimeSettings)
+  return {
+    settings: buildSettingsPayload(),
+    warnings,
+  }
+}
+
+registerSettingsRoutes(app, {
+  getSettings: () => buildSettingsPayload(),
+  parseUpdateSettingsInput: (raw) => UpdateSettingsSchema.parse(raw),
+  saveSettings: persistSettings,
+  errorMessage,
 })
 
 app.post("/api/system/open-url", async (c) => {
@@ -7706,61 +7508,16 @@ app.post("/api/bootstrap/logs/clear", async (c) => {
   }
 })
 
-app.get("/api/audits", (c) => {
-  const query = String(c.req.query("query") ?? c.req.query("q") ?? "").trim()
-  const statusGroup = String(c.req.query("statusGroup") ?? c.req.query("status") ?? c.req.query("statusFamily") ?? "all").trim()
-  const page = Math.max(1, parseHeaderNumber(c.req.query("page") ?? "1") || 1)
-  const pageSize = Math.min(200, Math.max(1, parseHeaderNumber(c.req.query("pageSize") ?? "20") || 20))
-  const result = accountStore.listRequestAuditsPaginated({
-    query,
-    statusFilter: statusGroup,
-    page,
-    pageSize,
-  })
-  const logs = result.items.map((item) => normalizeAuditLog(item))
-  const summary = accountStore.summarizeRequestAudits({
-    query,
-    statusFilter: statusGroup,
-  })
-  return c.json({
-    logs,
-    items: logs,
-    total: result.total,
-    page: result.page,
-    pageSize: result.pageSize,
-    hasMore: result.page * result.pageSize < result.total,
-    summary,
-    filters: {
-      query,
-      statusGroup,
-    },
-  })
+registerAuditRoutes(app, {
+  accountStore,
+  normalizeAuditLog,
+  clearAuditOverlays: () => requestAuditOverlays.clear(),
+  parseHeaderNumber,
 })
 
-app.get("/api/audits/summary", (c) => {
-  const query = String(c.req.query("query") ?? c.req.query("q") ?? "").trim()
-  const statusGroup = String(c.req.query("statusGroup") ?? c.req.query("status") ?? c.req.query("statusFamily") ?? "all").trim()
-  const summary = accountStore.summarizeRequestAudits({
-    query,
-    statusFilter: statusGroup,
-  })
-  return c.json({
-    summary,
-    total: summary.filteredCount,
-    filters: {
-      query,
-      statusGroup,
-    },
-  })
+registerDashboardRoutes(app, {
+  buildDashboardMetrics,
 })
-
-app.post("/api/audits/clear", (c) => {
-  accountStore.clearRequestAudits()
-  requestAuditOverlays.clear()
-  return c.json({ success: true })
-})
-
-app.get("/api/dashboard/metrics", (c) => c.json({ metrics: buildDashboardMetrics() }))
 
 app.get("/api/providers", () =>
   Response.json({

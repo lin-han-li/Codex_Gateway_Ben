@@ -15,6 +15,7 @@
     "start": "bun src/index.ts",
     "check": "tsc --noEmit",
     "check:web": "node scripts/check-web-syntax.mjs",
+    "sync:derived": "node scripts/sync-derived-copies.mjs --write",
     "verify:desktop": "bun run check && bun run check:web",
     "check:version-sync": "node scripts/assert-release-version-sync.mjs",
     "test:bridge": "bun scripts/bridge-regression.ts",
