@@ -5,10 +5,12 @@ build/*
 !build/icons/
 !build/icons/*.png
 dist
+dist-server
 dist-*/
 *.bun-build
 _tmp/
 _tmp_config_test.toml
 _tmp_script_check.js
+codex_office_source/
 server-deploy-bundle/
 server-runtime-bundle/

@@ -1,6 +1,6 @@
 {
   "name": "oauth-multi-login-app",
-  "version": "1.1.28",
+  "version": "1.1.34",
   "private": true,
   "description": "Desktop OAuth multi-account login application",
   "author": {
@@ -21,6 +21,7 @@
     "test:parity": "bun scripts/codex-parity-audit.ts",
     "test:authmode-parity": "bun scripts/codex-oauth-vs-apikey-parity.ts",
     "test:session-parity": "bun scripts/codex-session-parity-report.ts",
+    "test:cursor-compat": "bun scripts/cursor-compat-audit.ts",
     "test:session-quality": "bun scripts/codex-session-quality-audit.ts",
     "test:long-session": "bun scripts/codex-long-session-continuity.ts",
     "test:quota-failover": "bun scripts/codex-quota-failover-audit.ts",
@@ -37,7 +38,7 @@
     "test:behavior": "bun scripts/codex-behavior-audit.ts",
     "test:hard-audit": "bun scripts/codex-hard-audit.ts",
     "test:token-accuracy": "bun scripts/token-accuracy-audit.ts",
-    "test:compat": "bun run check && bun run test:bridge && bun run test:parity && bun run test:authmode-parity && bun run test:session-parity && bun run test:session-quality && bun run test:long-session && bun run test:quota-failover && bun run test:transient-failover && bun run test:pressure-routing && bun run test:mixed-plan-pool && bun run test:transient-exhaustion && bun run test:transport-exhaustion && bun run test:ban-failover && bun run test:ban-catch-normalization && bun run test:workspace-failover && bun run test:pool-consistency && bun run test:key-issue && bun run test:behavior && bun run test:hard-audit && bun run test:token-accuracy",
+    "test:compat": "bun run check && bun run test:bridge && bun run test:parity && bun run test:authmode-parity && bun run test:session-parity && bun run test:cursor-compat && bun run test:session-quality && bun run test:long-session && bun run test:quota-failover && bun run test:transient-failover && bun run test:pressure-routing && bun run test:mixed-plan-pool && bun run test:transient-exhaustion && bun run test:transport-exhaustion && bun run test:ban-failover && bun run test:ban-catch-normalization && bun run test:workspace-failover && bun run test:pool-consistency && bun run test:key-issue && bun run test:behavior && bun run test:hard-audit && bun run test:token-accuracy",
     "gate:release": "bun run test:compat",
     "release:cross-platform": "powershell -ExecutionPolicy Bypass -File scripts/release-cross-platform.ps1",
     "build:server": "node scripts/build-server-binary.mjs",

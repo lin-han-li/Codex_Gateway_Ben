@@ -66,6 +66,8 @@ type RequestAuditCompatInput = {
   providerId?: string | null
   accountId?: string | null
   virtualKeyId?: string | null
+  clientMode?: "codex" | "cursor" | null
+  wireApi?: "responses" | "chat_completions" | null
   model?: string | null
   sessionId?: string | null
   requestBytes?: number
@@ -863,6 +865,13 @@ async function loadCodexModelCatalog(): Promise<CodexModelCatalogEntry[]> {
 
 const CODEX_MODEL_CATALOG = await loadCodexModelCatalog()
 const DEFAULT_CHAT_MODELS = CODEX_MODEL_CATALOG.map((item) => item.id)
+const CURSOR_STABLE_MODEL_IDS = [
+  "gpt-5.4",
+  "gpt-5.3-codex",
+  "gpt-5.2",
+  "gpt-5.1-codex-max",
+  "gpt-5.1-codex-mini",
+] as const
 const MODEL_REASONING_LEVELS: Record<string, string[]> = Object.fromEntries(
   CODEX_MODEL_CATALOG.map((item) => [item.id, item.supportedReasoningLevels]),
 )
@@ -898,8 +907,69 @@ const IssueVirtualKeySchema = z.object({
   accountId: z.string().min(1).optional(),
   providerId: z.string().trim().min(1).optional().default("chatgpt"),
   routingMode: z.enum(["single", "pool"]).optional().default("pool"),
+  clientMode: z.enum(["codex", "cursor"]).optional().default("codex"),
+  wireApi: z.enum(["responses", "chat_completions"]).optional(),
   name: z.string().trim().max(120).optional(),
   validityDays: z.number().int().min(1).max(3650).nullable().optional().default(30),
+})
+
+const CursorChatContentPartSchema = z.union([
+  z.object({
+    type: z.string().trim().min(1),
+    text: z.string().optional(),
+  }),
+  z.object({
+    type: z.string().trim().min(1),
+    input_text: z.string().optional(),
+    text: z.string().optional(),
+  }),
+])
+
+const CursorToolSchema = z.object({
+  type: z.string().trim().min(1).default("function"),
+  function: z
+    .object({
+      name: z.string().trim().min(1).max(200),
+      description: z.string().trim().max(4000).optional(),
+      parameters: z.record(z.string(), z.unknown()).optional(),
+    })
+    .optional(),
+})
+
+const CursorChatMessageSchema = z.object({
+  role: z.enum(["system", "developer", "user", "assistant", "tool"]),
+  content: z.union([z.string(), z.array(CursorChatContentPartSchema)]).optional(),
+  name: z.string().trim().min(1).max(200).optional(),
+  tool_call_id: z.string().trim().min(1).max(200).optional(),
+  tool_calls: z
+    .array(
+      z.object({
+        id: z.string().trim().min(1).max(200).optional(),
+        type: z.string().trim().min(1).default("function"),
+        function: z.object({
+          name: z.string().trim().min(1).max(200),
+          arguments: z.string().optional().default(""),
+        }),
+      }),
+    )
+    .optional(),
+})
+
+const CursorChatCompletionsSchema = z.object({
+  model: z.string().trim().min(1).max(120),
+  messages: z.array(CursorChatMessageSchema).min(1),
+  tools: z.array(CursorToolSchema).optional().default([]),
+  tool_choice: z.union([z.string(), z.record(z.string(), z.unknown())]).optional(),
+  stream: z.boolean().optional().default(false),
+  stream_options: z
+    .object({
+      include_usage: z.boolean().optional(),
+    })
+    .optional(),
+  temperature: z.number().optional(),
+  max_tokens: z.number().int().positive().optional(),
+  user: z.string().trim().min(1).max(200).optional(),
+  parallel_tool_calls: z.boolean().optional(),
 })
 
 const BulkDeleteAccountsSchema = z.object({
@@ -1462,6 +1532,36 @@ async function readCodexStream(response: Response) {
   const reply = doneText || extractResponseText(payload) || deltaText
 
   return { payload, reply, usage: latestUsage }
+}
+
+async function readCodexCompatibleBody(response: Response) {
+  const bodyText = await response.text().catch(() => "")
+  const parsedPayload = tryParseJsonText(bodyText)
+  if (parsedPayload !== undefined) {
+    const usage = normalizeUsage(parsedPayload)
+    return {
+      payload: parsedPayload,
+      reply: extractResponseText(parsedPayload),
+      usage: hasUsageDelta(usage) ? usage : emptyUsageMetrics(),
+    }
+  }
+
+  const contentType = response.headers.get("content-type") ?? ""
+  const looksLikeSse = isEventStreamContentType(contentType) || /^\s*data:/m.test(bodyText) || bodyText.includes("[DONE]")
+  if (!looksLikeSse) {
+    return {
+      payload: {},
+      reply: "",
+      usage: emptyUsageMetrics(),
+    }
+  }
+
+  const streamResponse = new Response(bodyText, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  })
+  return readCodexStream(streamResponse)
 }
 
 function extractResponseText(payload: unknown): string {
@@ -3560,16 +3660,86 @@ function resolveSessionRouteID(input: { headers?: Headers; requestUrl?: string |
   )
 }
 
-function resolveVirtualKeyContext(c: any) {
+function describeVirtualKeyClientMode(clientMode: string | null | undefined) {
+  return clientMode === "cursor" ? "Cursor compatibility" : "Codex"
+}
+
+function buildVirtualKeyModeError(input: {
+  key: {
+    id?: string
+    providerId?: string
+    routingMode?: string
+    clientMode?: string | null
+    wireApi?: string | null
+  }
+  expectedClientMode: "codex" | "cursor"
+  expectedWireApi?: "responses" | "chat_completions"
+}) {
+  const keyClientMode = input.key.clientMode === "cursor" ? "cursor" : "codex"
+  const keyWireApi =
+    input.key.wireApi === "chat_completions"
+      ? "chat_completions"
+      : input.key.wireApi === "responses"
+        ? "responses"
+        : keyClientMode === "cursor"
+          ? "chat_completions"
+          : "responses"
+  const modeMatches = keyClientMode === input.expectedClientMode
+  const wireMatches = !input.expectedWireApi || keyWireApi === input.expectedWireApi
+  if (modeMatches && wireMatches) return null
+  if (input.expectedWireApi && keyWireApi !== input.expectedWireApi) {
+    if (input.expectedClientMode === "cursor") {
+      return {
+        status: 403 as const,
+        error: "This virtual API key is for Codex clients only. Use /v1/* endpoints.",
+      }
+    }
+    return {
+      status: 403 as const,
+      error: "This virtual API key is for Cursor compatibility only. Use /cursor/v1/* endpoints.",
+    }
+  }
+  if (input.expectedClientMode === "cursor") {
+    return {
+      status: 403 as const,
+      error: "This virtual API key is for Codex clients only. Use /v1/* endpoints.",
+    }
+  }
+  return {
+    status: 403 as const,
+    error: "This virtual API key is for Cursor compatibility only. Use /cursor/v1/* endpoints.",
+  }
+}
+
+function resolveVirtualKeyContext(
+  c: any,
+  options?: {
+    expectedClientMode?: "codex" | "cursor"
+    expectedWireApi?: "responses" | "chat_completions"
+    bodySessionId?: string | null
+  },
+) {
   const bearer = extractBearerToken(c.req.header("authorization"))
   if (!bearer) return { error: "Missing Authorization Bearer token" as const, status: 401 as const }
 
   const sessionId = resolveSessionRouteID({
     headers: c.req.raw.headers,
     requestUrl: c.req.url,
+    bodySessionId: options?.bodySessionId,
   })
   const resolved = resolveVirtualApiKeyWithPoolFallback(bearer, sessionId)
   if (!resolved) return { error: "Invalid, revoked, or expired virtual API key" as const, status: 401 as const }
+
+  const expectedClientMode = options?.expectedClientMode
+  const expectedWireApi = options?.expectedWireApi
+  if (expectedClientMode || expectedWireApi) {
+    const modeError = buildVirtualKeyModeError({
+      key: resolved.key,
+      expectedClientMode: expectedClientMode ?? "codex",
+      expectedWireApi,
+    })
+    if (modeError) return modeError
+  }
 
   const routed = ensureResolvedPoolAccountEligible({
     resolved,
@@ -4793,6 +4963,56 @@ function resolveModelCatalogForCodexMode() {
   return buildModelCatalogPayload({
     ids: [...DEFAULT_CHAT_MODELS],
   })
+}
+
+function resolveModelCatalogForCursorMode() {
+  const availableIds = CURSOR_STABLE_MODEL_IDS.filter((id) => DEFAULT_CHAT_MODELS.includes(id))
+  return buildModelCatalogPayload({
+    ids: availableIds,
+  })
+}
+
+function normalizeCursorStableModelIDs(ids: Iterable<string>) {
+  const allowed = new Set<string>(CURSOR_STABLE_MODEL_IDS.filter((id) => DEFAULT_CHAT_MODELS.includes(id)))
+  const ordered: string[] = []
+  const seen = new Set<string>()
+  for (const rawId of ids) {
+    const normalized = extractModelID(rawId)
+    if (!normalized || !allowed.has(normalized) || seen.has(normalized)) continue
+    seen.add(normalized)
+    ordered.push(normalized)
+  }
+  return ordered
+}
+
+function extractCursorStableModelIDsFromSnapshot(snapshot?: AccountModelsSnapshot | null) {
+  if (!snapshot) return []
+  return normalizeCursorStableModelIDs(snapshot.entries.map((entry) => extractModelEntryID(entry) ?? ""))
+}
+
+async function resolveModelCatalogForCursorAccount(input: {
+  account: StoredAccount
+  requestUrl?: string
+  requestHeaders?: Headers
+  forceRefresh?: boolean
+}) {
+  try {
+    const snapshot = await getModelsSnapshot({
+      account: input.account,
+      requestUrl: input.requestUrl,
+      requestHeaders: input.requestHeaders,
+      forceRefresh: input.forceRefresh,
+    })
+    const availableIds = extractCursorStableModelIDsFromSnapshot(snapshot)
+    if (availableIds.length > 0) {
+      return buildModelCatalogPayload({
+        ids: availableIds,
+      })
+    }
+  } catch {
+    // fall through to the static compatibility catalog when models probing fails
+  }
+  return resolveModelCatalogForCursorMode()
 }
 
 function resolveChatModelList() {
@@ -6391,6 +6611,604 @@ function buildCodexRequestBody(input: {
   return requestBody
 }
 
+function normalizeCursorTextContent(content: unknown) {
+  if (typeof content === "string") return content
+  if (!Array.isArray(content)) return ""
+  const parts = content
+    .map((part) => {
+      const record = asRecord(part)
+      if (!record) return ""
+      const type = normalizeNullableString(record.type, 64)
+      if (type === "text" || type === "input_text") {
+        return String(pickFirstDefinedValue(record.text, record.input_text) ?? "")
+      }
+      return ""
+    })
+    .filter((item) => item.length > 0)
+  return parts.join("\n")
+}
+
+function convertCursorMessagesToResponsesInput(messages: Array<Record<string, unknown>>) {
+  const input: Array<Record<string, unknown>> = []
+
+  for (const message of messages) {
+    const role = normalizeNullableString(message.role, 32)
+    if (!role) continue
+    if (role === "system" || role === "developer") continue
+    const text = normalizeCursorTextContent(message.content)
+    if (role === "tool") {
+      const toolCallId = normalizeNullableString(
+        pickFirstDefinedValue(message.tool_call_id, message.toolCallId, message.call_id, message.callId),
+        200,
+      )
+      if (toolCallId) {
+        input.push({
+          type: "function_call_output",
+          call_id: toolCallId,
+          output: text,
+        })
+        continue
+      }
+    }
+
+    const contentParts: Array<Record<string, unknown>> = []
+    if (text) {
+      contentParts.push({
+        type: role === "assistant" ? "output_text" : "input_text",
+        text,
+      })
+    }
+
+    if (role === "assistant" && Array.isArray(message.tool_calls)) {
+      for (const rawToolCall of message.tool_calls) {
+        const toolCall = asRecord(rawToolCall)
+        const fn = asRecord(toolCall?.function)
+        const name = normalizeNullableString(fn?.name, 200)
+        if (!name) continue
+        const callId = normalizeNullableString(toolCall?.id, 200) ?? crypto.randomUUID()
+        contentParts.push({
+          type: "function_call",
+          call_id: callId,
+          name,
+          arguments: typeof fn?.arguments === "string" ? fn.arguments : JSON.stringify(fn?.arguments ?? {}),
+        })
+      }
+    }
+
+    if (contentParts.length === 0) continue
+    const item: Record<string, unknown> = {
+      role,
+      content: contentParts,
+    }
+    const name = normalizeNullableString(message.name, 200)
+    if (name) item.name = name
+    input.push(item)
+  }
+
+  return input
+}
+
+function buildCursorResponsesInstructions(messages: Array<Record<string, unknown>>) {
+  const segments: string[] = []
+  const baseInstructions = String(CHAT_INSTRUCTIONS ?? "").trim()
+  if (baseInstructions.length > 0) segments.push(baseInstructions)
+
+  for (const message of messages) {
+    const role = normalizeNullableString(message.role, 32)
+    if (role !== "system" && role !== "developer") continue
+    const text = normalizeCursorTextContent(message.content)
+    if (!text) continue
+    const name = normalizeNullableString(message.name, 200)
+    const label = role === "developer" ? "Developer instruction" : "System instruction"
+    segments.push(name ? `${label} (${name}):\n${text}` : `${label}:\n${text}`)
+  }
+
+  return segments.join("\n\n").trim()
+}
+
+function convertCursorToolsToResponsesTools(tools: Array<Record<string, unknown>>) {
+  const converted: Array<Record<string, unknown>> = []
+  for (const rawTool of tools) {
+    const tool = asRecord(rawTool)
+    if (!tool) continue
+    const type = normalizeNullableString(tool.type, 64) ?? "function"
+    if (type !== "function") continue
+    const fn = asRecord(tool.function)
+    const name = normalizeNullableString(fn?.name, 200)
+    if (!name) continue
+    converted.push({
+      type: "function",
+      name,
+      description: normalizeNullableString(fn?.description, 4000) ?? undefined,
+      parameters: asRecord(fn?.parameters) ?? {},
+    })
+  }
+  return converted
+}
+
+function convertCursorToolChoice(toolChoice: unknown) {
+  if (typeof toolChoice === "string") {
+    const normalized = toolChoice.trim()
+    if (normalized === "auto" || normalized === "none" || normalized === "required") return normalized
+    return undefined
+  }
+  const record = asRecord(toolChoice)
+  if (!record) return undefined
+  const fn = asRecord(record.function)
+  const name = normalizeNullableString(fn?.name, 200)
+  if (!name) return undefined
+  return {
+    type: "function",
+    name,
+  }
+}
+
+function buildCursorResponsesRequestBody(input: {
+  model: string
+  sessionId?: string | null
+  accountId?: string | null
+  messages: Array<Record<string, unknown>>
+  tools: Array<Record<string, unknown>>
+  toolChoice?: unknown
+  temperature?: number
+  maxTokens?: number
+  parallelToolCalls?: boolean
+  reasoningEffort?: string | null
+  stream?: boolean
+}) {
+  const payloadInput = convertCursorMessagesToResponsesInput(input.messages)
+  const instructions = buildCursorResponsesInstructions(input.messages)
+  const modelConfig = getResponsesModelConfig(input.model)
+  const promptCacheKey = rewriteClientIdentifierForUpstream({
+    accountId: input.accountId,
+    fieldKey: "prompt_cache_key",
+    value: input.sessionId ?? undefined,
+    strictPrivacy: isStrictUpstreamPrivacyEnabled(),
+  })
+
+  const requestBody: Record<string, unknown> = {
+    model: input.model,
+    input: payloadInput,
+    store: false,
+    instructions,
+    stream: true,
+  }
+
+  if (promptCacheKey) {
+    requestBody.prompt_cache_key = promptCacheKey
+  }
+  if (modelConfig.requiredAutoTruncation) {
+    requestBody.truncation = "auto"
+  }
+  if (Number.isFinite(Number(input.temperature))) {
+    requestBody.temperature = Number(input.temperature)
+  }
+  if (Number.isFinite(Number(input.maxTokens)) && Number(input.maxTokens) > 0) {
+    requestBody.max_output_tokens = Math.floor(Number(input.maxTokens))
+  }
+  if (input.parallelToolCalls !== undefined) {
+    requestBody.parallel_tool_calls = Boolean(input.parallelToolCalls)
+  }
+
+  const toolDefs = convertCursorToolsToResponsesTools(input.tools)
+  if (toolDefs.length > 0) {
+    requestBody.tools = toolDefs
+    const toolChoice = convertCursorToolChoice(input.toolChoice)
+    if (toolChoice !== undefined) requestBody.tool_choice = toolChoice
+  } else if (typeof input.toolChoice === "string" && input.toolChoice.trim() === "none") {
+    requestBody.tool_choice = "none"
+  }
+
+  if (modelConfig.isReasoningModel && !input.model.includes("gpt-5-pro")) {
+    requestBody.reasoning = {
+      effort: input.reasoningEffort ?? "medium",
+      summary: "auto",
+    }
+  }
+
+  if (input.model.includes("gpt-5.") && !input.model.includes("codex") && !input.model.includes("-chat")) {
+    requestBody.text = { verbosity: "low" }
+  }
+
+  return requestBody
+}
+
+function buildCursorUsagePayload(usage: UsageMetrics) {
+  const payload: Record<string, unknown> = {
+    prompt_tokens: usage.promptTokens,
+    completion_tokens: usage.completionTokens,
+    total_tokens: usage.totalTokens,
+  }
+  if (usage.cachedInputTokens > 0) {
+    payload.prompt_tokens_details = { cached_tokens: usage.cachedInputTokens }
+  }
+  if (usage.reasoningOutputTokens > 0) {
+    payload.completion_tokens_details = { reasoning_tokens: usage.reasoningOutputTokens }
+  }
+  return payload
+}
+
+function extractCursorToolCallFromResponseItem(rawItem: unknown) {
+  const item = asRecord(rawItem)
+  if (!item) return null
+  const itemType = normalizeNullableString(item.type, 64)
+  if (itemType === "function_call" || itemType === "tool_call") {
+    const name = normalizeNullableString(pickFirstDefinedValue(item.name, asRecord(item.function)?.name), 200)
+    if (!name) return null
+    return {
+      id: normalizeNullableString(pickFirstDefinedValue(item.call_id, item.id), 200) ?? crypto.randomUUID(),
+      type: "function",
+      function: {
+        name,
+        arguments:
+          typeof pickFirstDefinedValue(item.arguments, asRecord(item.function)?.arguments) === "string"
+            ? String(pickFirstDefinedValue(item.arguments, asRecord(item.function)?.arguments))
+            : JSON.stringify(pickFirstDefinedValue(item.arguments, asRecord(item.function)?.arguments) ?? {}),
+      },
+    } satisfies Record<string, unknown>
+  }
+
+  const content = Array.isArray(item.content) ? item.content : []
+  for (const rawContent of content) {
+    const contentItem = asRecord(rawContent)
+    if (!contentItem) continue
+    const contentType = normalizeNullableString(contentItem.type, 64)
+    if (contentType !== "function_call") continue
+    const name = normalizeNullableString(contentItem.name, 200)
+    if (!name) continue
+    return {
+      id: normalizeNullableString(pickFirstDefinedValue(contentItem.call_id, contentItem.id), 200) ?? crypto.randomUUID(),
+      type: "function",
+      function: {
+        name,
+        arguments:
+          typeof contentItem.arguments === "string" ? contentItem.arguments : JSON.stringify(contentItem.arguments ?? {}),
+      },
+    } satisfies Record<string, unknown>
+  }
+
+  return null
+}
+
+function extractCursorToolCallsFromResponsePayload(payload: unknown) {
+  const output = Array.isArray(asRecord(payload)?.output) ? (asRecord(payload)?.output as Array<unknown>) : []
+  const toolCalls: Array<Record<string, unknown>> = []
+  for (const rawItem of output) {
+    const toolCall = extractCursorToolCallFromResponseItem(rawItem)
+    if (toolCall) toolCalls.push(toolCall)
+  }
+  return toolCalls
+}
+
+function extractCursorFinishReasonFromResponsePayload(payload: unknown) {
+  const record = asRecord(payload)
+  const explicitFinishReason = normalizeNullableString(record?.finish_reason, 64)
+  if (explicitFinishReason === "tool_calls") return "tool_calls"
+  if (explicitFinishReason === "length" || explicitFinishReason === "max_output_tokens") return "length"
+  if (extractCursorToolCallsFromResponsePayload(payload).length > 0) return "tool_calls"
+
+  const status = normalizeNullableString(record?.status, 64)
+  const incompleteDetails = asRecord(record?.incomplete_details)
+  const incompleteReason = normalizeNullableString(
+    pickFirstDefinedValue(incompleteDetails?.reason, incompleteDetails?.type, status),
+    64,
+  )
+  if (
+    incompleteReason === "max_output_tokens" ||
+    incompleteReason === "max_completion_tokens" ||
+    incompleteReason === "length" ||
+    status === "incomplete"
+  ) {
+    return "length"
+  }
+  return "stop"
+}
+
+function buildCursorChatCompletionMessage(payload: unknown, fallbackText: string) {
+  const toolCalls = extractCursorToolCallsFromResponsePayload(payload)
+  const text = extractResponseText(payload) || fallbackText
+  const message: Record<string, unknown> = {
+    role: "assistant",
+    content: toolCalls.length > 0 ? (text || null) : text,
+  }
+  if (toolCalls.length > 0) message.tool_calls = toolCalls
+  return message
+}
+
+function buildCursorChatCompletionResponse(input: {
+  payload: unknown
+  model: string
+  usage: UsageMetrics
+  reply: string
+}) {
+  const record = asRecord(input.payload)
+  const created = normalizeNonNegativeInt(record?.created_at ?? record?.created) || Math.floor(Date.now() / 1000)
+  const id = normalizeNullableString(record?.id, 200) ?? `chatcmpl_${crypto.randomUUID().replaceAll("-", "")}`
+  const message = buildCursorChatCompletionMessage(input.payload, input.reply)
+  const finishReason = extractCursorFinishReasonFromResponsePayload(input.payload)
+  return {
+    id,
+    object: "chat.completion",
+    created,
+    model: input.model,
+    choices: [
+      {
+        index: 0,
+        message,
+        finish_reason: finishReason,
+      },
+    ],
+    usage: buildCursorUsagePayload(input.usage),
+  }
+}
+
+function extractCursorChatCompletionText(payload: unknown): string {
+  const record = asRecord(payload)
+  const choices = Array.isArray(record?.choices) ? record.choices : []
+  const firstChoice = asRecord(choices[0])
+  const message = asRecord(firstChoice?.message)
+  const content = message?.content
+  if (typeof content === "string") {
+    return content
+  }
+  if (Array.isArray(content)) {
+    const parts = content
+      .map((item) => {
+        if (typeof item === "string") return item
+        const part = asRecord(item)
+        return (
+          normalizeNullableString(part?.text, 16000) ??
+          normalizeNullableString(part?.input_text, 16000) ??
+          ""
+        )
+      })
+      .filter(Boolean)
+    if (parts.length > 0) {
+      return parts.join("")
+    }
+  }
+  const toolCalls = Array.isArray(message?.tool_calls) ? message.tool_calls : []
+  if (toolCalls.length > 0) {
+    return "(tool calls)"
+  }
+  return ""
+}
+
+function extractOpenAICompatibleErrorMessage(payload: unknown): string {
+  const record = asRecord(payload)
+  const error = asRecord(record?.error)
+  return (
+    normalizeNullableString(pickFirstDefinedValue(error?.message, error?.detail, record?.message), 16000) ?? ""
+  )
+}
+
+function encodeCursorSseChunk(payload: Record<string, unknown>) {
+  return `data: ${JSON.stringify(payload)}\n\n`
+}
+
+function streamCursorChatCompletionFromResponses(input: {
+  upstream: Response
+  model: string
+  accountId: string
+  keyId: string
+  auditId?: string
+  providerId?: string | null
+  virtualKeyId?: string | null
+  sessionId?: string | null
+  reasoningEffort?: string | null
+  includeUsage?: boolean
+}) {
+  const streamId = `chatcmpl_${crypto.randomUUID().replaceAll("-", "")}`
+  const created = Math.floor(Date.now() / 1000)
+  const encoder = new TextEncoder()
+  const decoder = new TextDecoder()
+  const reader = input.upstream.body?.getReader()
+  if (!reader) {
+    throw new Error("Cursor upstream stream body is empty")
+  }
+  let buffer = ""
+  let roleSent = false
+  let reply = ""
+  let latestUsage = emptyUsageMetrics()
+  let finishReason = "stop"
+  let pendingToolCalls: Array<Record<string, unknown>> = []
+  const emittedToolCallIds = new Set<string>()
+  const toolCallIndexById = new Map<string, number>()
+
+  return new ReadableStream<Uint8Array>({
+    async start(controller) {
+      const send = (payload: Record<string, unknown>) => controller.enqueue(encoder.encode(encodeCursorSseChunk(payload)))
+      const sendRoleIfNeeded = () => {
+        if (roleSent) return
+        roleSent = true
+        send({
+          id: streamId,
+          object: "chat.completion.chunk",
+          created,
+          model: input.model,
+          choices: [
+            {
+              index: 0,
+              delta: { role: "assistant" },
+              finish_reason: null,
+            },
+          ],
+        })
+      }
+
+      const emitToolCalls = (toolCalls: Array<Record<string, unknown>>) => {
+        if (!toolCalls.length) return
+        sendRoleIfNeeded()
+        for (const toolCall of toolCalls) {
+          const rawId = normalizeNullableString(toolCall.id, 200) ?? crypto.randomUUID()
+          if (emittedToolCallIds.has(rawId)) continue
+          emittedToolCallIds.add(rawId)
+          const index = toolCallIndexById.size
+          toolCallIndexById.set(rawId, index)
+          send({
+            id: streamId,
+            object: "chat.completion.chunk",
+            created,
+            model: input.model,
+            choices: [
+              {
+                index: 0,
+                delta: {
+                  tool_calls: [
+                    {
+                      index,
+                      ...toolCall,
+                    },
+                  ],
+                },
+                finish_reason: null,
+              },
+            ],
+          })
+        }
+      }
+
+      const finalize = () => {
+        if (pendingToolCalls.length > 0) {
+          emitToolCalls(pendingToolCalls)
+        }
+        send({
+          id: streamId,
+          object: "chat.completion.chunk",
+          created,
+          model: input.model,
+          choices: [
+            {
+              index: 0,
+              delta: {},
+                finish_reason: finishReason,
+              },
+            ],
+        })
+        if (input.includeUsage) {
+          send({
+            id: streamId,
+            object: "chat.completion.chunk",
+            created,
+            model: input.model,
+            choices: [],
+            usage: buildCursorUsagePayload(latestUsage),
+          })
+        }
+        controller.enqueue(encoder.encode("data: [DONE]\n\n"))
+        controller.close()
+        recordUsageMetrics({
+          accountId: input.accountId,
+          keyId: input.keyId,
+          usage: latestUsage,
+          source: "cursor-chat-stream",
+          auditId: input.auditId,
+          providerId: input.providerId ?? null,
+          virtualKeyId: input.virtualKeyId ?? input.keyId ?? null,
+          model: input.model,
+          sessionId: input.sessionId ?? null,
+          reasoningEffort: input.reasoningEffort ?? null,
+        })
+      }
+
+      const consumeChunk = (chunk: string) => {
+        const data = chunk
+          .split("\n")
+          .filter((line) => line.startsWith("data:"))
+          .map((line) => line.replace(/^data:\s*/, ""))
+          .join("\n")
+          .trim()
+        if (!data || data === "[DONE]") return
+        const event = tryParseJsonText(data)
+        if (!event || typeof event !== "object") return
+        const latestEventUsage = extractUsageFromUnknown(event)
+        if (hasUsageDelta(latestEventUsage)) {
+          latestUsage = latestEventUsage
+        }
+        const eventRecord = asRecord(event)
+        const type = normalizeNullableString(eventRecord?.type, 96) ?? ""
+        if (type === "response.output_text.delta") {
+          const delta = typeof eventRecord?.delta === "string" ? eventRecord.delta : ""
+          if (!delta) return
+          reply += delta
+          sendRoleIfNeeded()
+          send({
+            id: streamId,
+            object: "chat.completion.chunk",
+            created,
+            model: input.model,
+            choices: [
+              {
+                index: 0,
+                delta: { content: delta },
+                finish_reason: null,
+              },
+            ],
+          })
+          return
+        }
+        if (type === "response.output_item.added" || type === "response.output_item.done") {
+          const toolCall = extractCursorToolCallFromResponseItem(eventRecord?.item)
+          if (!toolCall) return
+          finishReason = "tool_calls"
+          emitToolCalls([toolCall])
+          return
+        }
+        if (type === "response.completed") {
+          const responsePayload = eventRecord?.response
+          const completedUsage = extractUsageFromUnknown(responsePayload)
+          if (hasUsageDelta(completedUsage)) latestUsage = completedUsage
+          finishReason = extractCursorFinishReasonFromResponsePayload(responsePayload)
+          const toolCalls = extractCursorToolCallsFromResponsePayload(responsePayload)
+          if (toolCalls.length > 0) {
+            pendingToolCalls = toolCalls
+          }
+          return
+        }
+        if (type === "response.failed" || type === "error") {
+          throw new Error(data)
+        }
+      }
+
+      try {
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          buffer += decoder.decode(value, { stream: true })
+          buffer = buffer.replace(/\r\n/g, "\n").replace(/\r/g, "\n")
+          const chunks = buffer.split("\n\n")
+          buffer = chunks.pop() ?? ""
+          for (const chunk of chunks) consumeChunk(chunk)
+        }
+        buffer += decoder.decode()
+        if (buffer.trim().length > 0) consumeChunk(buffer)
+        finalize()
+      } catch (error) {
+        controller.error(error)
+      } finally {
+        reader.releaseLock()
+      }
+    },
+  })
+}
+
+function toOpenAICompatibleErrorResponse(message: string, status = 400, type = "invalid_request_error") {
+  return new Response(
+    JSON.stringify({
+      error: {
+        message,
+        type,
+      },
+    }),
+    {
+      status,
+      headers: {
+        "Content-Type": "application/json",
+      },
+    },
+  )
+}
+
 async function ensureChatgptAccountAccess(account: StoredAccount) {
   if (account.providerId !== "chatgpt") {
     throw new Error("Only ChatGPT OAuth accounts are supported in this flow")
@@ -6956,7 +7774,10 @@ app.get("/api/chat/models", (c) => {
 })
 
 app.get("/v1/models", async (c) => {
-  const context = resolveVirtualKeyContext(c)
+  const context = resolveVirtualKeyContext(c, {
+    expectedClientMode: "codex",
+    expectedWireApi: "responses",
+  })
   if ("error" in context) {
     return c.json({ error: context.error }, context.status ?? 401)
   }
@@ -7042,7 +7863,10 @@ app.get("/v1/models", async (c) => {
 })
 
 app.get("/v1/models/:id", async (c) => {
-  const context = resolveVirtualKeyContext(c)
+  const context = resolveVirtualKeyContext(c, {
+    expectedClientMode: "codex",
+    expectedWireApi: "responses",
+  })
   if ("error" in context) {
     return c.json({ error: context.error }, context.status ?? 401)
   }
@@ -7148,6 +7972,34 @@ app.get("/api/accounts", async (c) => {
     usageTotals: getUsageTotalsSnapshot(),
     dashboardMetrics: buildDashboardMetrics(),
   })
+})
+
+app.post("/api/accounts/:id/refresh-quota", async (c) => {
+  const accountID = c.req.param("id")
+  const account = accountStore.get(accountID)
+  if (!account) return c.json({ error: "Account not found" }, 404)
+
+  try {
+    await refreshAccountQuotaCache([account], {
+      force: true,
+      targetAccountID: accountID,
+    })
+    const quota = accountQuotaCache.get(accountID) ?? null
+    if (quota) {
+      emitAccountRateLimitsUpdated({
+        accountId: accountID,
+        source: "manual-refresh",
+        quota,
+      })
+    }
+    return c.json({
+      success: true,
+      account: toPublicAccount(accountStore.get(accountID) ?? account, quota),
+      dashboardMetrics: buildDashboardMetrics(),
+    })
+  } catch (error) {
+    return c.json({ error: errorMessage(error) }, 400)
+  }
 })
 
 app.get("/api/accounts/:id/refresh-token", (c) => {
@@ -7340,10 +8192,88 @@ app.get("/api/virtual-keys", (c) => {
   return c.json({ keys: rows })
 })
 
+app.get("/cursor/v1/models", async (c) => {
+  const context = resolveVirtualKeyContext(c, {
+    expectedClientMode: "cursor",
+    expectedWireApi: "chat_completions",
+  })
+  if ("error" in context) {
+    const status = typeof context.status === "number" ? context.status : 401
+    const message = String(context.error || "Invalid virtual API key")
+    return toOpenAICompatibleErrorResponse(
+      message,
+      status,
+      status === 401 ? "authentication_error" : "invalid_request_error",
+    )
+  }
+  const consistentContext = await ensureResolvedPoolAccountConsistent({
+    resolved: context.resolved,
+  })
+  if (!consistentContext.ok) {
+    return toOpenAICompatibleErrorResponse("No healthy accounts available for pool routing", 503, "server_error")
+  }
+  return c.json(
+    await resolveModelCatalogForCursorAccount({
+      account: consistentContext.resolved.account,
+      requestUrl: c.req.url,
+      requestHeaders: c.req.raw.headers,
+    }),
+  )
+})
+
+app.get("/cursor/v1/models/:id", async (c) => {
+  const context = resolveVirtualKeyContext(c, {
+    expectedClientMode: "cursor",
+    expectedWireApi: "chat_completions",
+  })
+  if ("error" in context) {
+    const status = typeof context.status === "number" ? context.status : 401
+    const message = String(context.error || "Invalid virtual API key")
+    return toOpenAICompatibleErrorResponse(
+      message,
+      status,
+      status === 401 ? "authentication_error" : "invalid_request_error",
+    )
+  }
+  const modelId = extractModelID(c.req.param("id"))
+  const consistentContext = await ensureResolvedPoolAccountConsistent({
+    resolved: context.resolved,
+  })
+  if (!consistentContext.ok) {
+    return toOpenAICompatibleErrorResponse("No healthy accounts available for pool routing", 503, "server_error")
+  }
+  const payload = await resolveModelCatalogForCursorAccount({
+    account: consistentContext.resolved.account,
+    requestUrl: c.req.url,
+    requestHeaders: c.req.raw.headers,
+  })
+  const match = payload.data.find((item) => String(item.id || "") === modelId)
+  if (!match) {
+    return toOpenAICompatibleErrorResponse("Model is not available for Cursor compatibility mode", 404, "invalid_request_error")
+  }
+  return c.json(match)
+})
+
 app.post("/api/virtual-keys/issue", async (c) => {
   try {
     const raw = await c.req.json()
     const input = IssueVirtualKeySchema.parse(raw)
+    const normalizedClientMode = input.clientMode === "cursor" ? "cursor" : "codex"
+    const normalizedWireApi =
+      input.wireApi ??
+      (normalizedClientMode === "cursor" ? "chat_completions" : "responses")
+    const isValidCombo =
+      (normalizedClientMode === "codex" && normalizedWireApi === "responses") ||
+      (normalizedClientMode === "cursor" && normalizedWireApi === "chat_completions")
+    if (!isValidCombo) {
+      return c.json(
+        {
+          error:
+            "Invalid virtual key mode. Codex keys must use responses, and Cursor keys must use chat_completions.",
+        },
+        400,
+      )
+    }
     if (input.routingMode === "pool") {
       const cachedPoolConsistency = getCachedPoolConsistencyResult(input.providerId)
       if (cachedPoolConsistency && !cachedPoolConsistency.ok) {
@@ -7361,6 +8291,8 @@ app.post("/api/virtual-keys/issue", async (c) => {
       accountId: input.accountId,
       providerId: input.providerId,
       routingMode: input.routingMode,
+      clientMode: normalizedClientMode,
+      wireApi: normalizedWireApi,
       name: input.name,
       validityDays: input.validityDays,
     })
@@ -7700,6 +8632,8 @@ async function proxyVirtualKeyCodexRequest(c: any, upstreamPath = "/responses") 
   let auditModel: string | null = null
   let auditSessionId: string | null = null
   let auditReasoningEffort: string | null = null
+  let auditClientMode: "codex" | "cursor" | null = null
+  let auditWireApi: "responses" | "chat_completions" | null = null
   let outgoingBody: Uint8Array | undefined = undefined
   let auditRoutingMode = "single"
   const writeAudit = (input: Omit<RequestAuditCompatInput, "route" | "method" | "reasoningEffort">) =>
@@ -7707,6 +8641,8 @@ async function proxyVirtualKeyCodexRequest(c: any, upstreamPath = "/responses") 
       route,
       method,
       reasoningEffort: auditReasoningEffort,
+      clientMode: auditClientMode,
+      wireApi: auditWireApi,
       ...input,
     })
 
@@ -7748,6 +8684,23 @@ async function proxyVirtualKeyCodexRequest(c: any, upstreamPath = "/responses") 
       return c.json({ error: "Invalid, revoked, or expired virtual API key" }, 401)
     }
 
+    const modeError = buildVirtualKeyModeError({
+      key: resolved.key,
+      expectedClientMode: "codex",
+      expectedWireApi: "responses",
+    })
+    if (modeError) {
+      writeAudit({
+        virtualKeyId: resolved.key.id,
+        providerId: resolved.key.providerId,
+        statusCode: modeError.status,
+        latencyMs: Date.now() - startedAt,
+        error: modeError.error,
+        clientTag,
+      })
+      return c.json({ error: modeError.error }, modeError.status)
+    }
+
     const eligibleResolved = ensureResolvedPoolAccountEligible({
       resolved,
       sessionId: sessionRouteId,
@@ -7780,8 +8733,13 @@ async function proxyVirtualKeyCodexRequest(c: any, upstreamPath = "/responses") 
       return c.json({ error: "No healthy accounts available for pool routing" }, 503)
     }
 
-    const key = consistentResolved.resolved.key
+    const key = consistentResolved.resolved.key as typeof consistentResolved.resolved.key & {
+      clientMode?: "codex" | "cursor" | null
+      wireApi?: "responses" | "chat_completions" | null
+    }
     auditRoutingMode = key.routingMode
+    auditClientMode = key.clientMode ?? "codex"
+    auditWireApi = key.wireApi ?? "responses"
     let account = consistentResolved.resolved.account
     let profile = resolveUpstreamProfileForAccount(account)
     auditKeyId = key.id
@@ -8327,6 +9285,645 @@ async function proxyVirtualKeyCodexRequest(c: any, upstreamPath = "/responses") 
   }
 }
 
+async function proxyVirtualKeyCursorChatCompletions(c: any) {
+  const startedAt = Date.now()
+  const route = c.req.path
+  const method = c.req.method
+  const behaviorSignal = resolveBehaviorSignal(c.req.raw.headers)
+  const clientTag = behaviorSignal.clientTag || null
+
+  let auditProviderId: string | null = null
+  let auditAccountId: string | null = null
+  let auditKeyId: string | null = null
+  let auditModel: string | null = null
+  let auditSessionId: string | null = null
+  let auditReasoningEffort: string | null = null
+  let outgoingBody: Uint8Array | undefined = undefined
+  let auditRoutingMode = "single"
+  const auditClientMode: "cursor" = "cursor"
+  const auditWireApi: "chat_completions" = "chat_completions"
+  const writeAudit = (input: Omit<RequestAuditCompatInput, "route" | "method" | "reasoningEffort">) =>
+    writeRequestAuditCompat({
+      route,
+      method,
+      reasoningEffort: auditReasoningEffort,
+      clientMode: auditClientMode,
+      wireApi: auditWireApi,
+      ...input,
+    })
+
+  try {
+    const outgoingBytes = await c.req.arrayBuffer()
+    outgoingBody = outgoingBytes.byteLength > 0 ? new Uint8Array(outgoingBytes) : undefined
+    const rawBodyText = outgoingBody ? new TextDecoder().decode(outgoingBody) : "{}"
+    const parsedBody = CursorChatCompletionsSchema.parse(JSON.parse(rawBodyText))
+    const auditFields = parseAuditRequestFields({
+      body: outgoingBody ?? new Uint8Array(0),
+      contentType: c.req.header("content-type"),
+    })
+    auditModel = parsedBody.model
+    auditReasoningEffort = auditFields.reasoningEffort
+
+    const modelId = extractModelID(parsedBody.model)
+    if (!modelId) {
+      writeAudit({
+        model: parsedBody.model,
+        requestBytes: outgoingBody?.byteLength ?? 0,
+        requestBody: outgoingBody,
+        statusCode: 404,
+        latencyMs: Date.now() - startedAt,
+        error: "Model is not available for Cursor compatibility mode",
+        clientTag,
+      })
+      return toOpenAICompatibleErrorResponse("Model is not available for Cursor compatibility mode", 404, "invalid_request_error")
+    }
+
+    const context = resolveVirtualKeyContext(c, {
+      expectedClientMode: "cursor",
+      expectedWireApi: "chat_completions",
+      bodySessionId: auditFields.sessionId ?? null,
+    })
+    if ("error" in context) {
+      const status = typeof context.status === "number" ? context.status : 401
+      const message = String(context.error || "Invalid virtual API key")
+      writeAudit({
+        model: auditModel,
+        requestBytes: outgoingBody?.byteLength ?? 0,
+        requestBody: outgoingBody,
+        statusCode: status,
+        latencyMs: Date.now() - startedAt,
+        error: message,
+        clientTag,
+      })
+      return toOpenAICompatibleErrorResponse(message, status, status === 401 ? "authentication_error" : "invalid_request_error")
+    }
+
+    const consistentContext = await ensureResolvedPoolAccountConsistent({
+      resolved: context.resolved,
+      sessionId: context.sessionId,
+    })
+    if (!consistentContext.ok) {
+      writeAudit({
+        virtualKeyId: context.resolved.key.id,
+        providerId: context.resolved.key.providerId,
+        model: auditModel,
+        requestBytes: outgoingBody?.byteLength ?? 0,
+        requestBody: outgoingBody,
+        statusCode: 503,
+        latencyMs: Date.now() - startedAt,
+        error: "No healthy accounts available for pool routing",
+        clientTag,
+      })
+      return toOpenAICompatibleErrorResponse("No healthy accounts available for pool routing", 503, "server_error")
+    }
+
+    const key = consistentContext.resolved.key as typeof consistentContext.resolved.key & {
+      clientMode?: "codex" | "cursor" | null
+      wireApi?: "responses" | "chat_completions" | null
+    }
+    auditRoutingMode = key.routingMode
+    let account = consistentContext.resolved.account
+    let profile = resolveUpstreamProfileForAccount(account)
+    auditKeyId = key.id
+    auditAccountId = account.id
+    auditProviderId = account.providerId
+    auditSessionId = context.sessionId ?? null
+    let sameAccountRetryBudget = 1
+
+    const acquireBehaviorBudgetForCurrentAccount = async () => {
+      const behaviorDecision = await behaviorController.acquire({
+        accountId: account.id,
+        signal: behaviorSignal,
+      })
+      if (!behaviorDecision.ok) {
+        throw createBehaviorAcquireError(behaviorDecision)
+      }
+      return behaviorDecision.release
+    }
+
+    const hasEstablishedStickyRouteForCurrentAccount = () =>
+      Boolean(
+        key.routingMode === "pool" &&
+          context.sessionId &&
+          accountStore.hasEstablishedVirtualKeySessionRoute({
+            keyId: key.id,
+            sessionId: context.sessionId,
+            accountId: account.id,
+          }),
+      )
+
+    const buildHeadersForCurrentAccount = (auth: { accessToken: string; accountId?: string }) => {
+      const openAIHeaders = profile.providerMode === "openai" ? resolveAccountOpenAIHeaders(account) : null
+      return buildUpstreamForwardHeaders({
+        incoming: c.req.raw.headers,
+        accessToken: auth.accessToken,
+        accountId: auth.accountId,
+        boundAccountId: account.id,
+        providerMode: profile.providerMode,
+        attachChatgptAccountId: profile.attachChatgptAccountId,
+        organizationId: openAIHeaders?.organizationId,
+        projectId: openAIHeaders?.projectId,
+      })
+    }
+
+    const rerouteTriedAccounts = new Set<string>()
+    const buildPoolUnavailableResponse = () => {
+      writeAudit({
+        providerId: auditProviderId,
+        accountId: auditAccountId,
+        virtualKeyId: auditKeyId,
+        model: auditModel,
+        sessionId: auditSessionId,
+        requestBytes: outgoingBody?.byteLength ?? 0,
+        requestBody: outgoingBody,
+        statusCode: 503,
+        latencyMs: Date.now() - startedAt,
+        error: "No healthy accounts available for pool routing",
+        clientTag,
+      })
+      return toOpenAICompatibleErrorResponse("No healthy accounts available for pool routing", 503, "server_error")
+    }
+    const selectReroutedPoolAccount = (failedAccountId: string) => {
+      if (rerouteTriedAccounts.size >= POOL_REROUTE_MAX_ATTEMPTS) {
+        return null
+      }
+      const failedAccount = accountStore.get(failedAccountId)
+      const preferredPlanCohort = failedAccount ? resolveAccountPlanCohort(failedAccount) : null
+      const routingHints = buildProviderRoutingHints(key.providerId, Date.now(), {
+        preferredPlanCohort,
+      })
+      const excluded = new Set<string>([...routingHints.excludeAccountIds, ...rerouteTriedAccounts])
+
+      let reroutedAccount = context.sessionId
+        ? accountStore.reassignVirtualKeySessionRoute({
+            keyId: key.id,
+            providerId: key.providerId,
+            sessionId: context.sessionId,
+            failedAccountId,
+            excludeAccountIds: [...excluded],
+            deprioritizedAccountIds: routingHints.deprioritizedAccountIds,
+            headroomByAccountId: routingHints.headroomByAccountId,
+            pressureScoreByAccountId: routingHints.pressureScoreByAccountId,
+          })
+        : accountStore.reassignVirtualKeyRoute({
+            keyId: key.id,
+            providerId: key.providerId,
+            failedAccountId,
+            excludeAccountIds: [...excluded],
+            deprioritizedAccountIds: routingHints.deprioritizedAccountIds,
+            headroomByAccountId: routingHints.headroomByAccountId,
+            pressureScoreByAccountId: routingHints.pressureScoreByAccountId,
+          })
+
+      if (!reroutedAccount) {
+        const relaxedHints = buildRelaxedProviderRoutingHints(key.providerId, Date.now(), {
+          preferredPlanCohort,
+        })
+        const relaxedExcluded = new Set<string>([...relaxedHints.excludeAccountIds, ...rerouteTriedAccounts])
+        reroutedAccount = context.sessionId
+          ? accountStore.reassignVirtualKeySessionRoute({
+              keyId: key.id,
+              providerId: key.providerId,
+              sessionId: context.sessionId,
+              failedAccountId,
+              excludeAccountIds: [...relaxedExcluded],
+              deprioritizedAccountIds: relaxedHints.deprioritizedAccountIds,
+              headroomByAccountId: relaxedHints.headroomByAccountId,
+              pressureScoreByAccountId: relaxedHints.pressureScoreByAccountId,
+            })
+          : accountStore.reassignVirtualKeyRoute({
+              keyId: key.id,
+              providerId: key.providerId,
+              failedAccountId,
+              excludeAccountIds: [...relaxedExcluded],
+              deprioritizedAccountIds: relaxedHints.deprioritizedAccountIds,
+              headroomByAccountId: relaxedHints.headroomByAccountId,
+              pressureScoreByAccountId: relaxedHints.pressureScoreByAccountId,
+            })
+      }
+
+      if (!reroutedAccount || rerouteTriedAccounts.has(reroutedAccount.id)) {
+        return null
+      }
+      return reroutedAccount
+    }
+
+    const ensureCurrentAccountSupportsRequestedModel = async () => {
+      while (true) {
+        const catalog = await resolveModelCatalogForCursorAccount({
+          account,
+          requestUrl: c.req.url,
+          requestHeaders: c.req.raw.headers,
+        })
+        const supported = catalog.data.some((item) => String(item.id || "") === modelId)
+        if (supported) return null
+        if (key.routingMode !== "pool") {
+          writeAudit({
+            providerId: auditProviderId,
+            accountId: auditAccountId,
+            virtualKeyId: auditKeyId,
+            model: auditModel,
+            sessionId: auditSessionId,
+            requestBytes: outgoingBody?.byteLength ?? 0,
+            requestBody: outgoingBody,
+            statusCode: 404,
+            latencyMs: Date.now() - startedAt,
+            error: "Model is not available for Cursor compatibility mode",
+            clientTag,
+          })
+          return toOpenAICompatibleErrorResponse("Model is not available for Cursor compatibility mode", 404, "invalid_request_error")
+        }
+        rerouteTriedAccounts.add(account.id)
+        const reroutedAccount = selectReroutedPoolAccount(account.id)
+        if (!reroutedAccount) {
+          writeAudit({
+            providerId: auditProviderId,
+            accountId: auditAccountId,
+            virtualKeyId: auditKeyId,
+            model: auditModel,
+            sessionId: auditSessionId,
+            requestBytes: outgoingBody?.byteLength ?? 0,
+            requestBody: outgoingBody,
+            statusCode: 404,
+            latencyMs: Date.now() - startedAt,
+            error: "Requested model is not available for any healthy accounts in the pool",
+            clientTag,
+          })
+          return toOpenAICompatibleErrorResponse(
+            "Requested model is not available for any healthy accounts in the pool",
+            404,
+            "invalid_request_error",
+          )
+        }
+        account = reroutedAccount
+        profile = resolveUpstreamProfileForAccount(account)
+        auditAccountId = account.id
+        auditProviderId = account.providerId
+      }
+    }
+
+    const resolvedModelId = modelId
+    const unsupportedModelResponse = await ensureCurrentAccountSupportsRequestedModel()
+    if (unsupportedModelResponse) {
+      return unsupportedModelResponse
+    }
+    let auth: { accessToken: string; accountId?: string } = { accessToken: "" }
+    let headers = new Headers()
+    const buildRequestBodyForCurrentAccount = () => {
+      const requestBody = buildCursorResponsesRequestBody({
+        model: resolvedModelId,
+        sessionId: context.sessionId,
+        accountId: account.id,
+        messages: parsedBody.messages as Array<Record<string, unknown>>,
+        tools: parsedBody.tools as Array<Record<string, unknown>>,
+        toolChoice: parsedBody.tool_choice,
+        temperature: parsedBody.temperature,
+        maxTokens: parsedBody.max_tokens,
+        parallelToolCalls: parsedBody.parallel_tool_calls,
+        reasoningEffort: auditReasoningEffort,
+        stream: parsedBody.stream === true,
+      })
+      return new TextEncoder().encode(JSON.stringify(requestBody))
+    }
+
+    const runUpstreamRequest = async (requestHeaders: Headers, requestBody: Uint8Array) =>
+      (
+        await requestUpstreamWithPolicy({
+          url: buildUpstreamAbsoluteUrl(
+            c.req.url,
+            resolveResponsesUpstreamEndpoint(profile.responsesEndpoint, "/responses"),
+            {
+              accountId: account.id,
+            },
+          ),
+          method: "POST",
+          headers: requestHeaders,
+          body: requestBody,
+          accountId: account.id,
+          routeTag: route,
+          policyOverride: key.routingMode === "pool" ? POOL_FAIL_FAST_RETRY_POLICY : INTERACTIVE_FAST_RETRY_POLICY,
+          recordBehaviorResult: true,
+        })
+      ).response
+
+    let upstreamRequestBody = new Uint8Array()
+    const attemptUpstreamForCurrentAccount = async () => {
+      const releaseBehavior = await acquireBehaviorBudgetForCurrentAccount()
+      try {
+        auth = await resolveUpstreamAccountAuth(account)
+        headers = buildHeadersForCurrentAccount(auth)
+        upstreamRequestBody = buildRequestBodyForCurrentAccount()
+        let currentUpstream = await runUpstreamRequest(headers, upstreamRequestBody)
+
+        if (currentUpstream.status === 401 && profile.canRefreshOn401) {
+          const latest = accountStore.get(account.id) ?? account
+          auth = await resolveUpstreamAccountAuth(latest, { forceRefresh: true })
+          headers = buildHeadersForCurrentAccount(auth)
+          upstreamRequestBody = buildRequestBodyForCurrentAccount()
+          currentUpstream = await runUpstreamRequest(headers, upstreamRequestBody)
+        }
+
+        return currentUpstream
+      } finally {
+        releaseBehavior()
+      }
+    }
+
+    const tryStickySameAccountRetry = async () => {
+      if (sameAccountRetryBudget <= 0) return null
+      if (!hasEstablishedStickyRouteForCurrentAccount()) return null
+      sameAccountRetryBudget -= 1
+      return attemptUpstreamForCurrentAccount()
+    }
+
+    let upstream: Response
+    while (true) {
+      try {
+        upstream = await attemptUpstreamForCurrentAccount()
+        break
+      } catch (error) {
+        const behaviorFailure = getBehaviorAcquireFailure(error)
+        const blocked = detectRoutingBlockedAccount({ error })
+        const transient = detectTransientUpstreamError(error)
+        if (transient.matched) {
+          const sameAccountRetryResponse = await tryStickySameAccountRetry().catch(() => null)
+          if (sameAccountRetryResponse) {
+            upstream = sameAccountRetryResponse
+            break
+          }
+        }
+        if (!(key.routingMode === "pool" && (blocked.matched || transient.matched || behaviorFailure))) {
+          if (behaviorFailure) {
+            writeAudit({
+              providerId: auditProviderId,
+              accountId: auditAccountId,
+              virtualKeyId: auditKeyId,
+              model: auditModel,
+              sessionId: auditSessionId,
+              requestBytes: outgoingBody?.byteLength ?? 0,
+              requestBody: outgoingBody,
+              statusCode: behaviorFailure.status,
+              latencyMs: Date.now() - startedAt,
+              error: `${behaviorFailure.code}: ${behaviorFailure.message}`,
+              clientTag,
+            })
+            return toOpenAICompatibleErrorResponse(behaviorFailure.message, behaviorFailure.status, "server_error")
+          }
+          throw error
+        }
+
+        const failedAccountId = account.id
+        rerouteTriedAccounts.add(failedAccountId)
+        if (blocked.matched) {
+          markAccountUnhealthy(failedAccountId, blocked.reason, "cursor-chat")
+          evictAccountModelsCache(failedAccountId)
+        } else if (!behaviorFailure) {
+          markAccountUnhealthy(failedAccountId, transient.reason ?? "upstream_transport_error", "cursor-chat")
+        }
+
+        const reroutedAccount = selectReroutedPoolAccount(failedAccountId)
+        if (!reroutedAccount) {
+          return buildPoolUnavailableResponse()
+        }
+        account = reroutedAccount
+        profile = resolveUpstreamProfileForAccount(account)
+        auditAccountId = account.id
+        auditProviderId = account.providerId
+      }
+    }
+
+    if (key.routingMode === "pool") {
+      while (true) {
+        const blockedSignal = await detectRoutingBlockedUpstreamResponse(upstream)
+        const quotaSignal = await detectQuotaExhaustedUpstreamResponse(upstream)
+        const transientSignal = await detectTransientUpstreamResponse(upstream)
+        if (!blockedSignal.matched && !quotaSignal.matched && !transientSignal.matched) break
+        if (transientSignal.matched) {
+          const sameAccountRetryResponse = await tryStickySameAccountRetry().catch(() => null)
+          if (sameAccountRetryResponse) {
+            upstream = sameAccountRetryResponse
+            continue
+          }
+        }
+
+        const failedAccountId = account.id
+        rerouteTriedAccounts.add(failedAccountId)
+        if (blockedSignal.matched) {
+          markAccountUnhealthy(failedAccountId, blockedSignal.reason, "cursor-chat")
+          evictAccountModelsCache(failedAccountId)
+        } else if (quotaSignal.matched) {
+          markAccountQuotaExhausted(failedAccountId)
+          handleBackgroundPromise(
+            "refreshAndEmitAccountQuota:cursor-chat-usage-limit-reached",
+            refreshAndEmitAccountQuota(failedAccountId, "cursor-chat-usage-limit-reached"),
+          )
+        } else {
+          markAccountUnhealthy(failedAccountId, transientSignal.reason ?? "upstream_http_502", "cursor-chat")
+        }
+
+        const reroutedAccount = selectReroutedPoolAccount(failedAccountId)
+        if (!reroutedAccount) {
+          break
+        }
+
+        const previousAccount = account
+        const previousProfile = profile
+        const previousAuditAccountId: string | null = auditAccountId
+        const previousAuditProviderId: string | null = auditProviderId
+        try {
+          account = reroutedAccount
+          profile = resolveUpstreamProfileForAccount(account)
+          auditAccountId = account.id
+          auditProviderId = account.providerId
+          upstream = await attemptUpstreamForCurrentAccount()
+          continue
+        } catch (error) {
+          account = previousAccount
+          profile = previousProfile
+          auditAccountId = previousAuditAccountId
+          auditProviderId = previousAuditProviderId
+          const behaviorFailure = getBehaviorAcquireFailure(error)
+          const reroutedBlocked = detectRoutingBlockedAccount({ error })
+          const reroutedTransient = detectTransientUpstreamError(error)
+          if (reroutedBlocked.matched) {
+            rerouteTriedAccounts.add(reroutedAccount.id)
+            markAccountUnhealthy(reroutedAccount.id, reroutedBlocked.reason, "cursor-chat")
+            evictAccountModelsCache(reroutedAccount.id)
+            continue
+          }
+          if (reroutedTransient.matched) {
+            rerouteTriedAccounts.add(reroutedAccount.id)
+            markAccountUnhealthy(reroutedAccount.id, reroutedTransient.reason, "cursor-chat")
+            continue
+          }
+          if (behaviorFailure) {
+            rerouteTriedAccounts.add(reroutedAccount.id)
+            continue
+          }
+          break
+        }
+      }
+    }
+
+    if (upstream.ok) {
+      markAccountHealthy(account.id, "cursor-chat")
+    }
+
+    const upstreamRequestId =
+      upstream.headers.get("x-request-id") ||
+      upstream.headers.get("x-oai-request-id") ||
+      upstream.headers.get("openai-request-id") ||
+      upstream.headers.get("cf-ray") ||
+      null
+
+    if (!upstream.ok) {
+      const bodyText = await upstream.text().catch(() => "")
+      const blocked = detectRoutingBlockedAccount({
+        statusCode: upstream.status,
+        text: bodyText,
+      })
+      if (blocked.matched) {
+        markAccountUnhealthy(account.id, blocked.reason, "cursor-chat")
+      }
+      writeAudit({
+        providerId: auditProviderId,
+        accountId: auditAccountId,
+        virtualKeyId: auditKeyId,
+        model: auditModel,
+        sessionId: auditSessionId,
+        requestBytes: outgoingBody?.byteLength ?? 0,
+        requestBody: outgoingBody,
+        responseBytes: new TextEncoder().encode(bodyText).byteLength,
+        statusCode: upstream.status,
+        latencyMs: Date.now() - startedAt,
+        upstreamRequestId,
+        error: bodyText || "Cursor upstream request failed",
+        clientTag,
+      })
+      return toOpenAICompatibleErrorResponse(bodyText || `Upstream request failed (${upstream.status})`, upstream.status, upstream.status === 401 ? "authentication_error" : "server_error")
+    }
+
+    if (parsedBody.stream) {
+      const auditId = writeAudit({
+        providerId: auditProviderId,
+        accountId: auditAccountId,
+        virtualKeyId: auditKeyId,
+        model: auditModel,
+        sessionId: auditSessionId,
+        requestBytes: outgoingBody?.byteLength ?? 0,
+        requestBody: outgoingBody,
+        responseBytes: parseHeaderNumber(upstream.headers.get("content-length")),
+        statusCode: upstream.status,
+        latencyMs: Date.now() - startedAt,
+        upstreamRequestId,
+        clientTag,
+      })
+      const headers = new Headers({
+        "Content-Type": "text/event-stream; charset=utf-8",
+        "Cache-Control": "no-cache",
+        Connection: "keep-alive",
+      })
+      if (upstreamRequestId) headers.set("x-request-id", upstreamRequestId)
+      return new Response(
+        streamCursorChatCompletionFromResponses({
+          upstream,
+          model: resolvedModelId,
+          accountId: account.id,
+          keyId: key.id,
+          auditId,
+          providerId: auditProviderId,
+          virtualKeyId: auditKeyId,
+          sessionId: auditSessionId,
+          reasoningEffort: auditReasoningEffort,
+          includeUsage: parsedBody.stream_options?.include_usage === true,
+        }),
+        {
+          status: 200,
+          headers,
+        },
+      )
+    }
+
+    let payload: unknown = {}
+    let reply = ""
+    let usage = emptyUsageMetrics()
+    const bodyResult = await readCodexCompatibleBody(upstream)
+    payload = bodyResult.payload
+    reply = bodyResult.reply
+    usage = bodyResult.usage
+
+    recordUsageMetrics({
+      accountId: account.id,
+      keyId: key.id,
+      usage,
+      source: "cursor-chat",
+      providerId: auditProviderId,
+      virtualKeyId: auditKeyId,
+      model: resolvedModelId,
+      sessionId: auditSessionId,
+      reasoningEffort: auditReasoningEffort,
+    })
+    writeAudit({
+      providerId: auditProviderId,
+      accountId: auditAccountId,
+      virtualKeyId: auditKeyId,
+      model: auditModel,
+      sessionId: auditSessionId,
+      requestBytes: outgoingBody?.byteLength ?? 0,
+      requestBody: outgoingBody,
+      statusCode: upstream.status,
+      latencyMs: Date.now() - startedAt,
+      upstreamRequestId,
+      clientTag,
+      usage,
+    })
+
+    return c.json(
+      buildCursorChatCompletionResponse({
+        payload,
+        model: resolvedModelId,
+        usage,
+        reply,
+      }),
+      200,
+    )
+  } catch (error) {
+    const behaviorFailure = getBehaviorAcquireFailure(error)
+    if (behaviorFailure) {
+      writeAudit({
+        providerId: auditProviderId,
+        accountId: auditAccountId,
+        virtualKeyId: auditKeyId,
+        model: auditModel,
+        sessionId: auditSessionId,
+        requestBytes: outgoingBody?.byteLength ?? 0,
+        requestBody: outgoingBody,
+        statusCode: behaviorFailure.status,
+        latencyMs: Date.now() - startedAt,
+        error: `${behaviorFailure.code}: ${behaviorFailure.message}`,
+        clientTag,
+      })
+      return toOpenAICompatibleErrorResponse(behaviorFailure.message, behaviorFailure.status, "server_error")
+    }
+    const statusCode = getStatusErrorCode(error) ?? (isLikelyAuthError(error) ? 401 : 400)
+    const message = errorMessage(error)
+    writeAudit({
+      providerId: auditProviderId,
+      accountId: auditAccountId,
+      virtualKeyId: auditKeyId,
+      model: auditModel,
+      sessionId: auditSessionId,
+      requestBytes: outgoingBody?.byteLength ?? 0,
+      requestBody: outgoingBody,
+      statusCode,
+      latencyMs: Date.now() - startedAt,
+      error: message,
+      clientTag,
+    })
+    return toOpenAICompatibleErrorResponse(message, statusCode, statusCode === 401 ? "authentication_error" : "invalid_request_error")
+  }
+}
+
 async function proxyVirtualKeyRateLimitUsage(c: any) {
   const startedAt = Date.now()
   const route = c.req.path
@@ -8337,12 +9934,16 @@ async function proxyVirtualKeyRateLimitUsage(c: any) {
   let auditProviderId: string | null = null
   let auditAccountId: string | null = null
   let auditKeyId: string | null = null
+  let auditClientMode: "codex" | "cursor" | null = null
+  let auditWireApi: "responses" | "chat_completions" | null = null
   let behaviorRelease: (() => void) | null = null
   let auditRoutingMode = "single"
   const writeAudit = (input: Omit<RequestAuditCompatInput, "route" | "method" | "reasoningEffort">) =>
     writeRequestAuditCompat({
       route,
       method,
+      clientMode: auditClientMode,
+      wireApi: auditWireApi,
       ...input,
     })
 
@@ -8371,6 +9972,23 @@ async function proxyVirtualKeyRateLimitUsage(c: any) {
         clientTag,
       })
       return c.json({ error: "Invalid, revoked, or expired virtual API key" }, 401)
+    }
+
+    const modeError = buildVirtualKeyModeError({
+      key: resolved.key,
+      expectedClientMode: "codex",
+      expectedWireApi: "responses",
+    })
+    if (modeError) {
+      writeAudit({
+        virtualKeyId: resolved.key.id,
+        providerId: resolved.key.providerId,
+        statusCode: modeError.status,
+        latencyMs: Date.now() - startedAt,
+        error: modeError.error,
+        clientTag,
+      })
+      return c.json({ error: modeError.error }, modeError.status)
     }
 
     const eligibleResolved = ensureResolvedPoolAccountEligible({
@@ -8405,8 +10023,13 @@ async function proxyVirtualKeyRateLimitUsage(c: any) {
       return c.json({ error: "No healthy accounts available for pool routing" }, 503)
     }
 
-    const key = consistentResolved.resolved.key
+    const key = consistentResolved.resolved.key as typeof consistentResolved.resolved.key & {
+      clientMode?: "codex" | "cursor" | null
+      wireApi?: "responses" | "chat_completions" | null
+    }
     auditRoutingMode = key.routingMode
+    auditClientMode = key.clientMode ?? "codex"
+    auditWireApi = key.wireApi ?? "responses"
     const account = consistentResolved.resolved.account
     const profile = resolveUpstreamProfileForAccount(account)
     auditKeyId = key.id
@@ -8588,6 +10211,7 @@ app.get("/backend-api/wham/usage", (c) => proxyVirtualKeyRateLimitUsage(c))
 app.get("/backend-api/codex/usage", (c) => proxyVirtualKeyRateLimitUsage(c))
 app.post("/v1/responses", (c) => proxyVirtualKeyCodexRequest(c, "/responses"))
 app.post("/v1/responses/compact", (c) => proxyVirtualKeyCodexRequest(c, "/responses/compact"))
+app.post("/cursor/v1/chat/completions", (c) => proxyVirtualKeyCursorChatCompletions(c))
 
 app.post("/api/chat", async (c) => {
   try {
@@ -8641,6 +10265,61 @@ app.post("/api/chat/virtual-key", async (c) => {
     }
     if (String(keySecret).startsWith("encv1:")) {
       return c.json({ error: "Virtual API key cannot be decrypted. Please renew or issue a new key." }, 409)
+    }
+
+    if (keyRecord.clientMode === "cursor" || keyRecord.wireApi === "chat_completions") {
+      const cursorUrl = new URL("/cursor/v1/chat/completions", c.req.url).toString()
+      const cursorHeaders = new Headers({
+        "Content-Type": "application/json",
+        Accept: "application/json",
+        Authorization: `Bearer ${keySecret}`,
+      })
+      const sessionRouteId = normalizeSessionRouteID(input.sessionId)
+      if (sessionRouteId) {
+        cursorHeaders.set("x-session-id", sessionRouteId)
+        cursorHeaders.set("x-client-request-id", sessionRouteId)
+      }
+      const cursorResponse = await fetch(cursorUrl, {
+        method: "POST",
+        headers: cursorHeaders,
+        body: JSON.stringify({
+          model: input.model,
+          messages: [{ role: "user", content: input.message }],
+          stream: false,
+        }),
+      })
+      const cursorText = await cursorResponse.text().catch(() => "")
+      const cursorPayload = cursorText ? tryParseJsonText(cursorText) : {}
+      if (!cursorResponse.ok) {
+        const message =
+          extractOpenAICompatibleErrorMessage(cursorPayload) ||
+          cursorText ||
+          `Cursor compatibility request failed (${cursorResponse.status})`
+        return new Response(JSON.stringify({ error: message }), {
+          status: cursorResponse.status,
+          headers: {
+            "Content-Type": "application/json",
+          },
+        })
+      }
+      const payload = cursorPayload ?? {}
+      return c.json({
+        reply: extractCursorChatCompletionText(payload),
+        usage: normalizeUsage(payload),
+        model: input.model,
+        raw: payload,
+        sessionId: sessionRouteId ?? null,
+        key: accountStore.getVirtualApiKeyByID(input.keyId),
+      })
+    }
+
+    const modeError = buildVirtualKeyModeError({
+      key: keyRecord,
+      expectedClientMode: "codex",
+      expectedWireApi: "responses",
+    })
+    if (modeError) {
+      return c.json({ error: modeError.error }, modeError.status)
     }
 
     const resolved = resolveVirtualApiKeyWithPoolFallback(keySecret, input.sessionId)

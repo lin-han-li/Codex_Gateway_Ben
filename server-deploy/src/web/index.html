@@ -2397,7 +2397,7 @@
       <aside class="sidebar">
         <div class="brand">
           <h1>Codex Gateway</h1>
-      <div class="ver">v1.1.28</div>
+              <div class="ver">v1.1.34</div>
         </div>
         <nav class="nav">
           <button class="nav-btn active" data-view="dashboard"><span>📊</span><span>仪表盘</span></button>
@@ -2487,6 +2487,7 @@
               <button id="btnImportRt" class="btn">♻️ 导入 RT 授权</button>
               <button id="btnImportJson" class="btn">📥 导入 JSON 账号</button>
               <button id="btnExportJson" class="btn">📤 导出 JSON 账号</button>
+              <button id="btnRefreshQuota" class="btn">刷新额度</button>
               <button id="btnAddApi" class="btn">🔑 添加 API Key</button>
               <button id="btnBulkDeleteBanned" class="btn danger" disabled>一键清理封禁异常账号</button>
             </div>
@@ -2529,6 +2530,10 @@
           <div class="panel">
             <h3>签发虚拟 Key</h3>
             <div class="key-create">
+              <select id="keyClientMode">
+                <option value="codex">Codex Key</option>
+                <option value="cursor">Cursor Key</option>
+              </select>
               <select id="keyAccount"></select>
               <input id="keyName" placeholder="Key 名称（可选）" />
               <input id="keyValidityDays" type="number" min="1" max="3650" step="1" value="30" placeholder="有效期天数（留空=永久）" />
@@ -2827,6 +2832,7 @@
               <button id="keyUsageRestoreCmdBtn" class="btn">一键生成还原 CMD</button>
               <button id="keyUsageTomlBtn" class="btn primary">一键生成 config.toml</button>
               <button id="keyUsageCodexBtn" class="btn">生成 Codex 接入</button>
+              <button id="keyUsageCursorBtn" class="btn">生成 Cursor 接入</button>
               <button id="keyUsageCurlBtn" class="btn">生成 cURL 示例</button>
               <button id="keyUsageCopyBtn" class="btn" disabled>复制示例</button>
             </div>
@@ -2990,6 +2996,7 @@
         draft: {
           keyIssueRoutingMode: "pool",
           keyIssueAccountId: "",
+          keyIssueClientMode: "codex",
           adminToken: "",
           encryptionKey: "",
         },
@@ -3071,6 +3078,7 @@
         ["refreshTokenCache", "ui.refreshTokenCache"],
         ["keyUsageText", "ui.keyUsageText"],
         ["keyAccountSelection", "draft.keyIssueAccountId"],
+        ["keyClientMode", "draft.keyIssueClientMode"],
         ["adminToken", "draft.adminToken"],
         ["encryptionKey", "draft.encryptionKey"],
       ].forEach(([alias, path]) => defineStateAlias(S, alias, path));
@@ -4744,16 +4752,18 @@
         const subtitle = document.getElementById("testSubtitle");
         const root = document.getElementById("testLog");
         const title = document.getElementById("testTitle");
+        const keyRow = S.testMode === "key" ? getVirtualKeyById(targetId) : null;
+        const isCursorKey = keyRow?.clientMode === "cursor";
         if (!subtitle || !root) return;
 
         if (title) {
-          title.textContent = S.testMode === "key" ? "API Key 测试聊天" : "账号测试聊天";
+          title.textContent =
+            S.testMode === "key" ? (isCursorKey ? "Cursor Key 兼容测试" : "API Key 测试聊天") : "账号测试聊天";
         }
 
         if (S.testMode === "key") {
-          const keyRow = S.virtualKeys.find((item) => item.id === targetId);
           subtitle.textContent = keyRow
-            ? `${keyRow.name || "未命名 Key"} 路 ${model || "未选择模型"}`
+            ? `${keyRow.name || "未命名 Key"} · ${getVirtualKeyClientModeLabel(keyRow)} · ${model || "未选择模型"}`
             : "请选择 API Key 和模型";
         } else {
           const account = S.accounts.find((a) => a.id === targetId);
@@ -4784,7 +4794,11 @@
                 `,
               )
               .join("")
-          : `<div class="chat-item"><div class="meta">系统</div><div class="text">已打开测试会话，输入消息即可发送。</div></div>`;
+          : `<div class="chat-item"><div class="meta">系统</div><div class="text">${
+              S.testMode === "key" && isCursorKey
+                ? "已打开 Cursor 兼容测试会话，输入消息即可验证 /cursor/v1/chat/completions 链路。"
+                : "已打开测试会话，输入消息即可发送。"
+            }</div></div>`;
 
         root.scrollTop = root.scrollHeight;
       }
@@ -4940,6 +4954,10 @@
         else S.testAccountId = targetId;
         S.testModelId = model;
         rememberTestModel(S.testMode, targetId, model);
+        const keyRow = S.testMode === "key" ? getVirtualKeyById(targetId) : null;
+        const isCursorKey = keyRow?.clientMode === "cursor";
+        const testLabel =
+          S.testMode === "key" ? (isCursorKey ? "Cursor Key" : "API Key") : "账号";
 
         const sessionKey = `${S.testMode}:${targetId}::${model}`;
         if (!S.chatSessions[sessionKey]) {
@@ -4971,19 +4989,19 @@
               pendingReply.at = Date.now();
               pendingReply.usage = output.usage;
               drawTestChatLog();
-              log(`测试聊天成功(${S.testMode === "key" ? "API Key" : "账号"}): ${model} 路 tokens ${output.usage?.totalTokens ?? 0}`);
+              log(`测试聊天成功(${testLabel}): ${model} 路 tokens ${output.usage?.totalTokens ?? 0}`);
             } catch (error) {
               pendingReply.pending = false;
               pendingReply.text = `请求失败：${toErrorMessage(error)}`;
               pendingReply.at = Date.now();
               drawTestChatLog();
-              log(`测试聊天失败: ${toErrorMessage(error)}`, "error");
+              log(`${testLabel} 测试失败: ${toErrorMessage(error)}`, "error");
               throw error;
             }
           },
           {
             button: sendButton,
-            busyLabel: "发送中...",
+            busyLabel: isCursorKey ? "验证中..." : "发送中...",
             errorToast: "测试发送失败",
             rethrow: false,
           },
@@ -5001,6 +5019,10 @@
 
       function isAccountConnected(account) {
         return Boolean(account?.hasAccessToken || account?.accessToken);
+      }
+
+      function canRefreshAccountQuota(account) {
+        return Boolean(account?.providerId === "chatgpt" && account?.methodId !== "api-key" && isAccountConnected(account));
       }
 
       function getAccountById(id) {
@@ -5355,6 +5377,148 @@
         return S.virtualKeys.filter((row) => row?.routingMode === "single" && row?.accountId && idSet.has(String(row.accountId))).length;
       }
 
+      function getAccountDisplayLabel(accountId) {
+        const account = S.accounts.find((item) => item?.id === accountId);
+        return account?.displayName || account?.email || account?.accountId || accountId;
+      }
+
+      function accountSupportsQuotaRefresh(account) {
+        return Boolean(
+          account &&
+            account.providerId === "chatgpt" &&
+            account.methodId !== "api-key" &&
+            (account.hasAccessToken || account.hasRefreshToken),
+        );
+      }
+
+      function applyRefreshedAccountQuota(account, dashboardMetrics) {
+        if (account && account.id) {
+          const normalizedId = String(account.id);
+          let replaced = false;
+          S.accounts = (S.accounts || []).map((item) => {
+            if (String(item?.id || "") !== normalizedId) return item;
+            replaced = true;
+            return account;
+          });
+          if (!replaced) {
+            S.accounts = [account, ...(S.accounts || [])];
+          }
+        }
+        if (dashboardMetrics) {
+          S.dashboardMetrics = coerceDashboardMetrics(dashboardMetrics);
+        }
+        drawStats();
+        fillTestSelectors();
+        fillKeyAccountSelector();
+        drawAccountsTable();
+        renderRefreshTokenModal();
+        drawTestChatLog();
+      }
+
+      async function refreshAllAccountQuotaLegacy(triggerButton = null) {
+        const refreshableAccounts = (S.accounts || []).filter(accountSupportsQuotaRefresh);
+        if (!refreshableAccounts.length) {
+          showToast("当前没有可刷新的账号额度", "info");
+          return;
+        }
+
+        await runBusyAction(
+          "accounts:quota:refresh",
+          async () => {
+            await loadAccounts({ refreshQuota: true, forceQuota: true, loadVirtualKeys: false });
+            log(`已刷新全部账号额度（${refreshableAccounts.length} 个）`);
+          },
+          {
+            button: triggerButton || document.getElementById("btnRefreshQuota"),
+            busyLabel: "刷新中...",
+            successToast: `已刷新 ${refreshableAccounts.length} 个账号额度`,
+            errorToast: "刷新账号额度失败",
+            rethrow: false,
+          },
+        );
+      }
+
+      async function refreshSingleAccountQuotaLegacy(accountId, triggerButton = null) {
+        const account = (S.accounts || []).find((item) => item?.id === accountId);
+        if (!account) {
+          showToast("账号不存在或已被删除", "error");
+          return;
+        }
+        if (!accountSupportsQuotaRefresh(account)) {
+          showToast("当前账号不支持额度刷新", "info");
+          return;
+        }
+
+        const label = getAccountDisplayLabel(accountId);
+        await runBusyAction(
+          `account:quota:refresh:${accountId}`,
+          async () => {
+            const output = await api(`/api/accounts/${encodeURIComponent(accountId)}/refresh-quota`, { method: "POST" });
+            applyRefreshedAccountQuota(output?.account || null, output?.dashboardMetrics || null);
+            log(`已刷新账号额度：${label}`);
+          },
+          {
+            button: triggerButton,
+            busyLabel: "刷新中...",
+            successToast: `已刷新 ${label} 的额度`,
+            errorToast: "刷新账号额度失败",
+            rethrow: false,
+          },
+        );
+      }
+
+      async function refreshAllAccountQuota(triggerButton = null) {
+        const refreshableAccounts = (S.accounts || []).filter(accountSupportsQuotaRefresh);
+        if (!refreshableAccounts.length) {
+          showToast("当前没有可刷新的账号额度", "info");
+          return;
+        }
+
+        await runBusyAction(
+          "accounts:quota:refresh",
+          async () => {
+            await loadAccounts({ refreshQuota: true, forceQuota: true, loadVirtualKeys: false });
+            log(`已刷新全部账号额度（${refreshableAccounts.length} 个）`);
+          },
+          {
+            button: triggerButton || document.getElementById("btnRefreshQuota"),
+            busyLabel: "刷新中...",
+            successToast: `已刷新 ${refreshableAccounts.length} 个账号额度`,
+            errorToast: "刷新账号额度失败",
+            rethrow: false,
+          },
+        );
+      }
+
+      async function refreshSingleAccountQuota(accountId, triggerButton = null) {
+        const account = (S.accounts || []).find((item) => item?.id === accountId);
+        if (!account) {
+          showToast("账号不存在或已被删除", "error");
+          return;
+        }
+        if (!accountSupportsQuotaRefresh(account)) {
+          showToast("当前账号不支持额度刷新", "info");
+          return;
+        }
+
+        const label = getAccountDisplayLabel(accountId);
+        await runBusyAction(
+          `account:quota:refresh:${accountId}`,
+          async () => {
+            const output = await api(`/api/accounts/${encodeURIComponent(accountId)}/refresh-quota`, { method: "POST" });
+            applyRefreshedAccountQuota(output?.account || null, output?.dashboardMetrics || null);
+            log(`已刷新账号额度：${label}`);
+          },
+          {
+            button: triggerButton,
+            busyLabel: "刷新中...",
+            successToast: `已刷新 ${label} 的额度`,
+            errorToast: "刷新账号额度失败",
+            rethrow: false,
+          },
+        );
+      }
+
       async function bulkDeleteBannedAccountsLegacyCompat(accountIds) {
         const idSet = new Set((Array.isArray(accountIds) ? accountIds : []).map((id) => String(id || "").trim()).filter(Boolean));
         const boundSingleKeys = S.virtualKeys.filter(
@@ -5526,6 +5690,9 @@
             const tokenUsed = Number(account.totalTokens || 0);
             const quota = formatAccountQuota(account.quota);
             const status = getAccountStatusMeta(account);
+            const refreshQuotaBtn = canRefreshAccountQuota(account)
+              ? `<button class="mini-btn" data-account-action="refresh-quota" data-id="${esc(account.id)}" title="刷新额度">额度</button>`
+              : "";
             const activateBtn = account.isActive
               ? '<button class="mini-btn activate" disabled>当前</button>'
               : `<button class="mini-btn activate" data-account-action="activate" data-id="${esc(account.id)}">设为默认</button>`;
@@ -5541,6 +5708,7 @@
                   <div class="mini-actions">
                     <button class="mini-btn test" data-account-action="test" data-id="${esc(account.id)}">测试</button>
                     <button class="mini-btn bridge" data-account-action="refresh-token" data-id="${esc(account.id)}">Token</button>
+                    ${refreshQuotaBtn}
                     ${activateBtn}
                     <button class="mini-btn delete" data-account-action="delete" data-id="${esc(account.id)}">删除</button>
                   </div>
@@ -5561,6 +5729,10 @@
             }
             if (action === "refresh-token") {
               openRefreshTokenModal(id);
+              return;
+            }
+            if (action === "refresh-quota") {
+              await refreshSingleAccountQuota(id, button);
               return;
             }
             if (action === "delete") {
@@ -5644,6 +5816,8 @@
         const fields = [
           row.name,
           keyAccountLabel(row),
+          getVirtualKeyClientModeLabel(row),
+          row.clientMode,
           row.keyPrefix,
           row.id,
           statusText,
@@ -5735,14 +5909,24 @@
         const meta = document.getElementById("keyManageMeta");
         const actions = document.getElementById("keyManageActions");
         const revealed = S.revealedKeys[row.id];
+        const clientModeLabel = getVirtualKeyClientModeLabel(row);
 
         if (title) title.textContent = row.name || "未命名 Key";
-        if (subtitle) subtitle.textContent = keyAccountLabel(row);
+        if (subtitle) subtitle.textContent = `${keyAccountLabel(row)} · ${clientModeLabel}`;
         if (meta) {
           const statusText = row.isRevoked ? "已吊销" : expired ? "已过期" : "生效";
           meta.textContent = `状态: ${statusText} | 剩余时间: ${formatRemainingTime(row.expiresAt)} | Token: ${Number(
             row.totalTokens || 0,
           ).toLocaleString()} | 最近使用: ${dt(row.lastUsedAt)}`;
+        }
+
+        if (title) title.textContent = row.name || "未命名 Key";
+        if (secret) secret.textContent = revealed || `${row.keyPrefix || "ocsk_live"}********`;
+        if (meta) {
+          const statusText = row.isRevoked ? "已吊销" : expired ? "已过期" : "生效";
+          meta.textContent = `类型: ${clientModeLabel} | 状态: ${statusText} | 剩余时间: ${formatRemainingTime(
+            row.expiresAt,
+          )} | Token: ${Number(row.totalTokens || 0).toLocaleString()} | 最近使用: ${dt(row.lastUsedAt)}`;
         }
 
         if (actions) {
@@ -5817,7 +6001,13 @@
         try {
           const { keys } = await api("/api/virtual-keys");
           if (!isLatestRequest("virtualKeys", requestId)) return;
-          S.virtualKeys = Array.isArray(keys) ? keys : [];
+          S.virtualKeys = Array.isArray(keys)
+            ? keys.map((row) => ({
+                ...row,
+                clientMode: row?.clientMode ?? row?.client_mode ?? "codex",
+                wireApi: row?.wireApi ?? row?.wire_api ?? (row?.clientMode === "cursor" || row?.client_mode === "cursor" ? "chat_completions" : "responses"),
+              }))
+            : [];
           const validIds = new Set(S.virtualKeys.map((item) => item.id));
           Object.keys(S.revealedKeys).forEach((id) => {
             if (!validIds.has(id)) delete S.revealedKeys[id];
@@ -6131,13 +6321,35 @@
         return buildPowerShellBatchScript(buildRestorePowerShell(), "[ERROR] Restore command failed.");
       }
 
+      function getVirtualKeyClientModeLabel(row) {
+        return row?.clientMode === "cursor" ? "Cursor Key" : "Codex Key";
+      }
+
       function buildKeyUsageText(mode, row, key) {
         const base = activeServiceBaseUrl();
         const apiBase = `${base}/v1`;
+        const cursorApiBase = `${base}/cursor/v1`;
         const modelId = defaultChatModel();
         const keyLabel = row?.name || row?.keyPrefix || row?.id || "铏氭嫙Key";
         if (mode === "restore-cmd") {
           return buildConfigRestoreCmd();
+        }
+        const clientMode = row?.clientMode === "cursor" ? "cursor" : "codex";
+        if (mode === "cursor") {
+          return [
+            `# ${keyLabel} - Cursor 接入示例`,
+            "",
+            "## Cursor 配置",
+            `OpenAI API Key: ${key}`,
+            `Override OpenAI Base URL: ${cursorApiBase}`,
+            `推荐模型: ${modelId}`,
+            "",
+            "## 说明",
+            "1. 这是 Cursor / OpenAI 兼容客户端专用链路。",
+            "2. 请在 Cursor 中填写 OpenAI API Key 和 Override OpenAI Base URL。",
+            "3. 该 Key 只适用于 /cursor/v1/*，不能用于 Codex /v1/responses。",
+            "4. 若使用自定义模型，请从网关暴露的 Cursor 稳定模型中选择。",
+          ].join("\n");
         }
         const configToml = [
           "# Official-style minimal config.toml (only endpoint replaced):",
@@ -6181,7 +6393,7 @@
         return [
           `# ${keyLabel} - cURL 绀轰緥`,
           "",
-          `curl \"${apiBase}/chat/completions\" \\`,
+          `curl \"${clientMode === "cursor" ? cursorApiBase : apiBase}/chat/completions\" \\`,
           "  -H \"Content-Type: application/json\" \\",
           `  -H \"Authorization: Bearer ${key}\" \\`,
           "  -d '{",
@@ -6215,31 +6427,44 @@
         if (!S.keyManageId) return;
         const row = getVirtualKeyById(S.keyManageId);
         if (!row) return;
+        const isCursorKey = row?.clientMode === "cursor";
+        const codexOnlyModes = new Set(["config-cmd-basic", "config-cmd-gateway", "restore-cmd", "config", "codex"]);
+        if (isCursorKey && codexOnlyModes.has(mode)) {
+          setKeyUsageOutput("当前选中的 Key 属于 Cursor 链路。请使用“生成 Cursor 接入”按钮，不要导出 Codex 专用配置。");
+          showToast("当前是 Cursor Key，请使用 Cursor 接入说明", "info");
+          return;
+        }
+        if (mode === "cursor" && row?.clientMode !== "cursor") {
+          setKeyUsageOutput("当前选中的 Key 属于 Codex 链路。请先生成 Cursor Key，再使用 Cursor 接入说明。");
+          showToast("当前是 Codex Key，请先生成 Cursor Key", "info");
+          return;
+        }
+        const normalizedMode = row?.clientMode === "cursor" && mode === "codex" ? "cursor" : mode;
 
         try {
           let key = "";
-          if (mode !== "restore-cmd") {
+          if (normalizedMode !== "restore-cmd") {
             key = S.revealedKeys[S.keyManageId] || (await revealVirtualKey(S.keyManageId, false));
             if (!key) return;
           }
-          const text = buildKeyUsageText(mode, row, key);
+          const text = buildKeyUsageText(normalizedMode, row, key);
           setKeyUsageOutput(text);
-          if (mode === "config-cmd-basic") {
+          if (normalizedMode === "config-cmd-basic") {
             downloadTextFile("switch-codex-config-basic.cmd", text);
             log("已生成并下载普通版切换 CMD");
             return;
           }
-          if (mode === "config-cmd-gateway") {
+          if (normalizedMode === "config-cmd-gateway") {
             downloadTextFile("switch-codex-config-gateway.cmd", text);
             log("已生成并下载网关版切换 CMD");
             return;
           }
-          if (mode === "restore-cmd") {
+          if (normalizedMode === "restore-cmd") {
             downloadTextFile("restore-codex-config.cmd", text);
             log("已生成并下载还原 CMD");
             return;
           }
-          if (mode === "config") {
+          if (normalizedMode === "config") {
             downloadTextFile("config.toml", text);
             log("已生成并下载 config.toml");
             return;
@@ -6494,7 +6719,11 @@
         const keyNameInput = document.getElementById("keyName");
         const keyValidityInput = document.getElementById("keyValidityDays");
         const issueButton = document.getElementById("issueKey");
+        const keyClientModeInput = document.getElementById("keyClientMode");
         const keyName = keyNameInput?.value?.trim() || undefined;
+        const clientMode = keyClientModeInput?.value === "cursor" ? "cursor" : "codex";
+        const wireApi = clientMode === "cursor" ? "chat_completions" : "responses";
+        const routeLabel = clientMode === "cursor" ? "Cursor 兼容链路" : "Codex 官方链路";
         const validityDaysRaw = keyValidityInput?.value?.trim() ?? "30";
         let validityDays = null;
         if (validityDaysRaw !== "") {
@@ -6526,6 +6755,8 @@
                 accountId: routingMode === "single" ? accountId || undefined : undefined,
                 providerId,
                 routingMode,
+                clientMode,
+                wireApi,
                 name: keyName,
                 validityDays,
               }),
@@ -8222,6 +8453,7 @@
         setClick("btnImportRt", openRtAccountImport);
         setClick("btnImportJson", openJsonAccountImport);
         setClick("btnExportJson", exportOAuthAccountsJson);
+        setClick("btnRefreshQuota", () => refreshAllAccountQuota());
         setClick("openDocs", () => window.open("https://github.com/openai/codex", "_blank", "noopener,noreferrer"));
         setClick("btnAddApi", addApiKeyAccount);
         setClick("btnBulkDeleteBanned", bulkDeleteBannedAccounts);
@@ -8282,6 +8514,567 @@
           drawRequestLogsTable();
         });
 
+        function renderKeyUsageButtons(row) {
+          const codexOnlyButtonIds = [
+            "keyUsageBasicCmdBtn",
+            "keyUsageGatewayCmdBtn",
+            "keyUsageRestoreCmdBtn",
+            "keyUsageTomlBtn",
+            "keyUsageCodexBtn",
+          ];
+          const cursorOnlyButtonIds = ["keyUsageCursorBtn"];
+          codexOnlyButtonIds.forEach((id) => {
+            const button = document.getElementById(id);
+            if (!button) return;
+            button.hidden = row?.clientMode === "cursor";
+            button.disabled = row?.clientMode === "cursor";
+          });
+          cursorOnlyButtonIds.forEach((id) => {
+            const button = document.getElementById(id);
+            if (!button) return;
+            button.hidden = row?.clientMode !== "cursor";
+            button.disabled = row?.clientMode !== "cursor";
+          });
+        }
+
+        function drawKeysTable() {
+          const tbody = document.getElementById("keysTableBody");
+          if (!tbody) return;
+
+          if (!S.virtualKeys.length) {
+            tbody.innerHTML = `<tr><td colspan="9" class="muted">暂无虚拟 Key，请先签发。</td></tr>`;
+            return;
+          }
+
+          const query = normalizeQuery(S.keyQuery);
+          const rows = S.virtualKeys.filter((row) => matchesVirtualKeyQuery(row, query));
+          if (!rows.length) {
+            tbody.innerHTML = `<tr><td colspan="9" class="muted">未找到匹配密钥</td></tr>`;
+            return;
+          }
+
+          tbody.innerHTML = rows
+            .map((row) => {
+              const revealed = S.revealedKeys[row.id];
+              const expired = isVirtualKeyExpired(row);
+              const status = row.isRevoked
+                ? '<span class="muted">已吊销</span>'
+                : expired
+                  ? '<span class="muted">已过期</span>'
+                  : '<span class="status-ok">✓ 生效</span>';
+              const maskedKey = row.keyPrefix ? `${row.keyPrefix}...` : "-";
+              const displayKey = revealed || maskedKey;
+              return `
+                <tr>
+                  <td>${esc(row.name || "未命名 Key")}</td>
+                  <td>${esc(keyAccountLabel(row))}</td>
+                  <td class="key-cell"><code>${esc(displayKey)}</code></td>
+                  <td>${status}</td>
+                  <td>${Number(row.totalTokens || 0) > 0 ? Number(row.totalTokens).toLocaleString() : "-"}</td>
+                  <td>${esc(formatRemainingTime(row.expiresAt))}</td>
+                  <td>${esc(dt(row.lastUsedAt))}</td>
+                  <td>${esc(dt(row.createdAt))}</td>
+                  <td>
+                    <div class="mini-actions">
+                      <button class="key-mini reveal" data-key-action="toggle-reveal" data-id="${esc(row.id)}">${revealed ? "收起" : "查看"}</button>
+                      <button class="key-mini copy" data-key-action="copy" data-id="${esc(row.id)}" ${row.isRevoked || expired ? "disabled" : ""}>复制</button>
+                      <button class="key-mini manage" data-key-action="manage" data-id="${esc(row.id)}">管理</button>
+                    </div>
+                  </td>
+                </tr>
+              `;
+            })
+            .join("");
+
+          tbody.querySelectorAll("[data-key-action]").forEach((button) => {
+            button.onclick = async () => {
+              const action = button.dataset.keyAction;
+              const id = button.dataset.id;
+              if (!action || !id) return;
+              if (action === "toggle-reveal") return toggleRevealVirtualKey(id);
+              if (action === "copy") return copyVirtualKey(id);
+              if (action === "manage") return openKeyManageModal(id);
+            };
+          });
+        }
+
+        function renderKeyManageModal() {
+          if (!S.keyManageId) return;
+          const row = getVirtualKeyById(S.keyManageId);
+          const modal = document.getElementById("keyManageModal");
+          if (!modal || !row) {
+            closeKeyManageModal();
+            return;
+          }
+
+          const expired = isVirtualKeyExpired(row);
+          const title = document.getElementById("keyManageTitle");
+          const subtitle = document.getElementById("keyManageSubtitle");
+          const secret = document.getElementById("keyManageSecret");
+          const meta = document.getElementById("keyManageMeta");
+          const actions = document.getElementById("keyManageActions");
+          const revealed = S.revealedKeys[row.id];
+          const clientModeLabel = getVirtualKeyClientModeLabel(row);
+          const statusText = row.isRevoked ? "已吊销" : expired ? "已过期" : "生效";
+          const renewInput = document.getElementById("keyManageRenewInput");
+          const renewButton = document.getElementById("keyManageRenewBtn");
+
+          if (title) title.textContent = row.name || "未命名 Key";
+          if (subtitle) subtitle.textContent = `${keyAccountLabel(row)} · ${clientModeLabel}`;
+          if (secret) secret.textContent = revealed || `${row.keyPrefix || "ocsk_live"}********`;
+          if (meta) {
+            meta.textContent = `类型: ${clientModeLabel} | 状态: ${statusText} | 剩余时间: ${formatRemainingTime(
+              row.expiresAt,
+            )} | Token: ${Number(row.totalTokens || 0).toLocaleString()} | 最近使用: ${dt(row.lastUsedAt)}`;
+          }
+
+          renderKeyUsageButtons(row);
+          if (renewInput) renewInput.disabled = row.isRevoked;
+          if (renewButton) renewButton.disabled = row.isRevoked;
+
+          if (actions) {
+            actions.innerHTML = `
+              <button class="btn" data-km-action="toggle-reveal">${revealed ? "收起 Key" : "查看完整 Key"}</button>
+              <button class="btn" data-km-action="copy" ${row.isRevoked || expired ? "disabled" : ""}>复制 Key</button>
+              <button class="btn" data-km-action="test" ${row.isRevoked || expired ? "disabled" : ""}>测试</button>
+              ${
+                row.isRevoked
+                  ? `<button class="btn primary" data-km-action="restore">恢复 Key</button>`
+                  : `<button class="btn danger" data-km-action="revoke">吊销 Key</button>`
+              }
+              <button class="btn danger" data-km-action="delete">删除 Key</button>
+            `;
+            actions.querySelectorAll("[data-km-action]").forEach((button) => {
+              button.onclick = async () => {
+                const action = button.dataset.kmAction;
+                if (!action || !S.keyManageId) return;
+                if (action === "toggle-reveal") return toggleRevealVirtualKey(S.keyManageId, false);
+                if (action === "copy") return copyVirtualKey(S.keyManageId, false);
+                if (action === "test") {
+                  const id = S.keyManageId;
+                  closeKeyManageModal();
+                  return openTestModal(id, "key");
+                }
+                if (action === "revoke") {
+                  if (!confirm("确认吊销这个 Key 吗？")) return;
+                  return revokeVirtualKey(S.keyManageId);
+                }
+                if (action === "restore") {
+                  if (!confirm("确认恢复这个 Key 吗？")) return;
+                  return restoreVirtualKey(S.keyManageId);
+                }
+                if (action === "delete") {
+                  if (!confirm("确认删除这个 Key 吗？")) return;
+                  await deleteVirtualKey(S.keyManageId);
+                  closeKeyManageModal();
+                }
+              };
+            });
+          }
+        }
+
+        function buildKeyUsageText(mode, row, key) {
+          const base = activeServiceBaseUrl();
+          const apiBase = `${base}/v1`;
+          const cursorApiBase = `${base}/cursor/v1`;
+          const modelId = defaultChatModel();
+          const keyLabel = row?.name || row?.keyPrefix || row?.id || "未命名 Key";
+          if (mode === "restore-cmd") {
+            return buildConfigRestoreCmd();
+          }
+
+          if (mode === "cursor") {
+            return [
+              `# ${keyLabel} - Cursor 接入示例`,
+              "",
+              "## Cursor 配置",
+              `OpenAI API Key: ${key}`,
+              `Override OpenAI Base URL: ${cursorApiBase}`,
+              `推荐模型: ${modelId}`,
+              "",
+              "## 说明",
+              "1. 这是 Cursor / OpenAI 兼容客户端专用链路。",
+              "2. 请在 Cursor 中填写 OpenAI API Key 和 Override OpenAI Base URL。",
+              "3. 该 Key 仅适用于 /cursor/v1/*，不能用于 Codex /v1/responses。",
+              "4. 如使用自定义模型，请从网关暴露的 Cursor 稳定模型中选择。",
+            ].join("\n");
+          }
+
+          const configToml = [
+            "# Official-style minimal config.toml (only endpoint replaced):",
+            `openai_base_url = ${toTomlString(apiBase)}`,
+            "",
+            "# Key is stored in ~/.codex/auth.json (apikey mode):",
+            `# OPENAI_API_KEY=${key}`,
+            `# Key: ${keyLabel}`,
+          ].join("\n");
+
+          if (mode === "config-cmd-basic") {
+            return buildBasicConfigSwitchCmd(key, apiBase);
+          }
+
+          if (mode === "config-cmd-gateway") {
+            return buildGatewayConfigSwitchCmd(key, apiBase);
+          }
+
+          if (mode === "config") {
+            return configToml;
+          }
+
+          if (mode === "codex") {
+            return [
+              `# ${keyLabel} - Codex 接入示例`,
+              "",
+              "## Windows PowerShell",
+              `$env:OPENAI_API_KEY=\"${key}\"`,
+              `$env:OPENAI_BASE_URL=\"${apiBase}\"`,
+              `$env:OPENAI_API_BASE=\"${apiBase}\"  # 兼容部分客户端`,
+              "codex",
+              "",
+              "## 说明",
+              "1. OPENAI_API_KEY 使用当前签发的虚拟 Key。",
+              "2. OPENAI_BASE_URL / OPENAI_API_BASE 指向网关的 /v1 地址。",
+              "3. config.toml 保持 OpenAI 原生 provider，即可在 Codex 中继续选择模型和强度。",
+              "4. 请求会按当前均流策略路由到可用账号。",
+            ].join("\n");
+          }
+
+          if (row?.clientMode === "cursor") {
+            return [
+              `# ${keyLabel} - OpenAI 兼容调用示例`,
+              "",
+              `curl \"${cursorApiBase}/chat/completions\" \\`,
+              "  -H \"Content-Type: application/json\" \\",
+              `  -H \"Authorization: Bearer ${key}\" \\`,
+              "  -d '{",
+              `    \"model\": \"${modelId}\",`,
+              "    \"messages\": [",
+              "      {\"role\": \"user\", \"content\": \"你好，请返回当前模型名称\"}",
+              "    ],",
+              "    \"stream\": false",
+              "  }'",
+              "",
+              "## 说明",
+              "1. 这是面向 Cursor / OpenAI 兼容客户端的 chat.completions 调试示例。",
+              "2. Token 消耗与费用统计会继续计入当前网关。",
+            ].join("\n");
+          }
+
+          return [
+            `# ${keyLabel} - Codex Responses 调用示例`,
+            "",
+            `curl \"${apiBase}/responses\" \\`,
+            "  -H \"Content-Type: application/json\" \\",
+            `  -H \"Authorization: Bearer ${key}\" \\`,
+            "  -d '{",
+            `    \"model\": \"${modelId}\",`,
+            "    \"input\": [",
+            "      {",
+            "        \"role\": \"user\",",
+            "        \"content\": [",
+            "          {\"type\": \"input_text\", \"text\": \"你好，请返回当前模型名称\"}",
+            "        ]",
+            "      }",
+            "    ],",
+            "    \"stream\": false",
+            "  }'",
+            "",
+            "## 说明",
+            "1. 这是面向 Codex / Responses 链路的调试示例。",
+            "2. 如需 Cursor/OpenAI 兼容客户端，请改用“生成 Cursor 接入”。",
+          ].join("\n");
+        }
+
+        function setKeyUsageOutput(text) {
+          S.keyUsageText = text || "";
+          const output = document.getElementById("keyUsageOutput");
+          const copyButton = document.getElementById("keyUsageCopyBtn");
+          if (output) {
+            output.textContent = text || "请选择适合当前 Key 类型的接入方式生成说明。";
+          }
+          if (copyButton) copyButton.disabled = !text;
+        }
+
+        function resetKeyUsageOutput() {
+          setKeyUsageOutput("");
+        }
+
+        async function generateKeyUsage(mode) {
+          if (!S.keyManageId) return;
+          const row = getVirtualKeyById(S.keyManageId);
+          if (!row) return;
+          const isCursorKey = row?.clientMode === "cursor";
+          const codexOnlyModes = new Set(["config-cmd-basic", "config-cmd-gateway", "restore-cmd", "config", "codex"]);
+          if (isCursorKey && codexOnlyModes.has(mode)) {
+            setKeyUsageOutput("当前选中的 Key 属于 Cursor 链路。请使用“生成 Cursor 接入”按钮，不要导出 Codex 专用配置。");
+            showToast("当前是 Cursor Key，请使用 Cursor 接入说明", "info");
+            return;
+          }
+          if (mode === "cursor" && row?.clientMode !== "cursor") {
+            setKeyUsageOutput("当前选中的 Key 属于 Codex 链路。请先生成 Cursor Key，再使用 Cursor 接入说明。");
+            showToast("当前是 Codex Key，请先生成 Cursor Key", "info");
+            return;
+          }
+
+          try {
+            let key = "";
+            if (mode !== "restore-cmd") {
+              key = S.revealedKeys[S.keyManageId] || (await revealVirtualKey(S.keyManageId, false));
+              if (!key) return;
+            }
+            const text = buildKeyUsageText(mode, row, key);
+            setKeyUsageOutput(text);
+            if (mode === "config-cmd-basic") {
+              downloadTextFile("switch-codex-config-basic.cmd", text);
+              log("已生成并下载普通版切换 CMD");
+              return;
+            }
+            if (mode === "config-cmd-gateway") {
+              downloadTextFile("switch-codex-config-gateway.cmd", text);
+              log("已生成并下载网关版切换 CMD");
+              return;
+            }
+            if (mode === "restore-cmd") {
+              downloadTextFile("restore-codex-config.cmd", text);
+              log("已生成并下载还原 CMD");
+              return;
+            }
+            if (mode === "config") {
+              downloadTextFile("config.toml", text);
+              log("已生成并下载 config.toml");
+              return;
+            }
+            if (mode === "codex") {
+              log("已生成 Codex 接入说明");
+              return;
+            }
+            if (mode === "cursor") {
+              log("已生成 Cursor 接入说明");
+              return;
+            }
+            log("已生成 OpenAI 兼容调用示例");
+          } catch (error) {
+            const msg = error instanceof Error ? error.message : String(error);
+            log(`生成接入说明失败: ${msg}`, "error");
+            alert(msg);
+          }
+        }
+
+        async function renameVirtualKey(id) {
+          const row = S.virtualKeys.find((item) => item.id === id);
+          if (!row) return;
+          const nextName = prompt("请输入新的 Key 名称（留空则恢复未命名）", row.name || "");
+          if (nextName === null) return;
+
+          const normalized = nextName.trim();
+          if (normalized.length > 120) {
+            alert("Key 名称最多 120 个字符");
+            return;
+          }
+
+          try {
+            await api(`/api/virtual-keys/${encodeURIComponent(id)}/name`, {
+              method: "POST",
+              body: JSON.stringify({ name: normalized || null }),
+            });
+            await loadVirtualKeys();
+            log(`Key 名称已更新: ${normalized || "未命名 Key"}`);
+          } catch (error) {
+            const msg = error instanceof Error ? error.message : String(error);
+            log(`修改 Key 名称失败: ${msg}`, "error");
+            alert(msg);
+          }
+        }
+
+        async function renewVirtualKey(id) {
+          const input = prompt("请输入续签天数（1-3650，留空为永久）", "30");
+          if (input === null) return;
+
+          const raw = input.trim();
+          let validityDays = null;
+          if (raw !== "") {
+            const parsed = Number(raw);
+            if (!Number.isInteger(parsed) || parsed < 1 || parsed > 3650) {
+              alert("续签天数必须是 1-3650 的整数，或留空设为永久");
+              return;
+            }
+            validityDays = parsed;
+          }
+
+          try {
+            await api(`/api/virtual-keys/${encodeURIComponent(id)}/renew`, {
+              method: "POST",
+              body: JSON.stringify({ validityDays }),
+            });
+            await loadVirtualKeys();
+            log(`Key 已续签: ${validityDays === null ? "永久" : `${validityDays} 天`}`);
+          } catch (error) {
+            const msg = error instanceof Error ? error.message : String(error);
+            log(`续签 Key 失败: ${msg}`, "error");
+            alert(msg);
+          }
+        }
+
+        async function submitKeyManageRename() {
+          if (!S.keyManageId) return;
+          const input = document.getElementById("keyManageNameInput");
+          const name = input?.value ?? "";
+          const normalized = String(name).trim();
+          if (normalized.length > 120) {
+            showToast("Key 名称最多 120 个字符", "error");
+            return;
+          }
+          await runBusyAction(
+            `key-manage:rename:${S.keyManageId}`,
+            async () => {
+              await api(`/api/virtual-keys/${encodeURIComponent(S.keyManageId)}/name`, {
+                method: "POST",
+                body: JSON.stringify({ name: normalized || null }),
+              });
+              await loadVirtualKeys();
+              log(`Key 名称已更新: ${normalized || "未命名 Key"}`);
+            },
+            {
+              button: document.getElementById("keyManageRenameBtn"),
+              busyLabel: "保存中...",
+              successToast: "Key 名称已更新",
+              errorToast: "修改 Key 名称失败",
+              rethrow: false,
+            },
+          );
+        }
+
+        async function submitKeyManageRenew() {
+          if (!S.keyManageId) return;
+          const input = document.getElementById("keyManageRenewInput");
+          const raw = String(input?.value ?? "").trim();
+          let validityDays = null;
+          if (raw !== "") {
+            const parsed = Number(raw);
+            if (!Number.isInteger(parsed) || parsed < 1 || parsed > 3650) {
+              showToast("续签天数必须是 1-3650 的整数，或留空表示永久", "error");
+              return;
+            }
+            validityDays = parsed;
+          }
+          await runBusyAction(
+            `key-manage:renew:${S.keyManageId}`,
+            async () => {
+              await api(`/api/virtual-keys/${encodeURIComponent(S.keyManageId)}/renew`, {
+                method: "POST",
+                body: JSON.stringify({ validityDays }),
+              });
+              await loadVirtualKeys();
+              log(`Key 已续签: ${validityDays === null ? "永久" : `${validityDays} 天`}`);
+            },
+            {
+              button: document.getElementById("keyManageRenewBtn"),
+              busyLabel: "续签中...",
+              successToast: "Key 已续签",
+              errorToast: "续签 Key 失败",
+              rethrow: false,
+            },
+          );
+        }
+
+        async function copyVirtualKey(id, redraw = true) {
+          const scope = "virtual-key:copy:" + id;
+          await runBusyAction(
+            scope,
+            async function () {
+              const key = S.revealedKeys[id] || (await revealVirtualKey(id, redraw));
+              if (!key) return;
+              const ok = await copyText(key);
+              if (!ok) throw new Error("复制失败，请手动复制显示出的 Key");
+              log("虚拟 Key 已复制到剪贴板");
+            },
+            {
+              busyLabel: "复制中...",
+              successToast: "虚拟 Key 已复制",
+              errorToast: "复制 Key 失败",
+              rethrow: false,
+            },
+          );
+        }
+
+        async function revokeVirtualKey(id) {
+          const scope = "virtual-key:revoke:" + id;
+          await runBusyAction(
+            scope,
+            async function () {
+              await api("/api/virtual-keys/" + encodeURIComponent(id) + "/revoke", { method: "POST" });
+              delete S.revealedKeys[id];
+              await loadVirtualKeys();
+              log("虚拟 Key 已吊销");
+            },
+            {
+              busyLabel: "吊销中...",
+              successToast: "虚拟 Key 已吊销",
+              errorToast: "吊销 Key 失败",
+              rethrow: false,
+            },
+          );
+        }
+
+        async function restoreVirtualKey(id) {
+          const scope = "virtual-key:restore:" + id;
+          await runBusyAction(
+            scope,
+            async function () {
+              await api("/api/virtual-keys/" + encodeURIComponent(id) + "/restore", { method: "POST" });
+              await loadVirtualKeys();
+              log("虚拟 Key 已恢复");
+            },
+            {
+              busyLabel: "恢复中...",
+              successToast: "虚拟 Key 已恢复",
+              errorToast: "恢复 Key 失败",
+              rethrow: false,
+            },
+          );
+        }
+
+        async function deleteVirtualKey(id) {
+          const scope = "virtual-key:delete:" + id;
+          await runBusyAction(
+            scope,
+            async function () {
+              await api("/api/virtual-keys/" + encodeURIComponent(id), { method: "DELETE" });
+              delete S.revealedKeys[id];
+              await loadVirtualKeys();
+              log("虚拟 Key 已删除");
+            },
+            {
+              busyLabel: "删除中...",
+              successToast: "虚拟 Key 已删除",
+              errorToast: "删除 Key 失败",
+              rethrow: false,
+            },
+          );
+        }
+
+        async function copyKeyUsage() {
+          if (!S.keyUsageText) {
+            showToast("请先生成接入说明", "error");
+            return;
+          }
+          await runBusyAction(
+            "key-usage:copy",
+            async () => {
+              const ok = await copyText(S.keyUsageText);
+              if (!ok) throw new Error("复制失败，请手动复制接入说明");
+              log("接入说明已复制到剪贴板");
+            },
+            {
+              button: document.getElementById("keyUsageCopyBtn"),
+              busyLabel: "复制中...",
+              successToast: "接入说明已复制",
+              errorToast: "复制接入说明失败",
+              rethrow: false,
+            },
+          );
+        }
+
         setClick("testClose", closeTestModal);
         setClick("testSend", sendTestChat);
         setClick("keyManageClose", closeKeyManageModal);
@@ -8294,6 +9087,7 @@
         setClick("keyUsageRestoreCmdBtn", () => generateKeyUsage("restore-cmd"));
         setClick("keyUsageTomlBtn", () => generateKeyUsage("config"));
         setClick("keyUsageCodexBtn", () => generateKeyUsage("codex"));
+        setClick("keyUsageCursorBtn", () => generateKeyUsage("cursor"));
         setClick("keyUsageCurlBtn", () => generateKeyUsage("curl"));
         setClick("keyUsageCopyBtn", copyKeyUsage);
         document.getElementById("testModal")?.addEventListener("click", (e) => {
@@ -8338,6 +9132,10 @@
           const accountId = e.target.value || "";
           if (accountId) setKeyIssueDraft("single", accountId);
           else setKeyIssueDraft("pool", "");
+          renderKeyAccountStateHint();
+        });
+        document.getElementById("keyClientMode")?.addEventListener("change", (e) => {
+          S.draft.keyIssueClientMode = e.target.value === "cursor" ? "cursor" : "codex";
           renderKeyAccountStateHint();
         });
         document.getElementById("testInput")?.addEventListener("keydown", (e) => {

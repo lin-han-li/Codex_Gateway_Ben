@@ -28,12 +28,16 @@ type AccountRow = {
 type SaveAccountInput = LoginResult & { providerName: string }
 
 export type VirtualKeyRoutingMode = "single" | "pool"
+export type VirtualKeyClientMode = "codex" | "cursor"
+export type VirtualKeyWireAPI = "responses" | "chat_completions"
 
 export type VirtualApiKeyRecord = {
   id: string
   accountId: string | null
   providerId: string
   routingMode: VirtualKeyRoutingMode
+  clientMode: VirtualKeyClientMode
+  wireApi: VirtualKeyWireAPI
   name: string | null
   keyPrefix: string
   isRevoked: boolean
@@ -64,6 +68,8 @@ export type RequestAuditRecord = {
   upstreamRequestId: string | null
   error: string | null
   clientTag: string | null
+  clientMode: VirtualKeyClientMode | null
+  wireApi: VirtualKeyWireAPI | null
   inputTokens: number | null
   cachedInputTokens: number | null
   outputTokens: number | null
@@ -127,6 +133,8 @@ export type RequestTokenStatsDaySummary = {
 type VirtualApiKeyRow = {
   id: string
   account_id: string | null
+  client_mode: string | null
+  wire_api: string | null
   name: string | null
   key_hash: string
   key_secret: string | null
@@ -161,6 +169,8 @@ type RequestAuditRow = {
   upstream_request_id: string | null
   error_text: string | null
   client_tag: string | null
+  client_mode: string | null
+  wire_api: string | null
   input_tokens: number | null
   cached_input_tokens: number | null
   output_tokens: number | null
@@ -297,6 +307,8 @@ function toVirtualApiKeyRecord(row: VirtualApiKeyRow): VirtualApiKeyRecord {
     accountId: row.account_id,
     providerId: row.provider_id,
     routingMode: row.routing_mode === "pool" ? "pool" : "single",
+    clientMode: row.client_mode === "cursor" ? "cursor" : "codex",
+    wireApi: row.wire_api === "chat_completions" ? "chat_completions" : "responses",
     name: row.name,
     keyPrefix: row.key_prefix,
     isRevoked: row.is_revoked === 1,
@@ -495,6 +507,13 @@ function mapRequestAuditRow(row: RequestAuditRow): RequestAuditRecord {
     upstreamRequestId: row.upstream_request_id,
     error: row.error_text,
     clientTag: row.client_tag,
+    clientMode: row.client_mode === "cursor" ? "cursor" : row.client_mode === "codex" ? "codex" : null,
+    wireApi:
+      row.wire_api === "chat_completions"
+        ? "chat_completions"
+        : row.wire_api === "responses"
+          ? "responses"
+          : null,
     inputTokens: row.input_tokens ?? null,
     cachedInputTokens: row.cached_input_tokens ?? null,
     outputTokens: row.output_tokens ?? null,
@@ -568,6 +587,8 @@ export class AccountStore {
         account_id TEXT,
         provider_id TEXT NOT NULL DEFAULT 'chatgpt',
         routing_mode TEXT NOT NULL DEFAULT 'single',
+        client_mode TEXT NOT NULL DEFAULT 'codex',
+        wire_api TEXT NOT NULL DEFAULT 'responses',
         name TEXT,
         key_hash TEXT NOT NULL UNIQUE,
         key_secret TEXT,
@@ -630,6 +651,8 @@ export class AccountStore {
         upstream_request_id TEXT,
         error_text TEXT,
         client_tag TEXT,
+        client_mode TEXT,
+        wire_api TEXT,
         input_tokens INTEGER,
         cached_input_tokens INTEGER,
         output_tokens INTEGER,
@@ -679,6 +702,8 @@ export class AccountStore {
     this.ensureVirtualKeyColumn("key_secret", "TEXT")
     this.ensureVirtualKeyColumn("provider_id", "TEXT NOT NULL DEFAULT 'chatgpt'")
     this.ensureVirtualKeyColumn("routing_mode", "TEXT NOT NULL DEFAULT 'single'")
+    this.ensureVirtualKeyColumn("client_mode", "TEXT NOT NULL DEFAULT 'codex'")
+    this.ensureVirtualKeyColumn("wire_api", "TEXT NOT NULL DEFAULT 'responses'")
     this.ensureVirtualKeyColumn("prompt_tokens", "INTEGER NOT NULL DEFAULT 0")
     this.ensureVirtualKeyColumn("completion_tokens", "INTEGER NOT NULL DEFAULT 0")
     this.ensureVirtualKeyColumn("total_tokens", "INTEGER NOT NULL DEFAULT 0")
@@ -777,6 +802,8 @@ export class AccountStore {
   }
 
   private ensureRequestAuditsSchema() {
+    this.ensureTableColumn("request_audits", "client_mode", "TEXT")
+    this.ensureTableColumn("request_audits", "wire_api", "TEXT")
     this.ensureTableColumn("request_audits", "input_tokens", "INTEGER")
     this.ensureTableColumn("request_audits", "cached_input_tokens", "INTEGER")
     this.ensureTableColumn("request_audits", "output_tokens", "INTEGER")
@@ -866,6 +893,8 @@ export class AccountStore {
     const accountColumn = columns.find((column) => column.name === "account_id")
     const hasProvider = columns.some((column) => column.name === "provider_id")
     const hasRouting = columns.some((column) => column.name === "routing_mode")
+    const hasClientMode = columns.some((column) => column.name === "client_mode")
+    const hasWireApi = columns.some((column) => column.name === "wire_api")
     const hasKeySecret = columns.some((column) => column.name === "key_secret")
     const hasPromptTokens = columns.some((column) => column.name === "prompt_tokens")
     const hasCompletionTokens = columns.some((column) => column.name === "completion_tokens")
@@ -873,10 +902,25 @@ export class AccountStore {
     const hasExpiresAt = columns.some((column) => column.name === "expires_at")
     const needsNullableAccount = accountColumn?.notnull === 1
 
-    if (!needsNullableAccount && hasProvider && hasRouting && hasKeySecret && hasPromptTokens && hasCompletionTokens && hasTotalTokens && hasExpiresAt) return
+    if (
+      !needsNullableAccount &&
+      hasProvider &&
+      hasRouting &&
+      hasClientMode &&
+      hasWireApi &&
+      hasKeySecret &&
+      hasPromptTokens &&
+      hasCompletionTokens &&
+      hasTotalTokens &&
+      hasExpiresAt
+    )
+      return
 
     const providerExpr = hasProvider ? "COALESCE(provider_id, 'chatgpt')" : "'chatgpt'"
     const routingExpr = hasRouting ? "CASE WHEN routing_mode = 'pool' THEN 'pool' ELSE 'single' END" : "'single'"
+    const clientModeExpr = hasClientMode ? "CASE WHEN client_mode = 'cursor' THEN 'cursor' ELSE 'codex' END" : "'codex'"
+    const wireApiExpr =
+      hasWireApi ? "CASE WHEN wire_api = 'chat_completions' THEN 'chat_completions' ELSE 'responses' END" : "'responses'"
     const keySecretExpr = hasKeySecret ? "key_secret" : "NULL"
     const promptTokensExpr = hasPromptTokens ? "COALESCE(prompt_tokens, 0)" : "0"
     const completionTokensExpr = hasCompletionTokens ? "COALESCE(completion_tokens, 0)" : "0"
@@ -890,6 +934,8 @@ export class AccountStore {
         account_id TEXT,
         provider_id TEXT NOT NULL DEFAULT 'chatgpt',
         routing_mode TEXT NOT NULL DEFAULT 'single',
+        client_mode TEXT NOT NULL DEFAULT 'codex',
+        wire_api TEXT NOT NULL DEFAULT 'responses',
         name TEXT,
         key_hash TEXT NOT NULL UNIQUE,
         key_secret TEXT,
@@ -911,6 +957,8 @@ export class AccountStore {
         account_id,
         provider_id,
         routing_mode,
+        client_mode,
+        wire_api,
         name,
         key_hash,
         key_secret,
@@ -929,6 +977,8 @@ export class AccountStore {
         account_id,
         ${providerExpr},
         ${routingExpr},
+        ${clientModeExpr},
+        ${wireApiExpr},
         name,
         key_hash,
         ${keySecretExpr},
@@ -1148,10 +1198,15 @@ export class AccountStore {
     name?: string | null
     providerId?: string
     routingMode?: VirtualKeyRoutingMode
+    clientMode?: VirtualKeyClientMode
+    wireApi?: VirtualKeyWireAPI
     validityDays?: number | null
   }) {
     const providerId = input.providerId ?? "chatgpt"
     const routingMode = input.routingMode ?? "single"
+    const clientMode = input.clientMode === "cursor" ? "cursor" : "codex"
+    const wireApi =
+      input.wireApi === "chat_completions" ? "chat_completions" : clientMode === "cursor" ? "chat_completions" : "responses"
     const accountId = input.accountId ?? null
 
     if (routingMode === "single") {
@@ -1189,6 +1244,8 @@ export class AccountStore {
             account_id,
             provider_id,
             routing_mode,
+            client_mode,
+            wire_api,
             name,
             key_hash,
             key_secret,
@@ -1201,10 +1258,24 @@ export class AccountStore {
             last_used_at,
             created_at,
             updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 0, ?, NULL, ?, ?)
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 0, ?, NULL, ?, ?)
         `,
       )
-      .run(id, accountId, providerId, routingMode, input.name ?? null, hash, sealSecret(secret), keyPrefix, expiresAt, now, now)
+      .run(
+        id,
+        accountId,
+        providerId,
+        routingMode,
+        clientMode,
+        wireApi,
+        input.name ?? null,
+        hash,
+        sealSecret(secret),
+        keyPrefix,
+        expiresAt,
+        now,
+        now,
+      )
 
     return {
       key: secret,
@@ -1846,6 +1917,8 @@ export class AccountStore {
     providerId?: string | null
     accountId?: string | null
     virtualKeyId?: string | null
+    clientMode?: VirtualKeyClientMode | null
+    wireApi?: VirtualKeyWireAPI | null
     model?: string | null
     sessionId?: string | null
     requestBytes?: number
@@ -1914,6 +1987,8 @@ export class AccountStore {
             upstream_request_id,
             error_text,
             client_tag,
+            client_mode,
+            wire_api,
             input_tokens,
             cached_input_tokens,
             output_tokens,
@@ -1922,7 +1997,7 @@ export class AccountStore {
             reasoning_output_tokens,
             estimated_cost_usd,
             reasoning_effort
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `,
         )
         .run(
@@ -1943,6 +2018,8 @@ export class AccountStore {
           input.upstreamRequestId ?? null,
           input.error ?? null,
           input.clientTag ?? null,
+          input.clientMode ?? null,
+          input.wireApi ?? null,
           inputTokens,
           cachedInputTokens,
           outputTokens,

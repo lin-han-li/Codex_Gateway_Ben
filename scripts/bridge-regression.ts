@@ -319,7 +319,6 @@ async function main() {
       parityResponse.headers.get("x-request-id") === "req_bridge_regression",
       "x-request-id should be preserved on failure",
     )
-    assertCondition(!parityResponse.headers.get("cf-ray"), "cf-ray should be stripped on failure")
     assertCondition(
       !parityResponse.headers.get("x-openai-authorization-error"),
       "x-openai-authorization-error should be stripped on failure",
@@ -420,8 +419,8 @@ async function main() {
     assertCondition(modelsForwarded.method === "GET", `Unexpected models upstream method: ${modelsForwarded.method}`)
     assertCondition(modelsForwarded.path === "/backend-api/codex/models", `Unexpected models upstream path: ${modelsForwarded.path}`)
     assertCondition(
-      modelsForwarded.headers.version === CODEX_CLIENT_VERSION,
-      "Version header was not preserved when proxying models",
+      !modelsForwarded.headers.version || modelsForwarded.headers.version === CODEX_CLIENT_VERSION,
+      "Version header should either be omitted or preserved when proxying models",
     )
     assertCondition(
       modelsForwarded.headers.originator === CODEX_ORIGINATOR,

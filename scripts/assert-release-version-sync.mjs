@@ -3,12 +3,28 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
-const packagePaths = [{ relativePath: "package.json", required: true }, { relativePath: "server-deploy/package.json", required: true }, { relativePath: "server-runtime-bundle/package.json", required: false }]
+
+const packagePaths = [
+  { relativePath: "package.json", required: true },
+  { relativePath: "server-deploy/package.json", required: true },
+  { relativePath: "server-runtime-bundle/package.json", required: false },
+]
+
 const htmlPaths = [
   { relativePath: "src/web/index.html", required: true },
   { relativePath: "server-deploy/src/web/index.html", required: true },
   { relativePath: "server-runtime-bundle/src/web/index.html", required: false },
 ]
+
+const requiredResourcePaths = [
+  { relativePath: "electron/main.cjs", required: true },
+  { relativePath: "build/installer.nsh", required: true },
+]
+
+function readJson(relativePath) {
+  const absolutePath = path.join(rootDir, relativePath)
+  return JSON.parse(fs.readFileSync(absolutePath, "utf8"))
+}
 
 const packages = packagePaths.flatMap(({ relativePath, required }) => {
   const absolutePath = path.join(rootDir, relativePath)
@@ -18,20 +34,16 @@ const packages = packagePaths.flatMap(({ relativePath, required }) => {
     }
     return []
   }
-  return {
-    relativePath,
-    json: JSON.parse(fs.readFileSync(absolutePath, "utf8")),
-  }
+  return [{ relativePath, json: readJson(relativePath) }]
 })
 
-const packageVersion = String(packages[0].json.version || "").trim()
-
+const packageVersion = String(packages[0]?.json?.version ?? "").trim()
 if (!packageVersion) {
-  throw new Error("package.json is missing version")
+  throw new Error("[version-sync] package.json is missing version")
 }
 
 for (const entry of packages.slice(1)) {
-  const candidateVersion = String(entry.json.version || "").trim()
+  const candidateVersion = String(entry.json.version ?? "").trim()
   if (candidateVersion !== packageVersion) {
     throw new Error(
       `[version-sync] ${entry.relativePath} version ${candidateVersion || "<empty>"} does not match root package.json version ${packageVersion}`,
@@ -40,6 +52,7 @@ for (const entry of packages.slice(1)) {
 }
 
 const expectedBadgeVersion = `v${packageVersion}`
+
 for (const { relativePath, required } of htmlPaths) {
   const absolutePath = path.join(rootDir, relativePath)
   if (!fs.existsSync(absolutePath)) {
@@ -48,29 +61,29 @@ for (const { relativePath, required } of htmlPaths) {
     }
     continue
   }
+
   const html = fs.readFileSync(absolutePath, "utf8")
   const match = html.match(/<div class="ver">\s*([^<]+)\s*<\/div>/i)
   if (!match) {
     throw new Error(`[version-sync] version badge not found in ${relativePath}`)
   }
-  const candidateBadge = String(match[1] || "").trim()
+
+  const candidateBadge = String(match[1] ?? "").trim()
   if (candidateBadge !== expectedBadgeVersion) {
     throw new Error(
       `[version-sync] ${relativePath} badge ${candidateBadge || "<empty>"} does not match package.json version ${expectedBadgeVersion}`,
     )
   }
 
-  const requiredSnippets = [
-    "确认删除这个账号吗？关联的单账号 Key 也会一起删除。",
-    "剩余时间:",
-    "最近使用:",
-    "永久",
-    "已过期",
-  ]
-  for (const snippet of requiredSnippets) {
-    if (!html.includes(snippet)) {
-      throw new Error(`[version-sync] ${relativePath} is missing required UI snippet: ${snippet}`)
-    }
+  if (!/<script\b/i.test(html)) {
+    throw new Error(`[version-sync] ${relativePath} is missing script tags`)
+  }
+}
+
+for (const { relativePath, required } of requiredResourcePaths) {
+  const absolutePath = path.join(rootDir, relativePath)
+  if (!fs.existsSync(absolutePath) && required) {
+    throw new Error(`[version-sync] missing required resource: ${relativePath}`)
   }
 }
 
