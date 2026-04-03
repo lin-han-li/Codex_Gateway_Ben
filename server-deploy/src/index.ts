@@ -35,9 +35,12 @@ import {
   bindClientIdentifierToAccount,
   isAccountBoundSessionFieldKey,
 } from "./upstream-session-binding"
+import { registerAccountRoutes } from "./routes/accounts"
 import { registerAuditRoutes } from "./routes/audits"
 import { registerDashboardRoutes } from "./routes/dashboard"
+import { registerModelsRoutes } from "./routes/models"
 import { registerSettingsRoutes } from "./routes/settings"
+import { registerVirtualKeysRoutes } from "./routes/virtual-keys"
 
 await ensureAppDirs()
 
@@ -7525,665 +7528,65 @@ app.get("/api/providers", () =>
   }),
 )
 
-app.get("/api/chat/models", (c) => {
-  const models = resolveChatModelList()
-  return c.json({ models })
+registerModelsRoutes(app, {
+  resolveChatModelList,
+  resolveVirtualKeyContext,
+  ensureResolvedPoolAccountConsistent,
+  behaviorController,
+  resolveBehaviorSignal,
+  proxyOpenAIModelsRequest,
+  getModelsSnapshot,
+  extractModelEntryID,
+  resolveUpstreamProfileForAccount,
+  normalizeCaughtCodexFailure,
+  getStatusErrorCode,
+  errorMessage,
+  isLikelyAuthError,
+  resolveModelCatalogForCursorAccount,
+  toOpenAICompatibleErrorResponse,
 })
 
-app.get("/v1/models", async (c) => {
-  const context = resolveVirtualKeyContext(c, {
-    expectedClientMode: "codex",
-    expectedWireApi: "responses",
-  })
-  if ("error" in context) {
-    return c.json({ error: context.error }, context.status ?? 401)
-  }
-  const consistentContext = await ensureResolvedPoolAccountConsistent({
-    resolved: context.resolved,
-    sessionId: context.sessionId,
-  })
-  if (!consistentContext.ok) {
-    return c.json({ error: "No healthy accounts available for pool routing" }, 503)
-  }
-  const resolvedContext = consistentContext.resolved
-
-  const behaviorDecision = await behaviorController.acquire({
-    accountId: resolvedContext.account.id,
-    signal: resolveBehaviorSignal(c.req.raw.headers),
-  })
-  if (!behaviorDecision.ok) {
-    const retryAfterSeconds = behaviorDecision.retryAfterMs ? Math.max(1, Math.ceil(behaviorDecision.retryAfterMs / 1000)) : undefined
-    return new Response(
-      JSON.stringify({
-        error: behaviorDecision.message,
-        code: behaviorDecision.code,
-      }),
-      {
-        status: behaviorDecision.status,
-        headers: {
-          "Content-Type": "application/json",
-          ...(retryAfterSeconds ? { "Retry-After": String(retryAfterSeconds) } : {}),
-        },
-      },
-    )
-  }
-
-  const profile = resolveUpstreamProfileForAccount(resolvedContext.account)
-
-  try {
-    if (profile.providerMode === "openai") {
-      return await proxyOpenAIModelsRequest({
-        account: resolvedContext.account,
-        requestUrl: c.req.url,
-        requestHeaders: c.req.raw.headers,
-        routeTag: "/models",
-      })
-    }
-    const snapshot = await getModelsSnapshot({
-      account: resolvedContext.account,
-      requestUrl: c.req.url,
-      requestHeaders: c.req.raw.headers,
-    })
-    const headers = new Headers()
-    headers.set("content-type", snapshot.contentType)
-    if (snapshot.etag) headers.set("etag", snapshot.etag)
-    headers.set("cache-control", "no-store")
-    headers.delete("content-length")
-    return new Response(new Uint8Array(snapshot.body), {
-      status: 200,
-      headers,
-    })
-  } catch (error) {
-    const normalizedCaughtFailure = normalizeCaughtCodexFailure({
-      error,
-      routingMode: resolvedContext.key.routingMode,
-    })
-    if (normalizedCaughtFailure) {
-      return new Response(normalizedCaughtFailure.bodyText, {
-        status: normalizedCaughtFailure.status,
-        headers: normalizedCaughtFailure.headers,
-      })
-    }
-    const statusCode = getStatusErrorCode(error)
-    if (statusCode) {
-      return new Response(JSON.stringify({ error: errorMessage(error) }), {
-        status: statusCode,
-        headers: {
-          "Content-Type": "application/json",
-        },
-      })
-    }
-    return c.json({ error: errorMessage(error) }, isLikelyAuthError(error) ? 401 : 502)
-  } finally {
-    behaviorDecision.release()
-  }
+registerAccountRoutes(app, {
+  accountStore,
+  providers,
+  accountQuotaCache,
+  accountHealthCache,
+  refreshAccountQuotaCache,
+  refreshAndEmitAccountQuota,
+  toPublicAccount,
+  getUsageTotalsSnapshot,
+  buildDashboardMetrics,
+  emitAccountRateLimitsUpdated,
+  resolvePublicAccountDerivedState,
+  deleteAccountsWithSingleRouteKeys,
+  buildApiKeyIdentity,
+  normalizeIdentity,
+  exportStoredOAuthAccount,
+  importJsonOAuthAccount,
+  importRefreshTokenOAuthAccount,
+  invalidatePoolConsistency,
+  evictAccountModelsCache,
+  handleBackgroundPromise,
+  markAccountHealthy,
+  markAccountUnhealthy,
+  detectRoutingBlockedAccount,
+  errorMessage,
+  hasSensitiveActionConfirmation,
+  parseBulkDeleteAccounts: (raw) => BulkDeleteAccountsSchema.parse(raw),
+  parseAddApiKeyAccount: (raw) => AddApiKeyAccountSchema.parse(raw),
+  parseExportAccounts: (raw) => ExportAccountsSchema.parse(raw),
+  parseImportJsonAccount: (raw) => ImportJsonAccountSchema.parse(raw),
+  parseImportRtAccount: (raw) => ImportRtAccountSchema.parse(raw),
 })
 
-app.get("/v1/models/:id", async (c) => {
-  const context = resolveVirtualKeyContext(c, {
-    expectedClientMode: "codex",
-    expectedWireApi: "responses",
-  })
-  if ("error" in context) {
-    return c.json({ error: context.error }, context.status ?? 401)
-  }
-  const consistentContext = await ensureResolvedPoolAccountConsistent({
-    resolved: context.resolved,
-    sessionId: context.sessionId,
-  })
-  if (!consistentContext.ok) {
-    return c.json({ error: "No healthy accounts available for pool routing" }, 503)
-  }
-  const resolvedContext = consistentContext.resolved
-  const id = c.req.param("id")
-  const profile = resolveUpstreamProfileForAccount(resolvedContext.account)
-
-  const behaviorDecision = await behaviorController.acquire({
-    accountId: resolvedContext.account.id,
-    signal: resolveBehaviorSignal(c.req.raw.headers),
-  })
-  if (!behaviorDecision.ok) {
-    const retryAfterSeconds = behaviorDecision.retryAfterMs ? Math.max(1, Math.ceil(behaviorDecision.retryAfterMs / 1000)) : undefined
-    return new Response(
-      JSON.stringify({
-        error: behaviorDecision.message,
-        code: behaviorDecision.code,
-      }),
-      {
-        status: behaviorDecision.status,
-        headers: {
-          "Content-Type": "application/json",
-          ...(retryAfterSeconds ? { "Retry-After": String(retryAfterSeconds) } : {}),
-        },
-      },
-    )
-  }
-
-  let snapshot: AccountModelsSnapshot
-  try {
-    if (profile.providerMode === "openai") {
-      return await proxyOpenAIModelsRequest({
-        account: resolvedContext.account,
-        requestUrl: c.req.url,
-        requestHeaders: c.req.raw.headers,
-        routeTag: "/models/:id",
-        modelId: id,
-      })
-    }
-    snapshot = await getModelsSnapshot({
-      account: resolvedContext.account,
-      requestUrl: c.req.url,
-      requestHeaders: c.req.raw.headers,
-    })
-  } catch (error) {
-    const normalizedCaughtFailure = normalizeCaughtCodexFailure({
-      error,
-      routingMode: resolvedContext.key.routingMode,
-    })
-    if (normalizedCaughtFailure) {
-      return new Response(normalizedCaughtFailure.bodyText, {
-        status: normalizedCaughtFailure.status,
-        headers: normalizedCaughtFailure.headers,
-      })
-    }
-    const statusCode = getStatusErrorCode(error)
-    if (statusCode) {
-      return new Response(JSON.stringify({ error: errorMessage(error) }), {
-        status: statusCode,
-        headers: {
-          "Content-Type": "application/json",
-        },
-      })
-    }
-    return c.json({ error: errorMessage(error) }, isLikelyAuthError(error) ? 401 : 502)
-  } finally {
-    behaviorDecision.release()
-  }
-
-  const model = snapshot.entries.find((item) => extractModelEntryID(item) === id)
-  if (!model) return c.json({ error: `Model not found: ${id}` }, 404)
-  const headers = new Headers()
-  headers.set("content-type", snapshot.contentType || "application/json")
-  if (snapshot.etag) headers.set("etag", snapshot.etag)
-  headers.set("cache-control", "no-store")
-  headers.delete("content-length")
-  return new Response(JSON.stringify(model), {
-    status: 200,
-    headers,
-  })
-})
-
-app.get("/api/accounts", async (c) => {
-  const refreshQuota = String(c.req.query("refreshQuota") ?? "").trim() === "1"
-  const forceQuota = String(c.req.query("forceQuota") ?? "").trim() === "1"
-  const targetAccountID = String(c.req.query("accountId") ?? "").trim() || null
-  const accounts = accountStore.list()
-  if (refreshQuota) {
-    await refreshAccountQuotaCache(accounts, {
-      force: forceQuota,
-      targetAccountID,
-    })
-  }
-  return c.json({
-    accounts: accounts.map((account) => toPublicAccount(account, accountQuotaCache.get(account.id) ?? null)),
-    usageTotals: getUsageTotalsSnapshot(),
-    dashboardMetrics: buildDashboardMetrics(),
-  })
-})
-
-app.post("/api/accounts/:id/refresh-quota", async (c) => {
-  const accountID = c.req.param("id")
-  const account = accountStore.get(accountID)
-  if (!account) return c.json({ error: "Account not found" }, 404)
-
-  try {
-    await refreshAccountQuotaCache([account], {
-      force: true,
-      targetAccountID: accountID,
-    })
-    const quota = accountQuotaCache.get(accountID) ?? null
-    if (quota) {
-      emitAccountRateLimitsUpdated({
-        accountId: accountID,
-        source: "manual-refresh",
-        quota,
-      })
-    }
-    return c.json({
-      success: true,
-      account: toPublicAccount(accountStore.get(accountID) ?? account, quota),
-      dashboardMetrics: buildDashboardMetrics(),
-    })
-  } catch (error) {
-    return c.json({ error: errorMessage(error) }, 400)
-  }
-})
-
-app.get("/api/accounts/:id/refresh-token", (c) => {
-  if (!hasSensitiveActionConfirmation(c)) {
-    return c.json({ error: "Sensitive action confirmation required" }, 400)
-  }
-  const account = accountStore.get(c.req.param("id"))
-  if (!account) return c.json({ error: "Account not found" }, 404)
-  return c.json({
-    refreshToken: account.refreshToken ?? "",
-    hasRefreshToken: Boolean(account.refreshToken),
-  })
-})
-
-app.post("/api/accounts/bulk-delete", async (c) => {
-  try {
-    const raw = await c.req.json()
-    const input = BulkDeleteAccountsSchema.parse(raw)
-    const uniqueIds = [
-      ...new Set([...input.ids, ...input.accountIds].map((item) => String(item || "").trim()).filter(Boolean)),
-    ]
-    const skipped: Array<{ id: string; reason: string }> = []
-    const deletableAccounts: StoredAccount[] = []
-
-    for (const id of uniqueIds) {
-      const account = accountStore.get(id)
-      if (!account) {
-        skipped.push({ id, reason: "account_not_found" })
-        continue
-      }
-      const derived = resolvePublicAccountDerivedState(account.id, accountQuotaCache.get(account.id) ?? null)
-      if (!derived.abnormalState?.deleteEligible) {
-        skipped.push({ id, reason: derived.abnormalState?.reason || "not_delete_eligible" })
-        continue
-      }
-      deletableAccounts.push(account)
-    }
-
-    const { deletedVirtualKeyCount } = deleteAccountsWithSingleRouteKeys(deletableAccounts)
-    return c.json({
-      requestedCount: uniqueIds.length,
-      deletedAccountCount: deletableAccounts.length,
-      deletedVirtualKeyCount,
-      skipped,
-    })
-  } catch (error) {
-    return c.json({ error: errorMessage(error) }, 400)
-  }
-})
-
-app.post("/api/accounts/api-key", async (c) => {
-  try {
-    const raw = await c.req.json()
-    const input = AddApiKeyAccountSchema.parse(raw)
-    const keyIdentity = buildApiKeyIdentity(input.apiKey)
-    const keySuffix = input.apiKey.slice(-4)
-    const displayName = input.displayName || `OpenAI API Key (${keySuffix})`
-    const accountID = accountStore.saveBridgeOAuth({
-      providerId: input.providerId,
-      providerName: input.providerName,
-      methodId: input.methodId,
-      displayName,
-      accountKey: keyIdentity,
-      accessToken: input.apiKey,
-      refreshToken: undefined,
-      expiresAt: undefined,
-      metadata: {
-        source: "manual-api-key",
-        organizationId: normalizeIdentity(input.organizationId),
-        projectId: normalizeIdentity(input.projectId),
-      },
-    })
-    const account = accountStore.get(accountID)
-    invalidatePoolConsistency(input.providerId, account ? { account } : undefined)
-    return c.json({
-      success: true,
-      account,
-    })
-  } catch (error) {
-    return c.json({ error: errorMessage(error) }, 400)
-  }
-})
-
-app.post("/api/accounts/export-json", async (c) => {
-  if (!hasSensitiveActionConfirmation(c)) {
-    return c.json({ error: "Sensitive action confirmation required" }, 400)
-  }
-  try {
-    const raw = await c.req.json().catch(() => ({}))
-    const input = ExportAccountsSchema.parse(raw)
-    const selectedIds = new Set((input.ids ?? []).map((item) => String(item).trim()).filter(Boolean))
-    const accounts = accountStore
-      .list()
-      .filter((account) => account.providerId === "chatgpt" && account.methodId !== "api-key" && Boolean(account.accessToken))
-      .filter((account) => selectedIds.size === 0 || selectedIds.has(account.id))
-
-    const records = accounts.map((account) => exportStoredOAuthAccount(account))
-    const stamp = new Date()
-      .toISOString()
-      .replace(/[-:]/g, "")
-      .replace(/\..+$/, "")
-      .replace("T", "_")
-
-    return c.json({
-      exportedCount: records.length,
-      records,
-      filename: `accounts_${stamp}.json`,
-    })
-  } catch (error) {
-    return c.json({ error: errorMessage(error) }, 400)
-  }
-})
-
-app.post("/api/accounts/import-json", async (c) => {
-  try {
-    const raw = await c.req.json()
-    const entries = Array.isArray(raw) ? raw : [raw]
-    if (entries.length === 0) {
-      return c.json({ error: "At least one JSON account record is required" }, 400)
-    }
-    if (entries.length > 500) {
-      return c.json({ error: "Too many JSON account records (max 500)" }, 400)
-    }
-    const results: Array<{
-      index: number
-      success: boolean
-      account?: ReturnType<typeof toPublicAccount> | null
-      virtualKey?: { key: string; record: unknown }
-      error?: string
-    }> = []
-
-    for (const [index, input] of entries.entries()) {
-      try {
-        const parsed = ImportJsonAccountSchema.parse(input)
-        const imported = importJsonOAuthAccount(parsed)
-        results.push({
-          index,
-          success: true,
-          account: imported.account,
-          virtualKey: imported.virtualKey,
-        })
-      } catch (error) {
-        results.push({
-          index,
-          success: false,
-          error: errorMessage(error),
-        })
-      }
-    }
-
-    const imported = results.filter((item) => item.success)
-    const failed = results.length - imported.length
-    const firstImported = imported[0]
-
-    return c.json({
-      success: failed === 0,
-      importedCount: imported.length,
-      failedCount: failed,
-      account: firstImported?.account ?? null,
-      virtualKey: firstImported?.virtualKey,
-      results,
-    })
-  } catch (error) {
-    return c.json({ error: errorMessage(error) }, 400)
-  }
-})
-
-app.get("/api/virtual-keys", (c) => {
-  const accountId = c.req.query("accountId")
-  const keys = accountStore.listVirtualApiKeys(accountId)
-  const accounts = accountStore.list()
-  const accountMap = new Map(accounts.map((item) => [item.id, item]))
-  const rows = keys.map((item) => {
-    const account = item.accountId ? accountMap.get(item.accountId) : undefined
-    return {
-      ...item,
-      account: account
-        ? {
-            id: account.id,
-            providerId: account.providerId,
-            providerName: account.providerName,
-            displayName: account.displayName,
-            email: account.email,
-            accountId: account.accountId,
-          }
-        : null,
-    }
-  })
-
-  return c.json({ keys: rows })
-})
-
-app.get("/cursor/v1/models", async (c) => {
-  const context = resolveVirtualKeyContext(c, {
-    expectedClientMode: "cursor",
-    expectedWireApi: "chat_completions",
-  })
-  if ("error" in context) {
-    const status = typeof context.status === "number" ? context.status : 401
-    const message = String(context.error || "Invalid virtual API key")
-    return toOpenAICompatibleErrorResponse(
-      message,
-      status,
-      status === 401 ? "authentication_error" : "invalid_request_error",
-    )
-  }
-  const consistentContext = await ensureResolvedPoolAccountConsistent({
-    resolved: context.resolved,
-  })
-  if (!consistentContext.ok) {
-    return toOpenAICompatibleErrorResponse("No healthy accounts available for pool routing", 503, "server_error")
-  }
-  return c.json(
-    await resolveModelCatalogForCursorAccount({
-      account: consistentContext.resolved.account,
-      requestUrl: c.req.url,
-      requestHeaders: c.req.raw.headers,
-    }),
-  )
-})
-
-app.get("/cursor/v1/models/:id", async (c) => {
-  const context = resolveVirtualKeyContext(c, {
-    expectedClientMode: "cursor",
-    expectedWireApi: "chat_completions",
-  })
-  if ("error" in context) {
-    const status = typeof context.status === "number" ? context.status : 401
-    const message = String(context.error || "Invalid virtual API key")
-    return toOpenAICompatibleErrorResponse(
-      message,
-      status,
-      status === 401 ? "authentication_error" : "invalid_request_error",
-    )
-  }
-  const modelId = extractModelID(c.req.param("id"))
-  const consistentContext = await ensureResolvedPoolAccountConsistent({
-    resolved: context.resolved,
-  })
-  if (!consistentContext.ok) {
-    return toOpenAICompatibleErrorResponse("No healthy accounts available for pool routing", 503, "server_error")
-  }
-  const payload = await resolveModelCatalogForCursorAccount({
-    account: consistentContext.resolved.account,
-    requestUrl: c.req.url,
-    requestHeaders: c.req.raw.headers,
-  })
-  const match = payload.data.find((item) => String(item.id || "") === modelId)
-  if (!match) {
-    return toOpenAICompatibleErrorResponse("Model is not available for Cursor compatibility mode", 404, "invalid_request_error")
-  }
-  return c.json(match)
-})
-
-app.post("/api/virtual-keys/issue", async (c) => {
-  try {
-    const raw = await c.req.json()
-    const input = IssueVirtualKeySchema.parse(raw)
-    const normalizedClientMode = input.clientMode === "cursor" ? "cursor" : "codex"
-    const normalizedWireApi =
-      input.wireApi ??
-      (normalizedClientMode === "cursor" ? "chat_completions" : "responses")
-    const isValidCombo =
-      (normalizedClientMode === "codex" && normalizedWireApi === "responses") ||
-      (normalizedClientMode === "cursor" && normalizedWireApi === "chat_completions")
-    if (!isValidCombo) {
-      return c.json(
-        {
-          error:
-            "Invalid virtual key mode. Codex keys must use responses, and Cursor keys must use chat_completions.",
-        },
-        400,
-      )
-    }
-    if (input.routingMode === "pool") {
-      const cachedPoolConsistency = getCachedPoolConsistencyResult(input.providerId)
-      if (cachedPoolConsistency && !cachedPoolConsistency.ok) {
-        return c.json(
-          {
-            error: cachedPoolConsistency.message,
-            code: cachedPoolConsistency.code,
-            details: cachedPoolConsistency.details,
-          },
-          409,
-        )
-      }
-    }
-    const result = accountStore.createVirtualApiKey({
-      accountId: input.accountId,
-      providerId: input.providerId,
-      routingMode: input.routingMode,
-      clientMode: normalizedClientMode,
-      wireApi: normalizedWireApi,
-      name: input.name,
-      validityDays: input.validityDays,
-    })
-    return c.json({
-      key: result.key,
-      record: result.record,
-    })
-  } catch (error) {
-    return c.json({ error: errorMessage(error) }, 400)
-  }
-})
-
-app.post("/api/virtual-keys/:id/name", async (c) => {
-  try {
-    const raw = await c.req.json()
-    const input = RenameVirtualKeySchema.parse(raw)
-    const record = accountStore.renameVirtualApiKey(c.req.param("id"), input.name)
-    return c.json({ success: true, record })
-  } catch (error) {
-    return c.json({ error: errorMessage(error) }, 400)
-  }
-})
-
-app.post("/api/virtual-keys/:id/renew", async (c) => {
-  try {
-    const raw = await c.req.json()
-    const input = RenewVirtualKeySchema.parse(raw)
-    const record = accountStore.renewVirtualApiKey(c.req.param("id"), input.validityDays)
-    return c.json({ success: true, record })
-  } catch (error) {
-    return c.json({ error: errorMessage(error) }, 400)
-  }
-})
-
-app.post("/api/virtual-keys/:id/revoke", (c) => {
-  try {
-    accountStore.revokeVirtualApiKey(c.req.param("id"))
-    return c.json({ success: true })
-  } catch (error) {
-    return c.json({ error: errorMessage(error) }, 400)
-  }
-})
-
-app.post("/api/virtual-keys/:id/restore", (c) => {
-  try {
-    accountStore.restoreVirtualApiKey(c.req.param("id"))
-    return c.json({ success: true })
-  } catch (error) {
-    return c.json({ error: errorMessage(error) }, 400)
-  }
-})
-
-app.post("/api/virtual-keys/:id/reveal", (c) => {
-  if (!hasSensitiveActionConfirmation(c)) {
-    return c.json({ error: "Sensitive action confirmation required" }, 400)
-  }
-  try {
-    const id = c.req.param("id")
-    const key = accountStore.revealVirtualApiKey(id)
-    if (!key) return c.json({ error: "Virtual API key not found" }, 404)
-    if (String(key).startsWith("encv1:")) {
-      return c.json({ error: "Virtual API key cannot be decrypted. Please renew or issue a new key." }, 409)
-    }
-    return c.json({ key })
-  } catch (error) {
-    return c.json({ error: errorMessage(error) }, 400)
-  }
-})
-
-app.delete("/api/virtual-keys/:id", (c) => {
-  try {
-    accountStore.deleteVirtualApiKey(c.req.param("id"))
-    return c.json({ success: true })
-  } catch (error) {
-    return c.json({ error: errorMessage(error) }, 400)
-  }
-})
-
-app.post("/api/accounts/import-rt", async (c) => {
-  try {
-    const raw = await c.req.json()
-    const entries = Array.isArray(raw) ? raw : [raw]
-    if (entries.length === 0) {
-      return c.json({ error: "At least one refresh-token account record is required" }, 400)
-    }
-    if (entries.length > 500) {
-      return c.json({ error: "Too many refresh-token account records (max 500)" }, 400)
-    }
-
-    const results: Array<{
-      index: number
-      success: boolean
-      account?: ReturnType<typeof toPublicAccount> | null
-      virtualKey?: { key: string; record: unknown }
-      refreshed?: boolean
-      error?: string
-    }> = []
-
-    let importedCount = 0
-    let failedCount = 0
-    let refreshedCount = 0
-
-    for (const [index, entry] of entries.entries()) {
-      try {
-        const parsed = ImportRtAccountSchema.parse(entry)
-        const imported = await importRefreshTokenOAuthAccount(parsed)
-        importedCount += 1
-        if (imported.refreshed) refreshedCount += 1
-        results.push({
-          index,
-          success: true,
-          account: imported.account,
-          virtualKey: imported.virtualKey,
-          refreshed: imported.refreshed,
-        })
-      } catch (error) {
-        failedCount += 1
-        results.push({
-          index,
-          success: false,
-          error: errorMessage(error),
-        })
-      }
-    }
-
-    return c.json({
-      importedCount,
-      failedCount,
-      refreshedCount,
-      results,
-    })
-  } catch (error) {
-    return c.json({ error: errorMessage(error) }, 400)
-  }
+registerVirtualKeysRoutes(app, {
+  accountStore,
+  IssueVirtualKeySchema,
+  RenameVirtualKeySchema,
+  RenewVirtualKeySchema,
+  getCachedPoolConsistencyResult,
+  hasSensitiveActionConfirmation,
+  errorMessage,
 })
 
 app.post("/api/bridge/oauth/sync", async (c) => {
@@ -8304,76 +7707,6 @@ app.post("/api/login/sessions/:id/code", async (c) => {
   } catch (error) {
     return c.json({ error: errorMessage(error) }, 400)
   }
-})
-
-app.post("/api/accounts/:id/activate", (c) => {
-  try {
-    accountStore.activate(c.req.param("id"))
-    return c.json({ success: true })
-  } catch (error) {
-    return c.json({ error: errorMessage(error) }, 400)
-  }
-})
-
-app.post("/api/accounts/:id/refresh", async (c) => {
-  const accountID = c.req.param("id")
-  try {
-    const account = accountStore.get(accountID)
-    if (!account) return c.json({ error: "Account not found" }, 404)
-
-    const provider = providers.getProvider(account.providerId)
-    if (!provider?.refresh) {
-      return c.json({ error: `Provider ${account.providerId} does not support refresh in this flow` }, 400)
-    }
-
-    const result = await provider.refresh(account)
-    if (!result) {
-      markAccountUnhealthy(accountID, "refresh_token_missing", "account-refresh")
-      return c.json({ error: "No refresh token available for this account" }, 400)
-    }
-
-    accountStore.updateTokens({
-      id: accountID,
-      accessToken: result.accessToken,
-      refreshToken: result.refreshToken,
-      expiresAt: result.expiresAt,
-      accountId: result.accountId ?? account.accountId,
-    })
-    markAccountHealthy(accountID, "account-refresh")
-    const refreshedAccount = accountStore.get(accountID)
-    invalidatePoolConsistency(account.providerId, refreshedAccount ? { account: refreshedAccount } : undefined)
-    handleBackgroundPromise(
-      "refreshAndEmitAccountQuota:account-refresh",
-      refreshAndEmitAccountQuota(accountID, "account-refresh"),
-    )
-
-    return c.json({
-      success: true,
-      account: accountStore.get(accountID),
-    })
-  } catch (error) {
-    const blocked = detectRoutingBlockedAccount({
-      error,
-    })
-    if (blocked.matched) {
-      markAccountUnhealthy(accountID, blocked.reason, "account-refresh")
-    }
-    return c.json({ error: errorMessage(error) }, 400)
-  }
-})
-
-app.delete("/api/accounts/:id", (c) => {
-  const accountID = c.req.param("id")
-  const account = accountStore.get(accountID)
-  if (account) {
-    const { deletedVirtualKeyCount } = deleteAccountsWithSingleRouteKeys([account])
-    return c.json({ success: true, deletedVirtualKeyCount })
-  }
-  accountStore.delete(accountID)
-  accountQuotaCache.delete(accountID)
-  accountHealthCache.delete(accountID)
-  evictAccountModelsCache(accountID)
-  return c.json({ success: true, deletedVirtualKeyCount: 0 })
 })
 
 async function proxyVirtualKeyCodexRequest(c: any, upstreamPath = "/responses") {
