@@ -37,7 +37,9 @@ import {
 } from "./upstream-session-binding"
 import { registerAccountRoutes } from "./routes/accounts"
 import { registerAuditRoutes } from "./routes/audits"
+import { registerBridgeRoutes } from "./routes/bridge"
 import { registerDashboardRoutes } from "./routes/dashboard"
+import { registerLoginRoutes } from "./routes/login"
 import { registerModelsRoutes } from "./routes/models"
 import { registerSettingsRoutes } from "./routes/settings"
 import { registerVirtualKeysRoutes } from "./routes/virtual-keys"
@@ -7589,124 +7591,28 @@ registerVirtualKeysRoutes(app, {
   errorMessage,
 })
 
-app.post("/api/bridge/oauth/sync", async (c) => {
-  try {
-    const raw = await c.req.json()
-    const input = SyncOAuthSchema.parse(raw)
-    const accessTokenClaims = parseJwtAuthClaims(input.accessToken)
-    const resolvedAccountId =
-      normalizeIdentity(input.accountId) || normalizeIdentity(accessTokenClaims?.chatgpt_account_id)
-    const resolvedOrganizationId =
-      normalizeIdentity(input.organizationId) || normalizeIdentity(accessTokenClaims?.organization_id)
-    const resolvedProjectId = normalizeIdentity(input.projectId) || normalizeIdentity(accessTokenClaims?.project_id)
-    const resolvedChatgptPlanType =
-      normalizeIdentity(input.chatgptPlanType) || normalizeIdentity(accessTokenClaims?.chatgpt_plan_type)
-    const resolvedChatgptUserId =
-      normalizeIdentity(input.chatgptUserId) ||
-      normalizeIdentity(accessTokenClaims?.chatgpt_user_id) ||
-      normalizeIdentity(accessTokenClaims?.user_id)
-    const resolvedCompletedPlatformOnboarding =
-      typeof input.completedPlatformOnboarding === "boolean"
-        ? input.completedPlatformOnboarding
-        : typeof accessTokenClaims?.completed_platform_onboarding === "boolean"
-          ? accessTokenClaims.completed_platform_onboarding
-          : undefined
-    const resolvedIsOrgOwner =
-      typeof input.isOrgOwner === "boolean"
-        ? input.isOrgOwner
-        : typeof accessTokenClaims?.is_org_owner === "boolean"
-          ? accessTokenClaims.is_org_owner
-          : undefined
-
-    if (input.providerId === "chatgpt") {
-      ensureForcedWorkspaceAllowed(resolvedAccountId)
-    }
-    const identity = buildOAuthIdentity({
-      email: input.email,
-      accountId: resolvedAccountId,
-    })
-    const displayName = input.displayName || input.email || resolvedAccountId || "Codex OAuth Account"
-    const accountID = accountStore.saveBridgeOAuth({
-      providerId: input.providerId,
-      providerName: input.providerName,
-      methodId: input.methodId,
-      displayName,
-      accountKey: identity,
-      email: input.email,
-      accountId: resolvedAccountId,
-      accessToken: input.accessToken,
-      refreshToken: input.refreshToken,
-      expiresAt: input.expiresAt,
-      metadata: {
-        source: "codex-oauth-sync",
-        organizationId: resolvedOrganizationId,
-        projectId: resolvedProjectId,
-        chatgptPlanType: resolvedChatgptPlanType,
-        chatgptUserId: resolvedChatgptUserId,
-        completedPlatformOnboarding: resolvedCompletedPlatformOnboarding,
-        isOrgOwner: resolvedIsOrgOwner,
-      },
-    })
-    const syncedAccount = accountStore.get(accountID)
-    invalidatePoolConsistency(input.providerId, syncedAccount ? { account: syncedAccount } : undefined)
-    handleBackgroundPromise(
-      "refreshAndEmitAccountQuota:bridge-oauth-sync",
-      refreshAndEmitAccountQuota(accountID, "bridge-oauth-sync"),
-    )
-    const account = accountStore.get(accountID)
-    let virtualKey: { key: string; record: unknown } | undefined
-    if (input.issueVirtualKey) {
-      const issued = accountStore.createVirtualApiKey({
-        accountId: accountID,
-        providerId: input.providerId,
-        routingMode: "single",
-        name: input.keyName || "Codex Bridge Key",
-      })
-      virtualKey = {
-        key: issued.key,
-        record: issued.record,
-      }
-    }
-    return c.json({
-      account,
-      virtualKey,
-      baseURL: `${new URL(c.req.url).origin}/v1`,
-    })
-  } catch (error) {
-    return c.json({ error: errorMessage(error) }, 400)
-  }
+registerBridgeRoutes(app, {
+  accountStore,
+  parseSyncOAuthInput: (raw) => SyncOAuthSchema.parse(raw),
+  parseJwtAuthClaims,
+  normalizeIdentity,
+  ensureForcedWorkspaceAllowed,
+  buildOAuthIdentity: ({ email, accountId }) =>
+    buildOAuthIdentity({
+      email,
+      accountId: accountId ?? undefined,
+    }),
+  invalidatePoolConsistency,
+  handleBackgroundPromise,
+  refreshAndEmitAccountQuota,
+  errorMessage,
 })
 
-app.post("/api/login/start", async (c) => {
-  try {
-    const raw = await c.req.json()
-    const input = StartLoginSchema.parse(raw)
-    const session = await loginSessions.start(input)
-    return c.json({ session })
-  } catch (error) {
-    return c.json({ error: errorMessage(error) }, 400)
-  }
-})
-
-app.get("/api/login/sessions/:id", async (c) => {
-  const id = c.req.param("id")
-  const session = loginSessions.get(id)
-  if (!session) {
-    return c.json({ error: "Login session not found" }, 404)
-  }
-  return c.json({ session })
-})
-
-app.post("/api/login/sessions/:id/code", async (c) => {
-  const id = c.req.param("id")
-  try {
-    const raw = await c.req.json()
-    const input = CodeSchema.parse(raw)
-    const session = await loginSessions.submitCode(id, input.code)
-    return c.json({ session })
-  } catch (error) {
-    return c.json({ error: errorMessage(error) }, 400)
-  }
+registerLoginRoutes(app, {
+  loginSessions,
+  parseStartLoginInput: (raw) => StartLoginSchema.parse(raw),
+  parseCodeInput: (raw) => CodeSchema.parse(raw),
+  errorMessage,
 })
 
 async function proxyVirtualKeyCodexRequest(c: any, upstreamPath = "/responses") {
