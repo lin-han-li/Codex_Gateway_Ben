@@ -1,3 +1,4 @@
+import { createAccountsView } from "./views/accounts.js"
 import { createDashboardView } from "./views/dashboard.js"
 import { createKeysView } from "./views/keys.js"
 import { createLogsView } from "./views/logs.js"
@@ -14,6 +15,7 @@ export function initWebAppModules(deps) {
     ...deps,
     ...placeholders,
   })
+  const accountsView = createAccountsView(deps)
   const dashboardView = createDashboardView({
     ...deps,
     renderSettingsReadOnly: settingsView.renderSettingsReadOnly,
@@ -27,6 +29,7 @@ export function initWebAppModules(deps) {
   const testChatView = createTestChatView(deps)
 
   return {
+    ...accountsView,
     ...dashboardView,
     ...logsView,
     ...settingsView,

@@ -12,6 +12,30 @@ import { buildCodexUserAgent, isFirstPartyCodexOriginator } from "./codex-identi
 import { buildDashboardMetrics as buildAuditDashboardMetrics } from "./domain/audit/dashboard-metrics"
 import { estimateUsageCostUsd, PRICING_CATALOG_VERSION, PRICING_MODE, withEstimatedUsageCost } from "./domain/audit/pricing"
 import type { UsageMetrics } from "./domain/audit/types"
+import {
+  DEFAULT_ACCOUNT_QUOTA_CACHE_TTL_MS,
+  makeQuotaError,
+  makeUnavailableQuota,
+  isQuotaCacheFresh,
+  normalizeQuotaEntry,
+  normalizeQuotaWindow,
+  normalizeRateLimitUsagePayload,
+  normalizeQuotaWindowRemainingPercent,
+  resolveAccountPlanCohort,
+  resolvePlanCohortPriority,
+  resolveQuotaSnapshotHeadroomPercent,
+  resolveQuotaWindowRemainingPercent,
+  type AccountPlanCohort,
+  type AccountQuotaEntry,
+  type AccountQuotaSnapshot,
+  type AccountQuotaWindow,
+} from "./domain/accounts/quota"
+import {
+  buildRelaxedProviderRoutingHintsFromState,
+  buildProviderRoutingHintsFromState,
+  type ProviderRoutingHints,
+  type ProviderRoutingHintsOptions,
+} from "./domain/routing/provider-routing"
 import { BehaviorController, resolveBehaviorSignal, type BehaviorAcquireFailure, type BehaviorConfig } from "./behavior/control"
 import {
   buildUpstreamAccountUnavailableFailure,
@@ -110,30 +134,6 @@ const extendedUsageTotalsState = {
 }
 const STATS_TIMEZONE = Intl.DateTimeFormat().resolvedOptions().timeZone || "Asia/Shanghai"
 
-type AccountQuotaWindow = {
-  usedPercent: number
-  remainingPercent: number
-  windowSeconds: number | null
-  windowMinutes: number | null
-  resetsAt: number | null
-}
-
-type AccountQuotaEntry = {
-  limitId: string | null
-  limitName: string | null
-  primary: AccountQuotaWindow | null
-  secondary: AccountQuotaWindow | null
-}
-
-type AccountQuotaSnapshot = {
-  status: "ok" | "error" | "unavailable"
-  fetchedAt: number
-  planType: string | null
-  primary: AccountQuotaEntry | null
-  additional: AccountQuotaEntry[]
-  error: string | null
-}
-
 type AccountHealthSnapshot = {
   status: "error"
   reason: string
@@ -175,23 +175,7 @@ type AccountAbnormalState = {
   deleteEligible: boolean
 }
 
-type AccountPlanCohort = "free" | "paid" | "unknown"
-
-type ProviderRoutingHints = {
-  excludeAccountIds: string[]
-  deprioritizedAccountIds: string[]
-  headroomByAccountId: Map<string, number>
-  pressureScoreByAccountId: Map<string, number>
-  preferredPlanCohort: AccountPlanCohort | null
-}
-
-type ProviderRoutingHintsOptions = {
-  allowTransientUnhealthy?: boolean
-  preferredPlanCohort?: AccountPlanCohort | null
-  cohortMode?: "strict" | "prefer" | "off"
-}
-
-const ACCOUNT_QUOTA_CACHE_TTL_MS = 90 * 1000
+const ACCOUNT_QUOTA_CACHE_TTL_MS = DEFAULT_ACCOUNT_QUOTA_CACHE_TTL_MS
 const ACCOUNT_QUOTA_POLL_INTERVAL_MS = 60 * 1000
 const ACCOUNT_QUOTA_POLL_BATCH_SIZE = 8
 const ACCOUNT_SOFT_DRAIN_REMAINING_PERCENT_THRESHOLD = 10
@@ -2342,226 +2326,6 @@ function parseImportedJsonExpiresAt(value: unknown) {
   return Number.isFinite(parsedDate) ? Math.floor(parsedDate) : undefined
 }
 
-function normalizeQuotaWindow(window: unknown): AccountQuotaWindow | null {
-  const record = asObjectRecord(window)
-  if (!record) return null
-
-  const usedNumeric = asFiniteNumber(record.used_percent)
-  if (!Number.isFinite(usedNumeric ?? NaN)) return null
-  const usedPercent = Math.max(0, Math.min(100, Math.round(usedNumeric ?? 0)))
-  const remainingPercent = Math.max(0, Math.min(100, 100 - usedPercent))
-
-  const windowSecondsRaw = asFiniteNumber(record.limit_window_seconds)
-  const windowSeconds = Number.isFinite(windowSecondsRaw ?? NaN) ? Math.max(0, Math.floor(windowSecondsRaw ?? 0)) : null
-  const windowMinutes = Number.isFinite(windowSecondsRaw ?? NaN) ? Math.max(0, Math.floor((windowSecondsRaw ?? 0) / 60)) : null
-  const resetsAt = toEpochMs(asFiniteNumber(record.reset_at))
-
-  return {
-    usedPercent,
-    remainingPercent,
-    windowSeconds,
-    windowMinutes,
-    resetsAt,
-  }
-}
-
-function normalizeQuotaEntry(rateLimit: unknown, limitId: string | null, limitName: string | null): AccountQuotaEntry | null {
-  const details = asObjectRecord(rateLimit)
-  if (!details) return null
-  const primary = normalizeQuotaWindow(details.primary_window)
-  const secondary = normalizeQuotaWindow(details.secondary_window)
-  if (!primary && !secondary) return null
-  return {
-    limitId,
-    limitName,
-    primary,
-    secondary,
-  }
-}
-
-function normalizeRateLimitUsagePayload(payload: unknown) {
-  const root = asObjectRecord(payload) ?? {}
-  const planTypeRaw = String(root.plan_type ?? "").trim()
-  const planType = planTypeRaw.length > 0 ? planTypeRaw : null
-
-  const allEntries: AccountQuotaEntry[] = []
-  const codexEntry = normalizeQuotaEntry(root.rate_limit, "codex", null)
-  if (codexEntry) allEntries.push(codexEntry)
-
-  const additionalRaw = Array.isArray(root.additional_rate_limits) ? root.additional_rate_limits : []
-  for (const item of additionalRaw) {
-    const row = asObjectRecord(item)
-    if (!row) continue
-    const meteredFeature = String(row.metered_feature ?? "").trim()
-    const limitName = String(row.limit_name ?? "").trim()
-    const limitId = meteredFeature.length > 0 ? meteredFeature : limitName.length > 0 ? limitName : null
-    const entry = normalizeQuotaEntry(row.rate_limit, limitId, limitName || null)
-    if (entry) allEntries.push(entry)
-  }
-
-  const primary = allEntries.find((item) => item.limitId === "codex") ?? allEntries[0] ?? null
-  const additional = allEntries.filter((item) => item !== primary)
-  return {
-    planType,
-    primary,
-    additional,
-  }
-}
-
-function makeUnavailableQuota(reason?: string): AccountQuotaSnapshot {
-  return {
-    status: "unavailable",
-    fetchedAt: Date.now(),
-    planType: null,
-    primary: null,
-    additional: [],
-    error: reason ? String(reason) : null,
-  }
-}
-
-function makeQuotaError(error: unknown): AccountQuotaSnapshot {
-  return {
-    status: "error",
-    fetchedAt: Date.now(),
-    planType: null,
-    primary: null,
-    additional: [],
-    error: errorMessage(error),
-  }
-}
-
-function isQuotaCacheFresh(snapshot: AccountQuotaSnapshot | undefined, now = Date.now()) {
-  if (!snapshot) return false
-  return now - Number(snapshot.fetchedAt || 0) <= ACCOUNT_QUOTA_CACHE_TTL_MS
-}
-
-function resolveQuotaEntryHeadroomPercent(entry: AccountQuotaEntry | null | undefined) {
-  if (!entry) return null
-  const values = [entry.primary?.remainingPercent, entry.secondary?.remainingPercent].filter((value) =>
-    Number.isFinite(value),
-  ) as number[]
-  if (values.length === 0) return null
-  return Math.max(0, Math.min(...values.map((value) => Math.round(value))))
-}
-
-function resolveQuotaSnapshotHeadroomPercent(snapshot: AccountQuotaSnapshot | null | undefined, now = Date.now()) {
-  if (!snapshot || snapshot.status !== "ok" || !isQuotaCacheFresh(snapshot, now)) return null
-  const values = [snapshot.primary, ...snapshot.additional]
-    .map((entry) => resolveQuotaEntryHeadroomPercent(entry))
-    .filter((value) => Number.isFinite(value)) as number[]
-  if (values.length === 0) return null
-  return Math.max(0, Math.min(...values))
-}
-
-function normalizeChatgptPlanType(value: unknown) {
-  return normalizeIdentity(String(value ?? "")) || null
-}
-
-function resolveAccountPlanCohort(account: StoredAccount): AccountPlanCohort {
-  if (String(account.providerId ?? "").trim().toLowerCase() !== "chatgpt") {
-    return "unknown"
-  }
-  const metadata = account.metadata && typeof account.metadata === "object" ? account.metadata : {}
-  const raw = normalizeChatgptPlanType(
-    (metadata as Record<string, unknown>).chatgptPlanType ??
-      (metadata as Record<string, unknown>).chatgpt_plan_type ??
-      "",
-  )
-  if (!raw) return "unknown"
-  if (raw.includes("free")) return "free"
-  if (
-    raw.includes("business") ||
-    raw.includes("team") ||
-    raw.includes("enterprise") ||
-    raw.includes("pro") ||
-    raw.includes("plus") ||
-    raw.includes("paid")
-  ) {
-    return "paid"
-  }
-  return "unknown"
-}
-
-function resolvePlanCohortPriority(cohort: AccountPlanCohort) {
-  switch (cohort) {
-    case "paid":
-      return 0
-    case "unknown":
-      return 1
-    default:
-      return 2
-  }
-}
-
-function selectPreferredPlanCohort(input: {
-  candidates: StoredAccount[]
-  pressureScoreByAccountId: Map<string, number>
-  headroomByAccountId: Map<string, number>
-  preferredPlanCohort?: AccountPlanCohort | null
-}) {
-  const groups = new Map<
-    AccountPlanCohort,
-    {
-      cohort: AccountPlanCohort
-      accounts: StoredAccount[]
-      pressureValues: number[]
-      headroomValues: number[]
-    }
-  >()
-
-  for (const account of input.candidates) {
-    const cohort = resolveAccountPlanCohort(account)
-    const existing = groups.get(cohort) ?? {
-      cohort,
-      accounts: [],
-      pressureValues: [],
-      headroomValues: [],
-    }
-    existing.accounts.push(account)
-    const pressure = input.pressureScoreByAccountId.get(account.id)
-    if (Number.isFinite(pressure)) existing.pressureValues.push(Number(pressure))
-    const headroom = input.headroomByAccountId.get(account.id)
-    if (Number.isFinite(headroom)) existing.headroomValues.push(Number(headroom))
-    groups.set(cohort, existing)
-  }
-
-  const preferred = input.preferredPlanCohort ?? null
-  if (preferred && groups.has(preferred)) {
-    return preferred
-  }
-
-  const ranked = [...groups.values()].sort((a, b) => {
-    const cohortPriorityA = resolvePlanCohortPriority(a.cohort)
-    const cohortPriorityB = resolvePlanCohortPriority(b.cohort)
-    if (cohortPriorityA !== cohortPriorityB) return cohortPriorityA - cohortPriorityB
-
-    const avgPressureA =
-      a.pressureValues.length > 0
-        ? a.pressureValues.reduce((sum, value) => sum + value, 0) / a.pressureValues.length
-        : Number.POSITIVE_INFINITY
-    const avgPressureB =
-      b.pressureValues.length > 0
-        ? b.pressureValues.reduce((sum, value) => sum + value, 0) / b.pressureValues.length
-        : Number.POSITIVE_INFINITY
-    if (avgPressureA !== avgPressureB) return avgPressureA - avgPressureB
-
-    const avgHeadroomA =
-      a.headroomValues.length > 0
-        ? a.headroomValues.reduce((sum, value) => sum + value, 0) / a.headroomValues.length
-        : Number.NEGATIVE_INFINITY
-    const avgHeadroomB =
-      b.headroomValues.length > 0
-        ? b.headroomValues.reduce((sum, value) => sum + value, 0) / b.headroomValues.length
-        : Number.NEGATIVE_INFINITY
-    if (avgHeadroomA !== avgHeadroomB) return avgHeadroomB - avgHeadroomA
-
-    if (a.accounts.length !== b.accounts.length) return b.accounts.length - a.accounts.length
-    return 0
-  })
-
-  return ranked[0]?.cohort ?? null
-}
-
 function buildProviderQuotaRoutingHints(providerId: string, now = Date.now()) {
   const normalizedProviderId = normalizeIdentity(providerId)?.toLowerCase()
   const headroomByAccountId = new Map<string, number>()
@@ -2638,57 +2402,29 @@ function buildProviderRoutingHints(
 ): ProviderRoutingHints {
   const quotaHints = buildProviderQuotaRoutingHints(providerId, now)
   const pressureHints = buildProviderPressureRoutingHints(providerId, now)
-  const deprioritized = new Set(quotaHints.deprioritizedAccountIds)
-  const excluded = new Set([
-    ...collectProviderQuotaExhaustedExclusions(providerId, now),
-    ...collectProviderUnhealthyExclusions(providerId, {
-      includeTransient: options?.allowTransientUnhealthy !== true,
-    }),
-    ...quotaHints.excludeAccountIds,
-  ])
-  const normalizedProviderId = normalizeIdentity(providerId)?.toLowerCase()
-  const cohortMode = options?.cohortMode ?? "prefer"
-  let preferredPlanCohort: AccountPlanCohort | null = options?.preferredPlanCohort ?? null
-  if (normalizedProviderId === "chatgpt" && cohortMode !== "off") {
-    const candidates = accountStore
-      .list()
-      .filter(
-        (account) =>
-          account.providerId.toLowerCase() === "chatgpt" &&
-          Boolean(account.accessToken) &&
-          !excluded.has(account.id),
-      )
-    preferredPlanCohort = selectPreferredPlanCohort({
-      candidates,
-      pressureScoreByAccountId: pressureHints.pressureScoreByAccountId,
-      headroomByAccountId: quotaHints.headroomByAccountId,
-      preferredPlanCohort,
-    })
-    if (preferredPlanCohort) {
-      for (const account of candidates) {
-        if (resolveAccountPlanCohort(account) !== preferredPlanCohort) {
-          if (cohortMode === "strict") {
-            excluded.add(account.id)
-          } else {
-            deprioritized.add(account.id)
-          }
-        }
-      }
-    }
-  }
-  const consistencyExclusions = collectProviderConsistencyExclusions(providerId, now, {
-    preferredPlanCohort: cohortMode === "off" ? null : preferredPlanCohort,
-  })
-  for (const accountId of consistencyExclusions) {
-    excluded.add(accountId)
-  }
-  return {
-    excludeAccountIds: [...excluded],
-    deprioritizedAccountIds: [...deprioritized].filter((accountId) => !excluded.has(accountId)),
+  const cooldownExcludedAccountIds = collectProviderQuotaExhaustedExclusions(providerId, now)
+  const baseInput = {
+    providerId,
+    accounts: accountStore.list(),
     headroomByAccountId: quotaHints.headroomByAccountId,
     pressureScoreByAccountId: pressureHints.pressureScoreByAccountId,
-    preferredPlanCohort: cohortMode === "off" ? null : preferredPlanCohort,
+    quotaExcludedAccountIds: [...quotaHints.excludeAccountIds, ...cooldownExcludedAccountIds],
+    unhealthyExcludedAccountIds: collectProviderUnhealthyExclusions(providerId, {
+      includeTransient: options?.allowTransientUnhealthy !== true,
+    }),
+    deprioritizedAccountIds: quotaHints.deprioritizedAccountIds,
+    preferredPlanCohort: options?.preferredPlanCohort ?? null,
+    cohortMode: options?.cohortMode ?? "prefer",
   }
+  const baseHints = buildProviderRoutingHintsFromState(baseInput)
+  const consistencyExcludedAccountIds = collectProviderConsistencyExclusions(providerId, now, {
+    preferredPlanCohort: options?.cohortMode === "off" ? null : baseHints.preferredPlanCohort,
+  })
+  return buildProviderRoutingHintsFromState({
+    ...baseInput,
+    preferredPlanCohort: baseHints.preferredPlanCohort,
+    consistencyExcludedAccountIds,
+  })
 }
 
 function buildRelaxedProviderRoutingHints(
@@ -2696,9 +2432,23 @@ function buildRelaxedProviderRoutingHints(
   now = Date.now(),
   options?: ProviderRoutingHintsOptions,
 ) {
-  return buildProviderRoutingHints(providerId, now, {
-    ...options,
-    cohortMode: "off",
+  const quotaHints = buildProviderQuotaRoutingHints(providerId, now)
+  const pressureHints = buildProviderPressureRoutingHints(providerId, now)
+  const cooldownExcludedAccountIds = collectProviderQuotaExhaustedExclusions(providerId, now)
+  return buildRelaxedProviderRoutingHintsFromState({
+    providerId,
+    accounts: accountStore.list(),
+    headroomByAccountId: quotaHints.headroomByAccountId,
+    pressureScoreByAccountId: pressureHints.pressureScoreByAccountId,
+    quotaExcludedAccountIds: [...quotaHints.excludeAccountIds, ...cooldownExcludedAccountIds],
+    unhealthyExcludedAccountIds: collectProviderUnhealthyExclusions(providerId, {
+      includeTransient: options?.allowTransientUnhealthy !== true,
+    }),
+    consistencyExcludedAccountIds: collectProviderConsistencyExclusions(providerId, now, {
+      preferredPlanCohort: null,
+    }),
+    deprioritizedAccountIds: quotaHints.deprioritizedAccountIds,
+    preferredPlanCohort: options?.preferredPlanCohort ?? null,
   })
 }
 
@@ -4470,22 +4220,6 @@ function getNormalizedAuditLogs(limit: number) {
   return accountStore
     .listRequestAudits(Math.min(1000, Math.max(1, Math.floor(limit))))
     .map((item) => normalizeAuditLog(item))
-}
-
-function normalizeQuotaWindowRemainingPercent(value: number | null | undefined) {
-  return Number.isFinite(value) ? Math.max(0, Math.min(100, Math.round(Number(value)))) : null
-}
-
-function resolveQuotaWindowRemainingPercent(snapshot: AccountQuotaSnapshot | null | undefined, window: "primary" | "secondary") {
-  if (!snapshot || snapshot.status !== "ok" || !isQuotaCacheFresh(snapshot)) return null
-  for (const entry of [snapshot.primary, ...snapshot.additional]) {
-    const remainingPercent =
-      window === "primary"
-        ? normalizeQuotaWindowRemainingPercent(entry?.primary?.remainingPercent)
-        : normalizeQuotaWindowRemainingPercent(entry?.secondary?.remainingPercent)
-    if (remainingPercent !== null) return remainingPercent
-  }
-  return null
 }
 
 function isChatGptOAuthAccount(account: Pick<StoredAccount, "providerId" | "methodId">) {

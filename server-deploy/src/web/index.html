@@ -1527,6 +1527,180 @@
         gap: 7px;
       }
 
+      .account-card-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+        gap: 16px;
+      }
+
+      .account-card-row td {
+        padding: 0;
+        border: none;
+        background: transparent !important;
+      }
+
+      .account-card-row:hover td {
+        background: transparent !important;
+      }
+
+      .account-card {
+        position: relative;
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+        padding: 18px;
+        border: 1px solid rgba(140, 167, 214, 0.18);
+        border-radius: 20px;
+        background:
+          radial-gradient(circle at top right, rgba(62, 148, 255, 0.12), transparent 34%),
+          linear-gradient(180deg, rgba(19, 31, 49, 0.95), rgba(15, 25, 40, 0.86));
+        box-shadow: var(--shadow-sm);
+        overflow: hidden;
+      }
+
+      .account-card::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        background: linear-gradient(180deg, rgba(255, 255, 255, 0.05), transparent 28%);
+        pointer-events: none;
+      }
+
+      .account-card.is-abnormal {
+        border-color: rgba(255, 121, 142, 0.28);
+      }
+
+      .account-card-top,
+      .account-card-foot,
+      .account-quota-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+      }
+
+      .account-card-badges {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+
+      .account-plan-badge {
+        display: inline-flex;
+        align-items: center;
+        min-height: 22px;
+        padding: 2px 10px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.06);
+        color: var(--muted);
+        font-size: 12px;
+        letter-spacing: 0.03em;
+      }
+
+      .account-card-identity {
+        font-size: 22px;
+        font-weight: 700;
+        letter-spacing: -0.03em;
+        color: var(--text);
+        line-height: 1.25;
+        word-break: break-all;
+      }
+
+      .account-card-sub,
+      .account-card-meta,
+      .account-quota-reset,
+      .account-quota-empty {
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .account-card-status {
+        flex-shrink: 0;
+      }
+
+      .account-card-body {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        padding-top: 12px;
+        border-top: 1px solid rgba(140, 167, 214, 0.14);
+      }
+
+      .account-quota-row {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+
+      .account-quota-label {
+        color: var(--text);
+        font-weight: 600;
+      }
+
+      .account-quota-value {
+        font-weight: 700;
+        color: var(--text);
+        margin-left: auto;
+      }
+
+      .account-quota-track {
+        width: 100%;
+        height: 8px;
+        border-radius: 999px;
+        overflow: hidden;
+        background: rgba(120, 145, 190, 0.16);
+      }
+
+      .account-quota-fill {
+        height: 100%;
+        border-radius: inherit;
+        transition: width 0.18s ease;
+      }
+
+      .account-quota-fill.good {
+        background: linear-gradient(90deg, #20c997, #2dd4bf);
+      }
+
+      .account-quota-fill.warn {
+        background: linear-gradient(90deg, #f0b429, #f7c66a);
+      }
+
+      .account-quota-fill.danger {
+        background: linear-gradient(90deg, #ff6b78, #ff9aa5);
+      }
+
+      .account-status-banner {
+        padding: 10px 12px;
+        border-radius: 12px;
+        font-size: 13px;
+        line-height: 1.45;
+      }
+
+      .account-status-banner.warn {
+        background: rgba(247, 198, 106, 0.12);
+        border: 1px solid rgba(247, 198, 106, 0.22);
+        color: #f7c66a;
+      }
+
+      .account-status-banner.danger {
+        background: rgba(255, 107, 120, 0.1);
+        border: 1px solid rgba(255, 107, 120, 0.22);
+        color: #ff8d9a;
+      }
+
+      .account-card-actions {
+        justify-content: flex-end;
+        flex-wrap: wrap;
+      }
+
+      .account-empty {
+        padding: 24px;
+        border: 1px dashed rgba(140, 167, 214, 0.2);
+        border-radius: 18px;
+        text-align: center;
+      }
+
       .mini-btn {
         min-height: 28px;
         border: 1px solid transparent;
@@ -7659,6 +7833,17 @@
         hydrateSettingsFromApi,
         refreshSettingsUi,
         normalizeQuery,
+        providerDisplayName,
+        accountType,
+        formatAccountQuota,
+        getAccountStatusMeta,
+        normalizeAbnormalState,
+        canRefreshAccountQuota,
+        renderBulkDeleteButton,
+        openRefreshTokenModal,
+        refreshSingleAccountQuota,
+        loadAccounts,
+        loadVirtualKeys,
         matchesVirtualKeyQuery,
         isVirtualKeyExpired,
         keyAccountLabel,
@@ -8003,6 +8188,9 @@
         S.ui.currentView = nextView;
         document.querySelectorAll("[data-view]").forEach((btn) => btn.classList.toggle("active", btn.dataset.view === nextView));
         document.querySelectorAll("[data-pane]").forEach((pane) => pane.classList.toggle("active", pane.dataset.pane === nextView));
+        if (nextView === "accounts") {
+          drawAccountsTable();
+        }
         if (nextView === "logs") {
           switchLogsTab(S.logsTab || "requests");
         } else {
@@ -9393,6 +9581,10 @@
 
       loadRequestLogs = async function (options = {}) {
         return modularApp.loadRequestLogs(options);
+      };
+
+      drawAccountsTable = function () {
+        return modularApp.drawAccountsTable();
       };
 
       renderSettingsReadOnly = function () {

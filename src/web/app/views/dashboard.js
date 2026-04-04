@@ -82,11 +82,11 @@ export function createDashboardView(deps) {
     const requestCountMeta = document.getElementById("todayRequestCountMeta")
     if (requestCountMeta) requestCountMeta.textContent = "请求日志计数"
 
-    const primaryProgress = document.getElementById("poolPrimaryProgress")
-    const secondaryProgress = document.getElementById("poolSecondaryProgress")
-    const primaryValue = document.getElementById("poolPrimaryValue")
-    const secondaryValue = document.getElementById("poolSecondaryValue")
-    const poolKnownValue = document.getElementById("poolKnownValue")
+    const primaryProgress = document.getElementById("todayPoolPrimaryBar")
+    const secondaryProgress = document.getElementById("todayPoolSecondaryBar")
+    const primaryValue = document.getElementById("todayPoolPrimaryValue")
+    const secondaryValue = document.getElementById("todayPoolSecondaryValue")
+    const poolKnownValue = document.getElementById("todayPoolMeta")
     if (primaryProgress) {
       primaryProgress.style.width = `${Math.max(0, Math.min(100, Number(pool.primaryRemainPercent || 0)))}%`
     }
