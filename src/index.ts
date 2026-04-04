@@ -12,6 +12,16 @@ import { buildCodexUserAgent, isFirstPartyCodexOriginator } from "./codex-identi
 import { buildDashboardMetrics as buildAuditDashboardMetrics } from "./domain/audit/dashboard-metrics"
 import { estimateUsageCostUsd, PRICING_CATALOG_VERSION, PRICING_MODE, withEstimatedUsageCost } from "./domain/audit/pricing"
 import type { UsageMetrics } from "./domain/audit/types"
+import { createAutomaticAccountAvailabilityResolver } from "./domain/accounts/availability"
+import {
+  canClearStickyAccountHealth,
+  getActiveAccountHealthSnapshot,
+  isStickyAccountHealthReason,
+  isStickyAccountHealthSnapshot,
+  normalizeAccountHealthReason,
+  resolveAccountHealthExpiry,
+  type AccountHealthSnapshot,
+} from "./domain/accounts/health"
 import {
   DEFAULT_ACCOUNT_QUOTA_CACHE_TTL_MS,
   makeQuotaError,
@@ -36,6 +46,7 @@ import {
   type ProviderRoutingHints,
   type ProviderRoutingHintsOptions,
 } from "./domain/routing/provider-routing"
+import { buildVirtualKeyModeError, describeVirtualKeyClientMode } from "./domain/virtual-keys/mode"
 import { BehaviorController, resolveBehaviorSignal, type BehaviorAcquireFailure, type BehaviorConfig } from "./behavior/control"
 import {
   buildUpstreamAccountUnavailableFailure,
@@ -133,14 +144,6 @@ const extendedUsageTotalsState = {
   updatedAt: 0,
 }
 const STATS_TIMEZONE = Intl.DateTimeFormat().resolvedOptions().timeZone || "Asia/Shanghai"
-
-type AccountHealthSnapshot = {
-  status: "error"
-  reason: string
-  source: string
-  updatedAt: number
-  expiresAt: number | null
-}
 
 type AccountRoutingState = {
   state: "eligible" | "soft_drained" | "excluded"
@@ -1657,7 +1660,7 @@ function emitAccountRateLimitsUpdated(input: { accountId: string; source: string
 function toPublicAccountHealth(accountId: string) {
   const normalizedAccountId = normalizeIdentity(accountId)
   if (!normalizedAccountId) return null
-  const snapshot = getActiveAccountHealthSnapshot(normalizedAccountId)
+  const snapshot = getActiveAccountHealthSnapshot(accountHealthCache, normalizedAccountId, normalizeIdentity)
   if (!snapshot) return null
   return {
     ...snapshot,
@@ -1974,6 +1977,13 @@ function resolvePublicAccountDerivedState(accountId: string, quota?: AccountQuot
   }
 }
 
+const { resolveAutomaticAccountAvailability, ensureAutomaticAccountAvailable } =
+  createAutomaticAccountAvailabilityResolver({
+    getQuotaSnapshot: (account) => accountQuotaCache.get(account.id) ?? null,
+    resolveDerivedState: (accountId, quota) => resolvePublicAccountDerivedState(accountId, quota),
+    makeStatusError,
+  })
+
 function emitAccountHealthUpdated(input: { accountId: string; source: string }) {
   const normalizedAccountId = normalizeIdentity(input.accountId)
   if (!normalizedAccountId) return
@@ -1989,59 +1999,13 @@ function emitAccountHealthUpdated(input: { accountId: string; source: string }) 
   })
 }
 
-function normalizeAccountHealthReason(reason: string) {
-  const normalized = String(reason ?? "")
-    .replace(/\s+/g, " ")
-    .trim()
-  if (!normalized) return "upstream_auth_error"
-  return normalized.slice(0, 240)
-}
-
-function isStickyAccountHealthReason(reason: string) {
-  switch (normalizeAccountHealthReason(reason)) {
-    case "account_deactivated":
-    case "workspace_deactivated":
-    case "upstream_banned":
-    case "upstream_forbidden":
-    case "refresh_unauthorized":
-    case "refresh_invalid_grant":
-    case "refresh_invalid":
-    case "refresh_token_missing":
-    case "refresh_token_expired":
-    case "login_required":
-      return true
-    default:
-      return false
-  }
-}
-
-function isStickyAccountHealthSnapshot(snapshot?: AccountHealthSnapshot | null) {
-  return Boolean(snapshot && isStickyAccountHealthReason(snapshot.reason))
-}
-
-function resolveAccountHealthExpiry(reason: string, now = Date.now()) {
-  return isStickyAccountHealthReason(reason) ? null : now + ACCOUNT_TRANSIENT_HEALTH_COOLDOWN_MS
-}
-
-function getActiveAccountHealthSnapshot(accountId: string, now = Date.now()) {
-  const normalizedAccountId = normalizeIdentity(accountId)
-  if (!normalizedAccountId) return null
-  const snapshot = accountHealthCache.get(normalizedAccountId)
-  if (!snapshot) return null
-  if (snapshot.expiresAt !== null && snapshot.expiresAt <= now) {
-    accountHealthCache.delete(normalizedAccountId)
-    return null
-  }
-  return snapshot
-}
-
 function markAccountUnhealthy(accountId: string, reason: string, source: string) {
   const normalizedAccountId = normalizeIdentity(accountId)
   if (!normalizedAccountId) return
   const normalizedReason = normalizeAccountHealthReason(reason)
   const now = Date.now()
-  const expiresAt = resolveAccountHealthExpiry(normalizedReason, now)
-  const current = getActiveAccountHealthSnapshot(normalizedAccountId, now)
+  const expiresAt = resolveAccountHealthExpiry(normalizedReason, ACCOUNT_TRANSIENT_HEALTH_COOLDOWN_MS, now)
+  const current = getActiveAccountHealthSnapshot(accountHealthCache, normalizedAccountId, normalizeIdentity, now)
   if (
     current &&
     current.reason === normalizedReason &&
@@ -2069,7 +2033,7 @@ function markAccountUnhealthy(accountId: string, reason: string, source: string)
 function markAccountHealthy(accountId: string, source: string) {
   const normalizedAccountId = normalizeIdentity(accountId)
   if (!normalizedAccountId) return
-  const current = getActiveAccountHealthSnapshot(normalizedAccountId)
+  const current = getActiveAccountHealthSnapshot(accountHealthCache, normalizedAccountId, normalizeIdentity)
   if (!current) return
   if (isStickyAccountHealthSnapshot(current) && !canClearStickyAccountHealth(current, source)) {
     return
@@ -2082,23 +2046,6 @@ function markAccountHealthy(accountId: string, source: string) {
     accountId: normalizedAccountId,
     source,
   })
-}
-
-function canClearStickyAccountHealth(snapshot: AccountHealthSnapshot, source: string) {
-  const normalizedSource = String(source ?? "").trim().toLowerCase()
-  const reason = normalizeAccountHealthReason(snapshot.reason)
-  if (normalizedSource === "responses" || normalizedSource === "chat") {
-    return true
-  }
-  if (
-    normalizedSource === "refresh" ||
-    normalizedSource === "account-refresh" ||
-    normalizedSource === "refresh-token-import" ||
-    normalizedSource === "refresh-token-import-refresh"
-  ) {
-    return reason === "login_required" || reason.startsWith("refresh_")
-  }
-  return false
 }
 
 async function refreshAndEmitAccountQuota(accountID: string, source: string) {
@@ -2465,7 +2412,7 @@ function resolveAccountRoutingState(accountId: string, quota?: AccountQuotaSnaps
   }
 
   cleanupQuotaExhaustedCooldown(now)
-  const unhealthy = getActiveAccountHealthSnapshot(normalizedAccountId, now)
+  const unhealthy = getActiveAccountHealthSnapshot(accountHealthCache, normalizedAccountId, normalizeIdentity, now)
   if (unhealthy) {
     return {
       state: "excluded",
@@ -2507,63 +2454,6 @@ function resolveAccountRoutingState(accountId: string, quota?: AccountQuotaSnaps
     headroomPercent,
     softDrainThresholdPercent: ACCOUNT_SOFT_DRAIN_REMAINING_PERCENT_THRESHOLD,
   }
-}
-
-function resolveAutomaticAccountAvailability(input: {
-  account: StoredAccount
-  quota?: AccountQuotaSnapshot | null
-  now?: number
-}) {
-  const now = input.now ?? Date.now()
-  if (!input.account.accessToken) {
-    return {
-      ok: false as const,
-      reason: "account_access_token_missing",
-      message: "Account access token is unavailable and cannot be used for routing",
-      derived: null as ReturnType<typeof resolvePublicAccountDerivedState> | null,
-    }
-  }
-
-  const quota = input.quota !== undefined ? input.quota : (accountQuotaCache.get(input.account.id) ?? null)
-  const derived = resolvePublicAccountDerivedState(input.account.id, quota)
-  if (derived.routing.state === "eligible") {
-    return {
-      ok: true as const,
-      reason: null,
-      message: null,
-      derived,
-    }
-  }
-
-  const reason = derived.routing.reason ?? derived.abnormalState?.reason ?? "routing_excluded"
-  let message = "Account is unavailable for routing"
-  if (derived.routing.state === "soft_drained") {
-    message = "Account quota is too low and has been excluded from routing"
-  } else {
-    switch (reason) {
-      case "quota_exhausted_cooldown":
-      case "quota_headroom_exhausted":
-        message = "Account quota is exhausted and has been excluded from routing"
-        break
-      default:
-        message = "Account is unhealthy and has been excluded from routing"
-        break
-    }
-  }
-  return {
-    ok: false as const,
-    reason,
-    message: `${message} (${reason})`,
-    derived,
-  }
-}
-
-function ensureAutomaticAccountAvailable(account: StoredAccount, statusCode = 503) {
-  const availability = resolveAutomaticAccountAvailability({ account })
-  if (!availability.ok) {
-    throw makeStatusError(statusCode, availability.message)
-  }
-  return availability
 }
 
 async function fetchAccountQuotaSnapshot(account: StoredAccount): Promise<AccountQuotaSnapshot> {
@@ -3290,57 +3180,6 @@ function resolveSessionRouteID(input: { headers?: Headers; requestUrl?: string |
     extractSessionRouteIDFromHeaders(input.headers) ??
     extractSessionRouteIDFromRequestUrl(input.requestUrl)
   )
-}
-
-function describeVirtualKeyClientMode(clientMode: string | null | undefined) {
-  return clientMode === "cursor" ? "Cursor compatibility" : "Codex"
-}
-
-function buildVirtualKeyModeError(input: {
-  key: {
-    id?: string
-    providerId?: string
-    routingMode?: string
-    clientMode?: string | null
-    wireApi?: string | null
-  }
-  expectedClientMode: "codex" | "cursor"
-  expectedWireApi?: "responses" | "chat_completions"
-}) {
-  const keyClientMode = input.key.clientMode === "cursor" ? "cursor" : "codex"
-  const keyWireApi =
-    input.key.wireApi === "chat_completions"
-      ? "chat_completions"
-      : input.key.wireApi === "responses"
-        ? "responses"
-        : keyClientMode === "cursor"
-          ? "chat_completions"
-          : "responses"
-  const modeMatches = keyClientMode === input.expectedClientMode
-  const wireMatches = !input.expectedWireApi || keyWireApi === input.expectedWireApi
-  if (modeMatches && wireMatches) return null
-  if (input.expectedWireApi && keyWireApi !== input.expectedWireApi) {
-    if (input.expectedClientMode === "cursor") {
-      return {
-        status: 403 as const,
-        error: "This virtual API key is for Codex clients only. Use /v1/* endpoints.",
-      }
-    }
-    return {
-      status: 403 as const,
-      error: "This virtual API key is for Cursor compatibility only. Use /cursor/v1/* endpoints.",
-    }
-  }
-  if (input.expectedClientMode === "cursor") {
-    return {
-      status: 403 as const,
-      error: "This virtual API key is for Codex clients only. Use /v1/* endpoints.",
-    }
-  }
-  return {
-    status: 403 as const,
-    error: "This virtual API key is for Cursor compatibility only. Use /cursor/v1/* endpoints.",
-  }
 }
 
 function resolveVirtualKeyContext(
@@ -4880,7 +4719,9 @@ async function evaluateProviderPoolConsistency(
         account.providerId.toLowerCase() === normalizedProviderId &&
         Boolean(account.accessToken) &&
         (preferredPlanCohort === null || resolveAccountPlanCohort(account) === preferredPlanCohort) &&
-        !isStickyAccountHealthSnapshot(getActiveAccountHealthSnapshot(account.id, checkedAt)),
+      !isStickyAccountHealthSnapshot(
+        getActiveAccountHealthSnapshot(accountHealthCache, account.id, normalizeIdentity, checkedAt),
+      ),
     )
 
   if (candidates.length <= 1) {
@@ -5162,7 +5003,7 @@ function collectProviderUnhealthyExclusions(providerId: string, options?: { incl
       continue
     }
     if (account.providerId.toLowerCase() === normalizedProviderId) {
-      const snapshot = getActiveAccountHealthSnapshot(accountId, now)
+  const snapshot = getActiveAccountHealthSnapshot(accountHealthCache, accountId, normalizeIdentity, now)
       if (!snapshot) continue
       if (!includeTransient && !isStickyAccountHealthSnapshot(snapshot)) continue
       excluded.push(accountId)
@@ -5188,7 +5029,7 @@ function resolveAccountRoutingExclusionReason(accountId: string, now = Date.now(
   const normalizedAccountId = normalizeIdentity(accountId)
   if (!normalizedAccountId) return "routing_excluded"
   cleanupQuotaExhaustedCooldown(now)
-  const unhealthy = getActiveAccountHealthSnapshot(normalizedAccountId, now)
+  const unhealthy = getActiveAccountHealthSnapshot(accountHealthCache, normalizedAccountId, normalizeIdentity, now)
   if (unhealthy) return unhealthy.reason || "account_unhealthy"
   if (quotaExhaustedAccountCooldown.has(normalizedAccountId)) return "quota_exhausted_cooldown"
   const account = accountStore.get(normalizedAccountId)
