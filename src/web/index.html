@@ -4,6 +4,18 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Codex Gateway</title>
+    <script>
+      (() => {
+        const fallback = "ocean";
+        const allowed = new Set(["ocean", "slate", "forest", "sunset", "grape", "business"]);
+        try {
+          const stored = String(window.localStorage.getItem("codex-gateway-theme") || fallback).trim().toLowerCase();
+          document.documentElement.dataset.theme = allowed.has(stored) ? stored : fallback;
+        } catch {
+          document.documentElement.dataset.theme = fallback;
+        }
+      })();
+    </script>
     <style>
       :root {
         color-scheme: dark;
@@ -27,6 +39,33 @@
         --ok: #48d88e;
         --danger: #ef6f88;
         --warning: #f3c96d;
+        --focus-ring: rgba(75, 177, 255, 0.18);
+        --scrollbar-thumb-start: rgba(78, 168, 255, 0.34);
+        --scrollbar-thumb-end: rgba(34, 192, 199, 0.28);
+        --body-radial-a: rgba(43, 191, 204, 0.22);
+        --body-radial-b: rgba(83, 111, 255, 0.18);
+        --body-linear-start: #07111f;
+        --body-linear-mid: #0a1728;
+        --body-linear-end: #08111d;
+        --body-glow: rgba(29, 157, 181, 0.18);
+        --auth-title-a: #f7fbff;
+        --auth-title-b: #baf3ff;
+        --auth-title-c: #7ba8ff;
+        --metric-track: rgba(255, 255, 255, 0.08);
+        --metric-primary-start: #2ac9d8;
+        --metric-primary-end: #5a8cff;
+        --metric-secondary-start: #43d17d;
+        --metric-secondary-end: #7ad56d;
+        --quota-track: rgba(120, 145, 190, 0.16);
+        --quota-good-start: #20c997;
+        --quota-good-end: #2dd4bf;
+        --quota-warn-start: #f0b429;
+        --quota-warn-end: #f7c66a;
+        --quota-danger-start: #ff6b78;
+        --quota-danger-end: #ff9aa5;
+        --theme-card-bg: rgba(255, 255, 255, 0.03);
+        --theme-card-border: rgba(141, 177, 214, 0.1);
+        --theme-card-active-border: rgba(34, 192, 199, 0.36);
         --shadow-lg: 0 30px 80px rgba(3, 10, 24, 0.42);
         --shadow-md: 0 18px 44px rgba(4, 12, 28, 0.3);
         --fs-xs: 12px;
@@ -36,13 +75,243 @@
         --fs-xl: 24px;
       }
 
+      :root[data-theme="slate"] {
+        --bg: #0b1120;
+        --bg-deep: #121826;
+        --bg-glow: #1f2937;
+        --side-bg: rgba(12, 17, 29, 0.9);
+        --panel: rgba(18, 25, 41, 0.88);
+        --panel-strong: rgba(20, 28, 46, 0.96);
+        --panel-soft: rgba(28, 37, 56, 0.72);
+        --line: rgba(148, 163, 184, 0.14);
+        --line-strong: rgba(148, 163, 184, 0.26);
+        --text: #eef2ff;
+        --text-strong: #ffffff;
+        --dim: #a8b3c7;
+        --dim-strong: #d4dcec;
+        --brand: #60a5fa;
+        --brand-hover: #7ab6ff;
+        --brand-strong: #8b9dff;
+        --brand-soft: rgba(96, 165, 250, 0.2);
+        --ok: #60d394;
+        --danger: #f38096;
+        --warning: #f6c978;
+        --focus-ring: rgba(96, 165, 250, 0.2);
+        --scrollbar-thumb-start: rgba(148, 163, 184, 0.34);
+        --scrollbar-thumb-end: rgba(96, 165, 250, 0.28);
+        --body-radial-a: rgba(96, 165, 250, 0.2);
+        --body-radial-b: rgba(167, 139, 250, 0.14);
+        --body-linear-start: #0b1120;
+        --body-linear-mid: #111827;
+        --body-linear-end: #0f172a;
+        --body-glow: rgba(71, 85, 105, 0.22);
+        --auth-title-a: #f8fbff;
+        --auth-title-b: #dbeafe;
+        --auth-title-c: #93c5fd;
+        --metric-primary-start: #60a5fa;
+        --metric-primary-end: #8b9dff;
+        --metric-secondary-start: #34d399;
+        --metric-secondary-end: #60d394;
+        --quota-track: rgba(148, 163, 184, 0.16);
+        --quota-good-start: #34d399;
+        --quota-good-end: #60d394;
+        --quota-warn-start: #f6c978;
+        --quota-warn-end: #f9dd99;
+        --quota-danger-start: #fb7185;
+        --quota-danger-end: #fda4af;
+      }
+
+      :root[data-theme="forest"] {
+        --bg: #071611;
+        --bg-deep: #0b211a;
+        --bg-glow: #0f3328;
+        --side-bg: rgba(7, 22, 17, 0.9);
+        --panel: rgba(12, 31, 24, 0.86);
+        --panel-strong: rgba(15, 38, 30, 0.95);
+        --panel-soft: rgba(18, 43, 34, 0.72);
+        --line: rgba(88, 171, 126, 0.14);
+        --line-strong: rgba(88, 171, 126, 0.26);
+        --text: #effff7;
+        --text-strong: #ffffff;
+        --dim: #9cc7b3;
+        --dim-strong: #d5efe2;
+        --brand: #2ec27e;
+        --brand-hover: #4cd591;
+        --brand-strong: #15b8a6;
+        --brand-soft: rgba(46, 194, 126, 0.18);
+        --ok: #5be19f;
+        --danger: #f18c8c;
+        --warning: #f6d067;
+        --focus-ring: rgba(46, 194, 126, 0.2);
+        --scrollbar-thumb-start: rgba(46, 194, 126, 0.34);
+        --scrollbar-thumb-end: rgba(21, 184, 166, 0.28);
+        --body-radial-a: rgba(46, 194, 126, 0.18);
+        --body-radial-b: rgba(21, 184, 166, 0.14);
+        --body-linear-start: #071611;
+        --body-linear-mid: #0b211a;
+        --body-linear-end: #08140f;
+        --body-glow: rgba(46, 194, 126, 0.2);
+        --auth-title-a: #f7fffc;
+        --auth-title-b: #c6ffe6;
+        --auth-title-c: #7fecc2;
+        --metric-primary-start: #2ec27e;
+        --metric-primary-end: #15b8a6;
+        --metric-secondary-start: #79e27e;
+        --metric-secondary-end: #a7e163;
+        --quota-track: rgba(88, 171, 126, 0.16);
+        --quota-good-start: #2ec27e;
+        --quota-good-end: #15b8a6;
+        --quota-warn-start: #d7b241;
+        --quota-warn-end: #f6d067;
+        --quota-danger-start: #f18c8c;
+        --quota-danger-end: #f8b4b4;
+      }
+
+      :root[data-theme="sunset"] {
+        --bg: #1a0f15;
+        --bg-deep: #24121b;
+        --bg-glow: #39202a;
+        --side-bg: rgba(24, 13, 20, 0.9);
+        --panel: rgba(34, 18, 28, 0.86);
+        --panel-strong: rgba(43, 22, 34, 0.95);
+        --panel-soft: rgba(51, 27, 40, 0.72);
+        --line: rgba(250, 161, 92, 0.14);
+        --line-strong: rgba(248, 117, 151, 0.24);
+        --text: #fff2f0;
+        --text-strong: #ffffff;
+        --dim: #e0b9b0;
+        --dim-strong: #f8ddd7;
+        --brand: #ff8a4c;
+        --brand-hover: #ffa162;
+        --brand-strong: #f472b6;
+        --brand-soft: rgba(255, 138, 76, 0.18);
+        --ok: #66d7a6;
+        --danger: #ff8095;
+        --warning: #ffcf70;
+        --focus-ring: rgba(255, 138, 76, 0.2);
+        --scrollbar-thumb-start: rgba(255, 138, 76, 0.34);
+        --scrollbar-thumb-end: rgba(244, 114, 182, 0.28);
+        --body-radial-a: rgba(255, 138, 76, 0.18);
+        --body-radial-b: rgba(244, 114, 182, 0.16);
+        --body-linear-start: #1a0f15;
+        --body-linear-mid: #24121b;
+        --body-linear-end: #160b12;
+        --body-glow: rgba(255, 138, 76, 0.18);
+        --auth-title-a: #fff7f5;
+        --auth-title-b: #ffd7c8;
+        --auth-title-c: #ffb5cf;
+        --metric-primary-start: #ff8a4c;
+        --metric-primary-end: #f472b6;
+        --metric-secondary-start: #f59e0b;
+        --metric-secondary-end: #facc15;
+        --quota-track: rgba(250, 161, 92, 0.16);
+        --quota-good-start: #ff8a4c;
+        --quota-good-end: #f472b6;
+        --quota-warn-start: #f59e0b;
+        --quota-warn-end: #facc15;
+        --quota-danger-start: #ff6b78;
+        --quota-danger-end: #fda4af;
+      }
+
+      :root[data-theme="grape"] {
+        --bg: #130f23;
+        --bg-deep: #19132b;
+        --bg-glow: #261b45;
+        --side-bg: rgba(17, 13, 31, 0.9);
+        --panel: rgba(24, 19, 45, 0.86);
+        --panel-strong: rgba(31, 24, 58, 0.95);
+        --panel-soft: rgba(38, 31, 71, 0.72);
+        --line: rgba(139, 92, 246, 0.16);
+        --line-strong: rgba(125, 211, 252, 0.24);
+        --text: #f5f3ff;
+        --text-strong: #ffffff;
+        --dim: #c6b6e6;
+        --dim-strong: #e6def8;
+        --brand: #8b5cf6;
+        --brand-hover: #9b78ff;
+        --brand-strong: #38bdf8;
+        --brand-soft: rgba(139, 92, 246, 0.18);
+        --ok: #5eead4;
+        --danger: #fb7185;
+        --warning: #f7c66a;
+        --focus-ring: rgba(139, 92, 246, 0.2);
+        --scrollbar-thumb-start: rgba(139, 92, 246, 0.34);
+        --scrollbar-thumb-end: rgba(56, 189, 248, 0.28);
+        --body-radial-a: rgba(139, 92, 246, 0.18);
+        --body-radial-b: rgba(56, 189, 248, 0.14);
+        --body-linear-start: #130f23;
+        --body-linear-mid: #19132b;
+        --body-linear-end: #0f0c1b;
+        --body-glow: rgba(139, 92, 246, 0.18);
+        --auth-title-a: #fbf7ff;
+        --auth-title-b: #ddd6fe;
+        --auth-title-c: #7dd3fc;
+        --metric-primary-start: #8b5cf6;
+        --metric-primary-end: #38bdf8;
+        --metric-secondary-start: #5eead4;
+        --metric-secondary-end: #86efac;
+        --quota-track: rgba(139, 92, 246, 0.16);
+        --quota-good-start: #8b5cf6;
+        --quota-good-end: #38bdf8;
+        --quota-warn-start: #f59e0b;
+        --quota-warn-end: #f7c66a;
+        --quota-danger-start: #fb7185;
+        --quota-danger-end: #fda4af;
+      }
+
+      :root[data-theme="business"] {
+        --bg: #120f0a;
+        --bg-deep: #1a1610;
+        --bg-glow: #2c2417;
+        --side-bg: rgba(16, 13, 8, 0.9);
+        --panel: rgba(27, 22, 14, 0.86);
+        --panel-strong: rgba(35, 29, 18, 0.95);
+        --panel-soft: rgba(44, 37, 24, 0.72);
+        --line: rgba(231, 182, 74, 0.16);
+        --line-strong: rgba(244, 211, 141, 0.28);
+        --text: #fff8e8;
+        --text-strong: #ffffff;
+        --dim: #d9c29a;
+        --dim-strong: #f5e7c9;
+        --brand: #e7b64a;
+        --brand-hover: #f0c86a;
+        --brand-strong: #f4d38d;
+        --brand-soft: rgba(231, 182, 74, 0.18);
+        --ok: #70d39b;
+        --danger: #ef8e93;
+        --warning: #f5cf73;
+        --focus-ring: rgba(231, 182, 74, 0.2);
+        --scrollbar-thumb-start: rgba(231, 182, 74, 0.34);
+        --scrollbar-thumb-end: rgba(244, 211, 141, 0.28);
+        --body-radial-a: rgba(231, 182, 74, 0.14);
+        --body-radial-b: rgba(244, 211, 141, 0.12);
+        --body-linear-start: #120f0a;
+        --body-linear-mid: #1a1610;
+        --body-linear-end: #0e0b08;
+        --body-glow: rgba(231, 182, 74, 0.16);
+        --auth-title-a: #fffdf5;
+        --auth-title-b: #f9e7bf;
+        --auth-title-c: #f4d38d;
+        --metric-primary-start: #e7b64a;
+        --metric-primary-end: #f4d38d;
+        --metric-secondary-start: #5bcf96;
+        --metric-secondary-end: #9dd77a;
+        --quota-track: rgba(231, 182, 74, 0.16);
+        --quota-good-start: #e7b64a;
+        --quota-good-end: #f4d38d;
+        --quota-warn-start: #d79b2f;
+        --quota-warn-end: #f5cf73;
+        --quota-danger-start: #ef8e93;
+        --quota-danger-end: #f3b0b6;
+      }
+
       * {
         box-sizing: border-box;
       }
 
       * {
         scrollbar-width: thin;
-        scrollbar-color: rgba(128, 194, 255, 0.28) transparent;
+        scrollbar-color: var(--scrollbar-thumb-start) transparent;
       }
 
       *::-webkit-scrollbar {
@@ -51,7 +320,7 @@
       }
 
       *::-webkit-scrollbar-thumb {
-        background: linear-gradient(180deg, rgba(78, 168, 255, 0.34), rgba(34, 192, 199, 0.28));
+        background: linear-gradient(180deg, var(--scrollbar-thumb-start), var(--scrollbar-thumb-end));
         border-radius: 999px;
         border: 2px solid transparent;
         background-clip: padding-box;
@@ -289,7 +558,7 @@
 
       .auth-title span {
         display: block;
-        background: linear-gradient(135deg, #f7fbff 8%, #baf3ff 48%, #7ba8ff 100%);
+        background: linear-gradient(135deg, var(--auth-title-a) 8%, var(--auth-title-b) 48%, var(--auth-title-c) 100%);
         -webkit-background-clip: text;
         background-clip: text;
         color: transparent;
@@ -1032,7 +1301,7 @@
         width: 100%;
         height: 10px;
         border-radius: 999px;
-        background: rgba(255, 255, 255, 0.08);
+        background: var(--metric-track);
         overflow: hidden;
       }
 
@@ -1040,12 +1309,12 @@
         width: 0%;
         height: 100%;
         border-radius: inherit;
-        background: linear-gradient(90deg, #2ac9d8, #5a8cff);
+        background: linear-gradient(90deg, var(--metric-primary-start), var(--metric-primary-end));
         transition: width 160ms ease;
       }
 
       .metric-progress-bar.secondary {
-        background: linear-gradient(90deg, #43d17d, #7ad56d);
+        background: linear-gradient(90deg, var(--metric-secondary-start), var(--metric-secondary-end));
       }
 
       .dashboard-grid {
@@ -1448,6 +1717,78 @@
 
       .settings-actions .btn {
         min-width: 120px;
+      }
+
+      .theme-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        gap: 10px;
+      }
+
+      .theme-option {
+        display: grid;
+        gap: 10px;
+        width: 100%;
+        padding: 14px;
+        border-radius: 16px;
+        border: 1px solid var(--line);
+        background: var(--panel-soft);
+        color: var(--text);
+        text-align: left;
+        cursor: pointer;
+        transition:
+          transform 120ms ease,
+          border-color 120ms ease,
+          box-shadow 120ms ease,
+          background 120ms ease;
+      }
+
+      .theme-option:hover {
+        transform: translateY(-1px);
+        border-color: var(--primary-soft);
+        box-shadow: 0 10px 22px rgba(0, 0, 0, 0.16);
+      }
+
+      .theme-option.active {
+        border-color: var(--primary);
+        box-shadow: 0 0 0 3px var(--focus-ring);
+        background: rgba(255, 255, 255, 0.04);
+      }
+
+      .theme-option-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+      }
+
+      .theme-option-title {
+        font-size: 14px;
+        font-weight: 700;
+      }
+
+      .theme-option-check {
+        color: var(--primary);
+        font-size: 14px;
+        font-weight: 700;
+      }
+
+      .theme-option-preview {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 6px;
+      }
+
+      .theme-option-swatch {
+        height: 26px;
+        border-radius: 999px;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+      }
+
+      .theme-option-description {
+        color: var(--dim);
+        font-size: 12px;
+        line-height: 1.5;
       }
 
       .table-wrap {
@@ -2571,7 +2912,7 @@
       <aside class="sidebar">
         <div class="brand">
           <h1>Codex Gateway</h1>
-              <div class="ver">v1.1.34</div>
+          <div class="ver">v1.1.36</div>
         </div>
         <nav class="nav">
           <button class="nav-btn active" data-view="dashboard"><span>📊</span><span>仪表盘</span></button>
@@ -3040,6 +3381,7 @@
 
     <script type="module">
       import { initWebAppModules } from "./app/bootstrap.js";
+      import { applyTheme, getThemeOptions, normalizeThemeId, readStoredTheme } from "./app/theme.js";
       // state groups: server (backend truth), ui (interaction/runtime), draft (form intent)
       const S = {
         server: {
@@ -3056,6 +3398,7 @@
             encryptionKeyConfigured: false,
             upstreamPrivacyStrict: true,
             officialStrictPassthrough: false,
+            themeId: readStoredTheme(),
             restartRequired: true,
             statsTimezone: "",
             pricingMode: "",
@@ -7211,6 +7554,7 @@
           });
           drawStats();
           drawTokenUsage();
+          renderTodayStats();
           fillTestSelectors();
           fillKeyAccountSelector();
           drawAccountsTable();
@@ -7444,11 +7788,13 @@
         S.settings.encryptionKeyConfigured = Boolean(settings.encryptionKeyConfigured);
         S.settings.upstreamPrivacyStrict = settings.upstreamPrivacyStrict === false ? false : true;
         S.settings.officialStrictPassthrough = settings.officialStrictPassthrough === true;
+        S.settings.themeId = normalizeThemeId(settings.themeId || S.settings.themeId || readStoredTheme());
         S.settings.restartRequired = settings.restartRequired === false ? false : true;
         S.settings.statsTimezone = String(settings.statsTimezone || "");
         S.settings.pricingMode = String(settings.pricingMode || "");
         S.settings.pricingCatalogVersion = String(settings.pricingCatalogVersion || "");
         S.settings.serviceStatusSummary = settings.serviceStatusSummary || null;
+        applyTheme(S.settings.themeId, { persist: true });
       }
 
       function setStatusChip(id, text, tone = "") {
@@ -7457,6 +7803,60 @@
         el.className = "status-chip";
         if (tone) el.classList.add(tone);
         el.textContent = text;
+      }
+
+      function getThemeLabel(themeId) {
+        const current = normalizeThemeId(themeId);
+        const option = getThemeOptions().find((item) => item.id === current);
+        return option?.label || "海湾蓝";
+      }
+
+      function renderThemePicker() {
+        const container = document.getElementById("themePicker");
+        if (!container) return;
+        const current = normalizeThemeId(S.settings.themeId || readStoredTheme());
+        S.settings.themeId = current;
+        const themeChip = document.getElementById("settingsThemeChip");
+        if (themeChip) themeChip.textContent = getThemeLabel(current);
+        const themeState = document.getElementById("settingsThemeState");
+        if (themeState) {
+          themeState.textContent = `当前主题：${getThemeLabel(current)}。点击卡片立即预览，保存设置后同步到服务端。`;
+        }
+        container.innerHTML = getThemeOptions()
+          .map((option) => {
+            const isActive = option.id === current;
+            const preview = Array.isArray(option.preview) ? option.preview : [];
+            const swatches = preview
+              .map(
+                (color) =>
+                  `<span class="theme-option-swatch" style="background:${esc(String(color || "#000"))}"></span>`,
+              )
+              .join("");
+            return `
+              <button
+                type="button"
+                class="theme-option${isActive ? " active" : ""}"
+                data-theme-option="${esc(option.id)}"
+                aria-pressed="${isActive ? "true" : "false"}"
+              >
+                <div class="theme-option-head">
+                  <span class="theme-option-title">${esc(option.label)}</span>
+                  <span class="theme-option-check">${isActive ? "已启用" : "预览"}</span>
+                </div>
+                <div class="theme-option-preview">${swatches}</div>
+                <div class="theme-option-description">${esc(option.description || "")}</div>
+              </button>
+            `;
+          })
+          .join("");
+        container.querySelectorAll("[data-theme-option]").forEach((button) => {
+          button.addEventListener("click", () => {
+            const themeId = normalizeThemeId(button.dataset.themeOption || current);
+            S.settings.themeId = themeId;
+            applyTheme(themeId, { persist: true });
+            renderThemePicker();
+          });
+        });
       }
 
       function renderSettingsReadOnlyLegacy() {
@@ -7808,65 +8208,113 @@
         hydrateSettingsLayout();
       }
 
-      const modularApp = initWebAppModules({
-        S,
-        api,
-        beginRequest,
-        isLatestRequest,
-        beginSync,
-        finishSyncSuccess,
-        finishSyncError,
-        coerceDashboardMetrics,
-        normalizeTokenDelta,
-        drawStats,
-        drawTokenUsage,
-        formatCompactNumber,
-        formatUsd,
-        dt,
-        coerceAuditSummary,
-        requestLogStatusMeta,
-        formatRequestLogAccount,
-        formatRequestLogKey,
-        formatLatencyMs,
-        esc,
-        makeId,
-        hydrateSettingsFromApi,
-        refreshSettingsUi,
-        normalizeQuery,
-        providerDisplayName,
-        accountType,
-        formatAccountQuota,
-        getAccountStatusMeta,
-        normalizeAbnormalState,
-        canRefreshAccountQuota,
-        renderBulkDeleteButton,
-        openRefreshTokenModal,
-        refreshSingleAccountQuota,
-        loadAccounts,
-        loadVirtualKeys,
-        matchesVirtualKeyQuery,
-        isVirtualKeyExpired,
-        keyAccountLabel,
-        getVirtualKeyById,
-        getVirtualKeyClientModeLabel,
-        renderKeyUsageButtons,
-        closeKeyManageModal,
-        toggleRevealVirtualKey,
-        copyVirtualKey,
-        openKeyManageModal,
-        formatRemainingTime,
-        restoreVirtualKey,
-        revokeVirtualKey,
-        deleteVirtualKey,
-        openTestModal,
-        ts,
-        runBusyAction,
-        showToast,
-        toErrorMessage,
-        ensureTestHistory,
-        rememberTestModel,
-        log,
-      });
+      function renderKeyUsageButtons(row) {
+        const codexOnlyButtonIds = [
+          "keyUsageBasicCmdBtn",
+          "keyUsageGatewayCmdBtn",
+          "keyUsageRestoreCmdBtn",
+          "keyUsageTomlBtn",
+          "keyUsageCodexBtn",
+        ];
+        const cursorOnlyButtonIds = ["keyUsageCursorBtn"];
+        codexOnlyButtonIds.forEach((id) => {
+          const button = document.getElementById(id);
+          if (!button) return;
+          button.hidden = row?.clientMode === "cursor";
+          button.disabled = row?.clientMode === "cursor";
+        });
+        cursorOnlyButtonIds.forEach((id) => {
+          const button = document.getElementById(id);
+          if (!button) return;
+          button.hidden = row?.clientMode !== "cursor";
+          button.disabled = row?.clientMode !== "cursor";
+        });
+      }
+
+      let modularApp = {};
+      try {
+        modularApp = initWebAppModules({
+          S,
+          api,
+          beginRequest,
+          isLatestRequest,
+          beginSync,
+          finishSyncSuccess,
+          finishSyncError,
+          coerceDashboardMetrics,
+          normalizeTokenDelta,
+          drawStats,
+          drawTokenUsage,
+          formatCompactNumber,
+          formatUsd,
+          dt,
+          coerceAuditSummary,
+          requestLogStatusMeta,
+          formatRequestLogAccount,
+          formatRequestLogKey,
+          formatLatencyMs,
+          esc,
+          makeId,
+          hydrateSettingsFromApi,
+          refreshSettingsUi,
+          normalizeQuery,
+          providerDisplayName,
+          accountType,
+          formatAccountQuota,
+          getAccountStatusMeta,
+          normalizeAbnormalState,
+          canRefreshAccountQuota,
+          renderBulkDeleteButton,
+          openRefreshTokenModal,
+          refreshSingleAccountQuota,
+          loadAccounts,
+          loadVirtualKeys,
+          matchesVirtualKeyQuery,
+          isVirtualKeyExpired,
+          keyAccountLabel,
+          getVirtualKeyById,
+          getVirtualKeyClientModeLabel,
+          renderKeyUsageButtons,
+          closeKeyManageModal,
+          toggleRevealVirtualKey,
+          copyVirtualKey,
+          openKeyManageModal,
+          formatRemainingTime,
+          restoreVirtualKey,
+          revokeVirtualKey,
+          deleteVirtualKey,
+          openTestModal,
+          ts,
+          runBusyAction,
+          showToast,
+          toErrorMessage,
+          ensureTestHistory,
+          rememberTestModel,
+          log,
+        }) || {};
+      } catch (error) {
+        const msg = error instanceof Error ? error.stack || error.message : String(error);
+        try {
+          log(`模块装配失败: ${msg}`, "warn");
+        } catch {
+          console.warn("[modular-app]", msg);
+        }
+        modularApp = {};
+      }
+
+      function invokeUiStep(label, fn) {
+        try {
+          return typeof fn === "function" ? fn() : undefined;
+        } catch (error) {
+          const msg = error instanceof Error ? error.stack || error.message : String(error);
+          try {
+            log(`界面步骤失败(${label}): ${msg}`, "warn");
+          } catch {
+            console.warn(`[ui-step:${label}]`, msg);
+          }
+          return undefined;
+        }
+      }
 
       async function loadSettings(options = {}) {
         const requestId = beginRequest("settings");
@@ -7927,9 +8375,77 @@
         }
       }
 
+      function clampDashboardPoolPercent(value) {
+        const amount = Number(value);
+        if (!Number.isFinite(amount)) return null;
+        return Math.max(0, Math.min(100, Math.round(amount)));
+      }
+
+      function isDashboardPoolMetricsMissing(pool) {
+        if (!pool || typeof pool !== "object") return true;
+        return (
+          pool.primaryRemainPercent == null &&
+          pool.secondaryRemainPercent == null &&
+          Number(pool.eligibleAccountCount || 0) === 0 &&
+          Number(pool.quotaKnownAccountCount || 0) === 0
+        );
+      }
+
+      function isDashboardPoolCandidate(account) {
+        const provider = String(account?.providerId || "").trim().toLowerCase();
+        const method = String(account?.methodId || "").trim().toLowerCase();
+        if (method === "api" || method === "api-key") return false;
+        return provider === "openai" || provider === "chatgpt";
+      }
+
+      function resolveDashboardPoolQuotaPercent(quota, windowKey) {
+        if (!quota || quota.status !== "ok") return null;
+        const entries = [quota.primary, ...(Array.isArray(quota.additional) ? quota.additional : [])];
+        for (const entry of entries) {
+          const remain = clampDashboardPoolPercent(entry?.[windowKey]?.remainingPercent);
+          if (remain !== null) return remain;
+        }
+        return null;
+      }
+
+      function buildDashboardPoolRemainingFallback() {
+        const primaryValues = [];
+        const secondaryValues = [];
+        let eligibleAccountCount = 0;
+        let quotaKnownAccountCount = 0;
+
+        for (const account of Array.isArray(S.accounts) ? S.accounts : []) {
+          if (!isDashboardPoolCandidate(account)) continue;
+          const routingState = String(account?.routing?.state || "eligible");
+          if (routingState !== "excluded") eligibleAccountCount += 1;
+          const quota = account?.quota || null;
+          const primaryRemainPercent = resolveDashboardPoolQuotaPercent(quota, "primary");
+          const secondaryRemainPercent = resolveDashboardPoolQuotaPercent(quota, "secondary");
+          if (primaryRemainPercent !== null) primaryValues.push(primaryRemainPercent);
+          if (secondaryRemainPercent !== null) secondaryValues.push(secondaryRemainPercent);
+          if (primaryRemainPercent !== null || secondaryRemainPercent !== null) quotaKnownAccountCount += 1;
+        }
+
+        const average = (values) =>
+          values.length > 0
+            ? Math.max(0, Math.min(100, Math.round(values.reduce((sum, value) => sum + value, 0) / values.length)))
+            : null;
+
+        return {
+          primaryRemainPercent: average(primaryValues),
+          secondaryRemainPercent: average(secondaryValues),
+          knownPrimaryCount: primaryValues.length,
+          knownSecondaryCount: secondaryValues.length,
+          eligibleAccountCount,
+          quotaKnownAccountCount,
+        };
+      }
+
       function renderTodayStats() {
         const metrics = coerceDashboardMetrics(S.dashboardMetrics);
-        const pool = metrics.poolRemaining || {};
+        const pool = isDashboardPoolMetricsMissing(metrics.poolRemaining)
+          ? buildDashboardPoolRemainingFallback()
+          : metrics.poolRemaining || {};
         const hint = document.getElementById("todayStatsHint");
         const todayTokensEl = document.getElementById("todayTokens");
         const cachedTokensEl = document.getElementById("todayCachedTokens");
@@ -9501,6 +10017,293 @@
         renderAuthShell();
       }
 
+      getThemeLabel = function (themeId) {
+        const current = normalizeThemeId(themeId);
+        const option = getThemeOptions().find((item) => item.id === current);
+        return option?.label || "Ocean";
+      };
+
+      renderThemePicker = function () {
+        const container = document.getElementById("themePicker");
+        if (!container) return;
+        const current = normalizeThemeId(S.settings.themeId || readStoredTheme());
+        S.settings.themeId = current;
+        const themeChip = document.getElementById("settingsThemeChip");
+        if (themeChip) themeChip.textContent = getThemeLabel(current);
+        const themeState = document.getElementById("settingsThemeState");
+        if (themeState) {
+          themeState.textContent = `Current theme: ${getThemeLabel(current)}. Click a card to preview, then save to persist.`;
+        }
+        container.innerHTML = getThemeOptions()
+          .map((option) => {
+            const isActive = option.id === current;
+            const preview = Array.isArray(option.preview) ? option.preview : [];
+            const swatches = preview
+              .map(
+                (color) =>
+                  `<span class="theme-option-swatch" style="background:${esc(String(color || "#000"))}"></span>`,
+              )
+              .join("");
+            return `
+              <button
+                type="button"
+                class="theme-option${isActive ? " active" : ""}"
+                data-theme-option="${esc(option.id)}"
+                aria-pressed="${isActive ? "true" : "false"}"
+              >
+                <div class="theme-option-head">
+                  <span class="theme-option-title">${esc(option.label)}</span>
+                  <span class="theme-option-check">${isActive ? "Active" : "Preview"}</span>
+                </div>
+                <div class="theme-option-preview">${swatches}</div>
+                <div class="theme-option-description">${esc(option.description || "")}</div>
+              </button>
+            `;
+          })
+          .join("");
+        container.querySelectorAll("[data-theme-option]").forEach((button) => {
+          button.addEventListener("click", () => {
+            const themeId = normalizeThemeId(button.dataset.themeOption || current);
+            S.settings.themeId = themeId;
+            applyTheme(themeId);
+            renderThemePicker();
+          });
+        });
+      };
+
+      hydrateSettingsLayout = function () {
+        const grid = document.querySelector('.pane[data-pane="settings"] .settings-grid');
+        if (!grid || grid.dataset.v1Settings === "true") return;
+        grid.dataset.v1Settings = "true";
+        grid.innerHTML = `
+          <section class="panel settings-panel">
+            <div class="settings-panel-head">
+              <div>
+                <h3>网络访问</h3>
+                <div class="settings-panel-note">展示当前访问地址、绑定地址和推荐客户端入口。</div>
+              </div>
+              <span id="settingsServiceChip" class="status-chip">未知</span>
+            </div>
+            <div class="settings-kv">
+              <div class="settings-kv-row"><span>当前访问地址</span><strong id="origin">-</strong></div>
+              <div class="settings-kv-row"><span>服务绑定地址</span><strong id="bindOrigin">-</strong></div>
+              <div class="settings-kv-row"><span>推荐客户端地址</span><strong id="preferredOrigin">-</strong></div>
+              <div class="settings-kv-row"><span>局域网访问地址</span><strong id="lanOrigins">-</strong></div>
+              <div class="settings-kv-row"><span>OAuth 回调地址</span><code id="callbackUrlHint" class="mono">http://localhost:1455/auth/callback</code></div>
+            </div>
+            <div class="field-line">
+              <label>本地服务地址</label>
+              <input id="serviceAddressInput" placeholder="http://127.0.0.1:4777 or http://0.0.0.0:4777" />
+            </div>
+            <div class="settings-actions">
+              <button id="saveSettings" class="btn primary">保存设置</button>
+            </div>
+          </section>
+          <section class="panel settings-panel">
+            <div class="settings-panel-head">
+              <div>
+                <h3>安全鉴权</h3>
+                <div class="settings-panel-note">保护 /api 管理接口，令牌仅保存在当前浏览器。</div>
+              </div>
+              <span id="settingsGuardChip" class="status-chip">未启用</span>
+            </div>
+            <div class="field-line">
+              <label>管理令牌</label>
+              <input id="adminTokenInput" type="password" placeholder="留空表示不启用浏览器管理令牌" />
+            </div>
+            <div class="info-grid">
+              <div class="info-item"><span>管理保护</span><strong id="settingsGuardState">未启用</strong></div>
+              <div class="info-item"><span>浏览器本地令牌</span><strong id="settingsStoredAdminToken">未保存</strong></div>
+            </div>
+          </section>
+          <section class="panel settings-panel">
+            <div class="settings-panel-head">
+              <div>
+                <h3>隐私策略</h3>
+                <div class="settings-panel-note">建议为非回环绑定配置加密密钥，并默认启用严格隐私透传。</div>
+              </div>
+              <span id="settingsPrivacyChip" class="status-chip">严格模式</span>
+            </div>
+            <div class="field-line">
+              <label>加密密钥</label>
+              <input id="encryptionKeyInput" type="password" placeholder="建议 32+ 字符随机值；留空则沿用已保存值" />
+            </div>
+            <div class="field-line">
+              <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+                <input id="upstreamPrivacyStrictInput" type="checkbox" checked />
+                <span>严格隐私透传（不透传内网用户标识到上游）</span>
+              </label>
+            </div>
+            <div class="field-line">
+              <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+                <input id="officialStrictPassthroughInput" type="checkbox" />
+                <span>官方严格直通模式（保留 Codex 会话字段与请求标识）</span>
+              </label>
+            </div>
+            <div class="info-grid">
+              <div class="info-item"><span>加密状态</span><strong id="settingsEncryptionState">未配置</strong></div>
+              <div class="info-item"><span>浏览器本地密钥</span><strong id="settingsStoredEncryptionKey">未保存</strong></div>
+            </div>
+          </section>
+          <section class="panel settings-panel">
+            <div class="settings-panel-head">
+              <div>
+                <h3>界面主题</h3>
+                <div class="settings-panel-note">点击卡片立即预览主题。保存后会同步到服务端，并在本机持久化。</div>
+              </div>
+              <span id="settingsThemeChip" class="status-chip">Ocean</span>
+            </div>
+            <div id="themePicker" class="theme-grid"></div>
+            <div id="settingsThemeState" class="settings-panel-note">Current theme: Ocean</div>
+          </section>
+          <section class="panel settings-panel">
+            <div class="settings-panel-head">
+              <div>
+                <h3>统计与计费</h3>
+                <div class="settings-panel-note">只读展示统计口径与今日聚合，不影响实际账单。</div>
+              </div>
+              <span class="status-chip">只读</span>
+            </div>
+            <div class="info-grid">
+              <div class="info-item"><span>统计时区</span><strong id="settingsStatTimezone">-</strong></div>
+              <div class="info-item"><span>价格模式</span><strong id="settingsStatPricingMode">-</strong></div>
+              <div class="info-item"><span>价格表版本</span><strong id="settingsStatCatalogVersion">-</strong></div>
+              <div class="info-item"><span>今日令牌</span><strong id="settingsStatTodayTokens">0</strong></div>
+              <div class="info-item"><span>缓存令牌</span><strong id="settingsStatCachedTokens">0</strong></div>
+              <div class="info-item"><span>推理令牌</span><strong id="settingsStatReasoningTokens">0</strong></div>
+              <div class="info-item"><span>预计费用</span><strong id="settingsStatEstimatedCost">$0.00</strong></div>
+              <div class="info-item"><span>未估价请求</span><strong id="settingsStatUnpriced">0</strong></div>
+            </div>
+            <div class="settings-panel-note">未知模型不会被记成 0 成本，而会单独统计为“未估价”。</div>
+          </section>
+          <section class="panel settings-panel">
+            <div class="settings-panel-head">
+              <div>
+                <h3>服务状态</h3>
+                <div class="settings-panel-note">同步链路、实时事件、日志与重启状态。</div>
+              </div>
+              <span class="status-chip">只读</span>
+            </div>
+            <div class="settings-kv">
+              <div class="settings-kv-row"><span>同步状态</span><strong id="settingsSyncState">同步中</strong></div>
+              <div class="settings-kv-row"><span>实时事件通道</span><strong id="settingsRealtimeState">未连接</strong></div>
+              <div class="settings-kv-row"><span>请求日志刷新</span><strong id="settingsRequestLogState">未加载</strong></div>
+              <div class="settings-kv-row"><span>系统日志条数</span><strong id="settingsSystemLogState">0</strong></div>
+              <div class="settings-kv-row"><span>是否需重启</span><strong id="settingsRestartState">是</strong></div>
+            </div>
+            <div id="callbackUsageHint" class="settings-panel-note">新增 OAuth 账号建议在服务机本地或远程桌面执行；本网页主要用于账号、密钥、日志与设置维护。</div>
+          </section>
+          <section class="panel settings-panel">
+            <div class="settings-panel-head">
+              <div>
+                <h3>危险操作</h3>
+                <div class="settings-panel-note">清空日志不会影响今日统计；恢复自动绑定需重启生效。</div>
+              </div>
+              <span class="status-chip warn">谨慎操作</span>
+            </div>
+            <div class="settings-actions">
+              <button id="resetServiceAddress" class="btn">恢复自动</button>
+              <button id="dangerClearRequestLogs" class="btn">清空请求日志</button>
+              <button id="dangerClearSystemLogs" class="btn">清空系统日志</button>
+            </div>
+          </section>
+        `;
+      };
+
+      applySettingsToUI = function () {
+        const input = document.getElementById("serviceAddressInput");
+        if (input) input.value = S.settings.localServiceAddress || "";
+        const adminInput = document.getElementById("adminTokenInput");
+        if (adminInput && adminInput.value !== S.adminToken) adminInput.value = S.adminToken || "";
+        const encryptionInput = document.getElementById("encryptionKeyInput");
+        if (encryptionInput && encryptionInput.value !== S.encryptionKey) encryptionInput.value = S.encryptionKey || "";
+        const strictPrivacyInput = document.getElementById("upstreamPrivacyStrictInput");
+        if (strictPrivacyInput) strictPrivacyInput.checked = S.settings.upstreamPrivacyStrict !== false;
+        const officialStrictPassthroughInput = document.getElementById("officialStrictPassthroughInput");
+        if (officialStrictPassthroughInput) {
+          officialStrictPassthroughInput.checked = S.settings.officialStrictPassthrough === true;
+        }
+        const origin = document.getElementById("origin");
+        if (origin) origin.textContent = S.settings.activeLocalServiceAddress || window.location.origin;
+        const bindOrigin = document.getElementById("bindOrigin");
+        if (bindOrigin) bindOrigin.textContent = S.settings.bindServiceAddress || "-";
+        const lanOrigins = document.getElementById("lanOrigins");
+        if (lanOrigins) {
+          const items = Array.isArray(S.settings.lanServiceAddresses) ? S.settings.lanServiceAddresses : [];
+          lanOrigins.textContent = items.length ? items.join(" , ") : "-";
+        }
+        const callbackUrlHint = document.getElementById("callbackUrlHint");
+        if (callbackUrlHint) callbackUrlHint.textContent = "http://localhost:1455/auth/callback";
+        const callbackUsageHint = document.getElementById("callbackUsageHint");
+        if (callbackUsageHint) {
+          const remoteWeb = !isElectronRuntime() && !isLoopbackHost(window.location.hostname);
+          callbackUsageHint.textContent = remoteWeb
+            ? "当前是网页远程访问。请通过远程桌面在服务机本机添加 OAuth 账号；本网页用于维护账号、密钥、日志和设置。"
+            : "当前是本机访问。可直接添加 OAuth 账号；网页端也可用于日常维护。";
+        }
+        renderThemePicker();
+        renderSettingsReadOnly();
+      };
+
+      saveSettings = async function () {
+        const input = document.getElementById("serviceAddressInput");
+        const localServiceAddress = input?.value?.trim() || "";
+        const adminInput = document.getElementById("adminTokenInput");
+        const adminToken = adminInput?.value?.trim() || "";
+        const encryptionInput = document.getElementById("encryptionKeyInput");
+        const encryptionKey = encryptionInput?.value?.trim() || "";
+        const strictPrivacyInput = document.getElementById("upstreamPrivacyStrictInput");
+        const upstreamPrivacyStrict = strictPrivacyInput ? Boolean(strictPrivacyInput.checked) : true;
+        const officialStrictPassthroughInput = document.getElementById("officialStrictPassthroughInput");
+        const officialStrictPassthrough = officialStrictPassthroughInput
+          ? Boolean(officialStrictPassthroughInput.checked)
+          : false;
+        const previousAdminToken = String(S.adminToken || "");
+        const previousEncryptionKey = String(S.encryptionKey || "");
+        const themeId = normalizeThemeId(S.settings.themeId || readStoredTheme());
+        saveAdminTokenToStorage(adminToken);
+        saveEncryptionKeyToStorage(encryptionKey);
+
+        await runBusyAction(
+          "saveSettings",
+          async () => {
+            const payload = { localServiceAddress, adminToken, themeId };
+            if (encryptionKey || previousEncryptionKey) {
+              payload.encryptionKey = encryptionKey;
+            }
+            payload.upstreamPrivacyStrict = upstreamPrivacyStrict;
+            payload.officialStrictPassthrough = officialStrictPassthrough;
+            const output = await api("/api/settings", {
+              method: "POST",
+              body: JSON.stringify(payload),
+            });
+            const settings = output?.settings || {};
+            const warnings = Array.isArray(output?.warnings)
+              ? output.warnings.map((item) => String(item || "").trim()).filter(Boolean)
+              : [];
+            hydrateSettingsFromApi(settings, localServiceAddress);
+            applyTheme(themeId, { persist: true });
+            refreshSettingsUi();
+            for (const warning of warnings) {
+              log(`设置警告: ${warning}`, "warn");
+            }
+            if (previousAdminToken !== String(S.adminToken || "")) {
+              void startRealtimeUsageRefresh();
+              void loadAccounts({ refreshQuota: true, forceQuota: true });
+            }
+            log(`本地服务地址已保存：${S.settings.localServiceAddress || "自动分配"}（重启生效）`);
+            if (S.settings.managementAuthEnabled) {
+              log("管理令牌保护已开启：后续管理接口将校验 x-admin-token。");
+            }
+          },
+          {
+            successToast: "设置已保存",
+            errorToast: "保存设置失败",
+            rethrow: false,
+          },
+        );
+      };
+
       async function boot() {
         const queryAdminToken = loadAdminTokenFromQuery();
         const storedAdminTokenBeforeBoot = loadAdminTokenFromStorage();
@@ -9511,20 +10314,20 @@
           S.adminToken = storedAdminTokenBeforeBoot;
         }
         S.encryptionKey = loadEncryptionKeyFromStorage();
-        bindStatic();
-        drawStats();
-        drawTokenUsage();
-        drawLogs();
-        drawRequestLogsTable();
-        drawSession();
-        drawKeysTable();
-        fillKeyAccountSelector();
-        drawTestChatLog();
-        renderSettingsReadOnly();
-        renderAuthShell();
-        log(
+        invokeUiStep("bindStatic", () => bindStatic());
+        invokeUiStep("drawStats", () => drawStats());
+        invokeUiStep("drawTokenUsage", () => drawTokenUsage());
+        invokeUiStep("drawLogs", () => drawLogs());
+        invokeUiStep("drawRequestLogsTable", () => drawRequestLogsTable());
+        invokeUiStep("drawSession", () => drawSession());
+        invokeUiStep("drawKeysTable", () => drawKeysTable());
+        invokeUiStep("fillKeyAccountSelector", () => fillKeyAccountSelector());
+        invokeUiStep("drawTestChatLog", () => drawTestChatLog());
+        invokeUiStep("renderSettingsReadOnly", () => renderSettingsReadOnly());
+        invokeUiStep("renderAuthShell", () => renderAuthShell());
+        invokeUiStep("bootLog", () => log(
           `启动上下文: origin=${window.location.origin} queryAdminToken=${queryAdminToken ? "present" : "missing"} storedAdminToken=${storedAdminTokenBeforeBoot ? "present" : "missing"} activeAdminToken=${S.adminToken ? "present" : "missing"}`,
-        );
+        ));
         const health = await checkHealth();
         if (!health) {
           setAuthMode("locked");
@@ -9564,47 +10367,47 @@
       }
 
       loadSettings = async function (options = {}) {
-        return modularApp.loadSettings(options);
+        return modularApp?.loadSettings?.(options);
       };
 
       loadDashboardMetrics = async function (options = {}) {
-        return modularApp.loadDashboardMetrics(options);
+        return modularApp?.loadDashboardMetrics?.(options);
       };
 
       renderTodayStats = function () {
-        return modularApp.renderTodayStats();
+        return modularApp?.renderTodayStats?.();
       };
 
       drawRequestLogsTable = function () {
-        return modularApp.drawRequestLogsTable();
+        return modularApp?.drawRequestLogsTable?.();
       };
 
       loadRequestLogs = async function (options = {}) {
-        return modularApp.loadRequestLogs(options);
+        return modularApp?.loadRequestLogs?.(options);
       };
 
       drawAccountsTable = function () {
-        return modularApp.drawAccountsTable();
+        return modularApp?.drawAccountsTable?.();
       };
 
       renderSettingsReadOnly = function () {
-        return modularApp.renderSettingsReadOnly();
+        return modularApp?.renderSettingsReadOnly?.();
       };
 
       drawKeysTable = function () {
-        return modularApp.drawKeysTable();
+        return modularApp?.drawKeysTable?.();
       };
 
       renderKeyManageModal = function () {
-        return modularApp.renderKeyManageModal();
+        return modularApp?.renderKeyManageModal?.();
       };
 
       drawTestChatLog = function () {
-        return modularApp.drawTestChatLog();
+        return modularApp?.drawTestChatLog?.();
       };
 
       sendTestChat = async function () {
-        return modularApp.sendTestChat();
+        return modularApp?.sendTestChat?.();
       };
 
       ensureEarlyAuthFormBinding();

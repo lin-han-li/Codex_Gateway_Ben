@@ -15,6 +15,74 @@ export function createDashboardView(deps) {
     renderSettingsReadOnly,
   } = deps
 
+  function clampPercent(value) {
+    const amount = Number(value)
+    if (!Number.isFinite(amount)) return null
+    return Math.max(0, Math.min(100, Math.round(amount)))
+  }
+
+  function isPoolMetricsMissing(pool) {
+    if (!pool || typeof pool !== "object") return true
+    return (
+      pool.primaryRemainPercent == null &&
+      pool.secondaryRemainPercent == null &&
+      Number(pool.eligibleAccountCount || 0) === 0 &&
+      Number(pool.quotaKnownAccountCount || 0) === 0
+    )
+  }
+
+  function isPoolCandidate(account) {
+    const provider = String(account?.providerId || "")
+      .trim()
+      .toLowerCase()
+    const method = String(account?.methodId || "")
+      .trim()
+      .toLowerCase()
+    if (method === "api" || method === "api-key") return false
+    return provider === "openai" || provider === "chatgpt"
+  }
+
+  function resolveQuotaWindowRemainingPercentFromPublicQuota(quota, windowKey) {
+    if (!quota || quota.status !== "ok") return null
+    const entries = [quota.primary, ...(Array.isArray(quota.additional) ? quota.additional : [])]
+    for (const entry of entries) {
+      const remain = clampPercent(entry?.[windowKey]?.remainingPercent)
+      if (remain !== null) return remain
+    }
+    return null
+  }
+
+  function buildPoolRemainingFallbackFromAccounts() {
+    const primaryValues = []
+    const secondaryValues = []
+    let eligibleAccountCount = 0
+    let quotaKnownAccountCount = 0
+
+    for (const account of Array.isArray(S.accounts) ? S.accounts : []) {
+      if (!isPoolCandidate(account)) continue
+      const routingState = String(account?.routing?.state || "eligible")
+      if (routingState !== "excluded") eligibleAccountCount += 1
+      const quota = account?.quota || null
+      const primaryRemainPercent = resolveQuotaWindowRemainingPercentFromPublicQuota(quota, "primary")
+      const secondaryRemainPercent = resolveQuotaWindowRemainingPercentFromPublicQuota(quota, "secondary")
+      if (primaryRemainPercent !== null) primaryValues.push(primaryRemainPercent)
+      if (secondaryRemainPercent !== null) secondaryValues.push(secondaryRemainPercent)
+      if (primaryRemainPercent !== null || secondaryRemainPercent !== null) quotaKnownAccountCount += 1
+    }
+
+    const average = (values) =>
+      values.length > 0 ? Math.max(0, Math.min(100, Math.round(values.reduce((sum, value) => sum + value, 0) / values.length))) : null
+
+    return {
+      primaryRemainPercent: average(primaryValues),
+      secondaryRemainPercent: average(secondaryValues),
+      knownPrimaryCount: primaryValues.length,
+      knownSecondaryCount: secondaryValues.length,
+      eligibleAccountCount,
+      quotaKnownAccountCount,
+    }
+  }
+
   async function loadDashboardMetrics(options = {}) {
     const silent = options.silent === true
     if (!silent) beginSync()
@@ -42,7 +110,7 @@ export function createDashboardView(deps) {
 
   function renderTodayStats() {
     const metrics = coerceDashboardMetrics(S.dashboardMetrics)
-    const pool = metrics.poolRemaining || {}
+    const pool = isPoolMetricsMissing(metrics.poolRemaining) ? buildPoolRemainingFallbackFromAccounts() : metrics.poolRemaining || {}
     const hint = document.getElementById("todayStatsHint")
     const todayTokensEl = document.getElementById("todayTokens")
     const cachedTokensEl = document.getElementById("todayCachedTokens")

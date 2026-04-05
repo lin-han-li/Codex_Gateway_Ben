@@ -461,6 +461,15 @@ type RuntimeSettings = {
   encryptionKey: string
   upstreamPrivacyStrict: boolean
   officialStrictPassthrough: boolean
+  themeId: string
+}
+
+const DEFAULT_UI_THEME_ID = "ocean"
+const UI_THEME_IDS = new Set(["ocean", "slate", "forest", "sunset", "grape", "business"])
+
+function normalizeUiThemeId(value: unknown) {
+  const normalized = String(value ?? "").trim().toLowerCase()
+  return UI_THEME_IDS.has(normalized) ? normalized : DEFAULT_UI_THEME_ID
 }
 
 type ServiceAddressInfo = {
@@ -607,6 +616,7 @@ async function loadRuntimeSettings() {
     encryptionKey: "",
     upstreamPrivacyStrict: true,
     officialStrictPassthrough: false,
+    themeId: DEFAULT_UI_THEME_ID,
   }
 
   try {
@@ -619,6 +629,7 @@ async function loadRuntimeSettings() {
       encryptionKey: String(parsed?.encryptionKey ?? "").trim(),
       upstreamPrivacyStrict: parsed?.upstreamPrivacyStrict === false ? false : true,
       officialStrictPassthrough: parsed?.officialStrictPassthrough === true,
+      themeId: normalizeUiThemeId(parsed?.themeId),
     }
   } catch {
     return defaults
@@ -1090,6 +1101,7 @@ const UpdateSettingsSchema = z.object({
   encryptionKey: z.string().max(500).optional(),
   upstreamPrivacyStrict: z.boolean().optional(),
   officialStrictPassthrough: z.boolean().optional(),
+  themeId: z.string().trim().max(80).optional(),
 })
 
 const OpenExternalUrlSchema = z.object({
@@ -4068,7 +4080,8 @@ function isChatGptOAuthAccount(account: Pick<StoredAccount, "providerId" | "meth
   const method = String(account.methodId ?? "")
     .trim()
     .toLowerCase()
-  return provider === "openai" && method !== "api" && method !== "api-key"
+  if (method === "api" || method === "api-key") return false
+  return provider === "openai" || provider === "chatgpt"
 }
 
 function buildPoolRemainingMetrics(now = Date.now()) {
@@ -6902,6 +6915,52 @@ async function runChatWithAccount(input: {
   }
 }
 
+function resolveWebAssetContentType(filepath: string) {
+  switch (path.extname(filepath).toLowerCase()) {
+    case ".js":
+    case ".mjs":
+      return "text/javascript; charset=utf-8"
+    case ".css":
+      return "text/css; charset=utf-8"
+    case ".json":
+    case ".map":
+      return "application/json; charset=utf-8"
+    case ".svg":
+      return "image/svg+xml"
+    case ".png":
+      return "image/png"
+    case ".jpg":
+    case ".jpeg":
+      return "image/jpeg"
+    case ".ico":
+      return "image/x-icon"
+    default:
+      return "application/octet-stream"
+  }
+}
+
+function serveWebAsset(requestPath: string) {
+  const webRoot = path.resolve(AppConfig.webDir)
+  const normalizedRelativePath = String(requestPath || "")
+    .replace(/^\/+/, "")
+    .replace(/\//g, path.sep)
+  const targetPath = path.resolve(webRoot, normalizedRelativePath)
+  if (!(targetPath === webRoot || targetPath.startsWith(`${webRoot}${path.sep}`))) {
+    return new Response("Not found", { status: 404 })
+  }
+  if (!existsSync(targetPath) || !statSync(targetPath).isFile()) {
+    return new Response("Not found", { status: 404 })
+  }
+  return new Response(Bun.file(targetPath), {
+    headers: {
+      "Content-Type": resolveWebAssetContentType(targetPath),
+      "Cache-Control": "no-store",
+    },
+  })
+}
+
+app.get("/app/*", (c) => serveWebAsset(c.req.path))
+
 app.get("/", async () => {
   const htmlFile = Bun.file(AppConfig.indexHtmlPath)
   if (!(await htmlFile.exists())) {
@@ -6988,6 +7047,7 @@ function buildSettingsPayload(now = Date.now()) {
     encryptionKeyConfigured: Boolean(getEffectiveEncryptionKey()),
     upstreamPrivacyStrict: isStrictUpstreamPrivacyEnabled(),
     officialStrictPassthrough: isOfficialStrictPassthroughEnabled(),
+    themeId: normalizeUiThemeId(runtimeSettings.themeId),
     restartRequired: true,
     statsTimezone: STATS_TIMEZONE,
     pricingMode: PRICING_MODE,
@@ -7007,6 +7067,8 @@ async function persistSettings(input: z.infer<typeof UpdateSettingsSchema>) {
     input.officialStrictPassthrough === undefined
       ? runtimeSettings.officialStrictPassthrough === true
       : Boolean(input.officialStrictPassthrough)
+  const nextThemeId =
+    input.themeId === undefined ? normalizeUiThemeId(runtimeSettings.themeId) : normalizeUiThemeId(input.themeId)
   const effectiveEncryptionKey = String(AppConfig.encryptionKey ?? "").trim() || nextEncryptionKey
   const warnings: string[] = []
   if (normalized) {
@@ -7022,6 +7084,7 @@ async function persistSettings(input: z.infer<typeof UpdateSettingsSchema>) {
   runtimeSettings.encryptionKey = nextEncryptionKey
   runtimeSettings.upstreamPrivacyStrict = nextUpstreamPrivacyStrict
   runtimeSettings.officialStrictPassthrough = nextOfficialStrictPassthrough
+  runtimeSettings.themeId = nextThemeId
   await saveRuntimeSettings(runtimeSettings)
   return {
     settings: buildSettingsPayload(),
