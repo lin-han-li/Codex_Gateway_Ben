@@ -7,7 +7,7 @@
     <script>
       (() => {
         const fallback = "ocean";
-        const allowed = new Set(["ocean", "slate", "forest", "sunset", "grape", "business"]);
+        const allowed = new Set(["ocean", "slate", "forest", "sunset", "grape", "business", "pearl", "mist", "mint", "sand"]);
         try {
           const stored = String(window.localStorage.getItem("codex-gateway-theme") || fallback).trim().toLowerCase();
           document.documentElement.dataset.theme = allowed.has(stored) ? stored : fallback;
@@ -68,6 +68,57 @@
         --theme-card-active-border: rgba(34, 192, 199, 0.36);
         --shadow-lg: 0 30px 80px rgba(3, 10, 24, 0.42);
         --shadow-md: 0 18px 44px rgba(4, 12, 28, 0.3);
+        --shadow-sm: 0 10px 24px rgba(5, 11, 22, 0.22);
+        --primary: var(--brand);
+        --primary-soft: rgba(93, 166, 237, 0.26);
+        --muted: var(--dim);
+        --sidebar-grad-start: rgba(10, 18, 31, 0.95);
+        --sidebar-grad-end: rgba(11, 20, 35, 0.82);
+        --sidebar-brand-chip-border: rgba(154, 216, 255, 0.16);
+        --sidebar-brand-chip-bg: rgba(255, 255, 255, 0.04);
+        --sidebar-brand-chip-text: rgba(190, 212, 236, 0.74);
+        --sidebar-title: #dcf7ff;
+        --sidebar-title-glow: rgba(13, 162, 167, 0.22);
+        --sidebar-version-text: #8ddbe6;
+        --sidebar-version-bg: rgba(17, 171, 177, 0.14);
+        --sidebar-version-border: rgba(17, 171, 177, 0.16);
+        --sidebar-nav-bg: rgba(255, 255, 255, 0.03);
+        --sidebar-nav-border: rgba(255, 255, 255, 0.04);
+        --sidebar-nav-icon-bg: rgba(255, 255, 255, 0.05);
+        --sidebar-nav-hover-bg: rgba(255, 255, 255, 0.06);
+        --sidebar-nav-hover-border: rgba(145, 216, 255, 0.18);
+        --sidebar-foot-bg: rgba(255, 255, 255, 0.025);
+        --btn-bg: rgba(255, 255, 255, 0.04);
+        --btn-bg-hover: rgba(255, 255, 255, 0.065);
+        --btn-border-hover: rgba(160, 220, 255, 0.18);
+        --btn-primary-end: #648cff;
+        --btn-primary-shadow: 0 16px 34px rgba(24, 108, 176, 0.28);
+        --input-bg: rgba(8, 15, 28, 0.74);
+        --input-bg-strong: #22262f;
+        --input-border: rgba(135, 170, 210, 0.16);
+        --input-border-strong: #4a5262;
+        --input-placeholder: rgba(147, 169, 197, 0.72);
+        --card-grad-start: rgba(18, 29, 47, 0.95);
+        --card-grad-end: rgba(13, 22, 37, 0.82);
+        --card-glow: rgba(68, 122, 255, 0.16);
+        --card-glow-strong: rgba(51, 207, 213, 0.22);
+        --card-glow-alt: rgba(107, 122, 255, 0.18);
+        --panel-grad-start: rgba(17, 28, 46, 0.94);
+        --panel-grad-end: rgba(14, 24, 40, 0.84);
+        --panel-glow: rgba(45, 106, 235, 0.1);
+        --surface-top-highlight: rgba(255, 255, 255, 0.07);
+        --surface-top-highlight-soft: rgba(255, 255, 255, 0.05);
+        --surface-accent-glow: rgba(62, 148, 255, 0.12);
+        --table-surface: rgba(12, 22, 36, 0.66);
+        --table-head-bg: rgba(255, 255, 255, 0.04);
+        --table-row-border: rgba(141, 177, 214, 0.08);
+        --table-row-hover: rgba(255, 255, 255, 0.035);
+        --table-head-text: rgba(188, 210, 232, 0.74);
+        --badge-bg: rgba(20, 140, 144, 0.95);
+        --badge-text: #e5f7fb;
+        --chip-bg: rgba(255, 255, 255, 0.04);
+        --chip-border: rgba(141, 177, 214, 0.16);
+        --chip-text: var(--dim-strong);
         --fs-xs: 12px;
         --fs-sm: 14px;
         --fs-md: 14px;
@@ -305,6 +356,312 @@
         --quota-danger-end: #f3b0b6;
       }
 
+      :root[data-theme="pearl"] {
+        color-scheme: light;
+        --bg: #f2f7ff;
+        --bg-deep: #e8f0fb;
+        --bg-glow: #d6e7ff;
+        --side-bg: rgba(246, 250, 255, 0.92);
+        --panel: rgba(255, 255, 255, 0.86);
+        --panel-strong: rgba(255, 255, 255, 0.96);
+        --panel-soft: rgba(245, 250, 255, 0.8);
+        --line: rgba(44, 87, 143, 0.12);
+        --line-strong: rgba(38, 99, 197, 0.24);
+        --text: #1d3048;
+        --text-strong: #0f2138;
+        --dim: #4e6584;
+        --dim-strong: #2f4868;
+        --brand: #2f6fe4;
+        --brand-hover: #1f63db;
+        --brand-strong: #4b8cff;
+        --brand-soft: rgba(47, 111, 228, 0.16);
+        --ok: #16855c;
+        --danger: #d6456e;
+        --warning: #b97814;
+        --focus-ring: rgba(47, 111, 228, 0.18);
+        --scrollbar-thumb-start: rgba(69, 123, 221, 0.36);
+        --scrollbar-thumb-end: rgba(88, 148, 246, 0.3);
+        --body-radial-a: rgba(104, 159, 255, 0.16);
+        --body-radial-b: rgba(159, 191, 255, 0.14);
+        --body-linear-start: #f4f8ff;
+        --body-linear-mid: #edf4ff;
+        --body-linear-end: #e7effb;
+        --body-glow: rgba(120, 175, 255, 0.18);
+        --auth-title-a: #173152;
+        --auth-title-b: #2d5ea0;
+        --auth-title-c: #4c81d6;
+        --metric-track: rgba(40, 79, 130, 0.12);
+        --metric-primary-start: #2f6fe4;
+        --metric-primary-end: #5c9dff;
+        --metric-secondary-start: #27b784;
+        --metric-secondary-end: #6edb8c;
+        --quota-track: rgba(55, 94, 146, 0.14);
+        --quota-good-start: #18b38c;
+        --quota-good-end: #2ac7bb;
+        --quota-warn-start: #d69a16;
+        --quota-warn-end: #f0bc56;
+        --quota-danger-start: #de5a74;
+        --quota-danger-end: #f08a9d;
+        --theme-card-bg: rgba(255, 255, 255, 0.88);
+        --theme-card-border: rgba(47, 111, 228, 0.12);
+        --theme-card-active-border: rgba(47, 111, 228, 0.35);
+        --shadow-lg: 0 26px 64px rgba(39, 75, 128, 0.16);
+        --shadow-md: 0 14px 34px rgba(44, 83, 138, 0.12);
+      }
+
+      :root[data-theme="mist"] {
+        color-scheme: light;
+        --bg: #f4f6fa;
+        --bg-deep: #eceff5;
+        --bg-glow: #dfe6f2;
+        --side-bg: rgba(249, 250, 253, 0.94);
+        --panel: rgba(255, 255, 255, 0.88);
+        --panel-strong: rgba(255, 255, 255, 0.97);
+        --panel-soft: rgba(246, 248, 252, 0.82);
+        --line: rgba(59, 78, 110, 0.12);
+        --line-strong: rgba(63, 95, 146, 0.22);
+        --text: #1f2d3d;
+        --text-strong: #0e1927;
+        --dim: #4e6078;
+        --dim-strong: #334860;
+        --brand: #3b73d1;
+        --brand-hover: #2d67c8;
+        --brand-strong: #6096e8;
+        --brand-soft: rgba(59, 115, 209, 0.16);
+        --ok: #187e5c;
+        --danger: #d54f6e;
+        --warning: #af7619;
+        --focus-ring: rgba(59, 115, 209, 0.18);
+        --scrollbar-thumb-start: rgba(90, 119, 165, 0.34);
+        --scrollbar-thumb-end: rgba(123, 152, 201, 0.28);
+        --body-radial-a: rgba(139, 165, 208, 0.16);
+        --body-radial-b: rgba(191, 205, 230, 0.14);
+        --body-linear-start: #f7f9fc;
+        --body-linear-mid: #eff3f8;
+        --body-linear-end: #e8edf5;
+        --body-glow: rgba(139, 165, 208, 0.17);
+        --auth-title-a: #1e2f45;
+        --auth-title-b: #415f86;
+        --auth-title-c: #6286bb;
+        --metric-track: rgba(50, 70, 102, 0.12);
+        --metric-primary-start: #3b73d1;
+        --metric-primary-end: #5e97ea;
+        --metric-secondary-start: #22a486;
+        --metric-secondary-end: #63cc98;
+        --quota-track: rgba(67, 91, 129, 0.14);
+        --quota-good-start: #1eb498;
+        --quota-good-end: #3ccac2;
+        --quota-warn-start: #cb8e1b;
+        --quota-warn-end: #e5b456;
+        --quota-danger-start: #d95d73;
+        --quota-danger-end: #ea8a99;
+        --theme-card-bg: rgba(255, 255, 255, 0.9);
+        --theme-card-border: rgba(81, 108, 150, 0.14);
+        --theme-card-active-border: rgba(59, 115, 209, 0.32);
+        --shadow-lg: 0 24px 60px rgba(44, 61, 92, 0.14);
+        --shadow-md: 0 12px 30px rgba(53, 73, 110, 0.1);
+      }
+
+      :root[data-theme="mint"] {
+        color-scheme: light;
+        --bg: #eefaf5;
+        --bg-deep: #e3f4ec;
+        --bg-glow: #d3ecdf;
+        --side-bg: rgba(244, 253, 249, 0.93);
+        --panel: rgba(255, 255, 255, 0.87);
+        --panel-strong: rgba(255, 255, 255, 0.96);
+        --panel-soft: rgba(241, 252, 247, 0.82);
+        --line: rgba(35, 114, 86, 0.12);
+        --line-strong: rgba(25, 151, 120, 0.24);
+        --text: #153329;
+        --text-strong: #0a221b;
+        --dim: #3e655b;
+        --dim-strong: #254e43;
+        --brand: #159a7d;
+        --brand-hover: #0f896f;
+        --brand-strong: #22b894;
+        --brand-soft: rgba(21, 154, 125, 0.16);
+        --ok: #10785f;
+        --danger: #cb4d6d;
+        --warning: #a87518;
+        --focus-ring: rgba(21, 154, 125, 0.2);
+        --scrollbar-thumb-start: rgba(52, 152, 126, 0.34);
+        --scrollbar-thumb-end: rgba(88, 187, 158, 0.28);
+        --body-radial-a: rgba(82, 181, 153, 0.16);
+        --body-radial-b: rgba(163, 224, 203, 0.14);
+        --body-linear-start: #f4fbf8;
+        --body-linear-mid: #ecf8f2;
+        --body-linear-end: #e4f2eb;
+        --body-glow: rgba(101, 195, 168, 0.18);
+        --auth-title-a: #17362f;
+        --auth-title-b: #23846b;
+        --auth-title-c: #3ba688;
+        --metric-track: rgba(31, 100, 82, 0.12);
+        --metric-primary-start: #159a7d;
+        --metric-primary-end: #27b695;
+        --metric-secondary-start: #3cb47c;
+        --metric-secondary-end: #76d99a;
+        --quota-track: rgba(38, 110, 90, 0.14);
+        --quota-good-start: #10a884;
+        --quota-good-end: #33c8b0;
+        --quota-warn-start: #c08b1b;
+        --quota-warn-end: #ddb75e;
+        --quota-danger-start: #d66072;
+        --quota-danger-end: #e89aa6;
+        --theme-card-bg: rgba(255, 255, 255, 0.89);
+        --theme-card-border: rgba(30, 130, 106, 0.14);
+        --theme-card-active-border: rgba(21, 154, 125, 0.34);
+        --shadow-lg: 0 24px 58px rgba(28, 91, 72, 0.15);
+        --shadow-md: 0 12px 30px rgba(34, 104, 84, 0.11);
+      }
+
+      :root[data-theme="sand"] {
+        color-scheme: light;
+        --bg: #fbf7ee;
+        --bg-deep: #f5eedf;
+        --bg-glow: #ece0ca;
+        --side-bg: rgba(255, 252, 245, 0.93);
+        --panel: rgba(255, 255, 255, 0.9);
+        --panel-strong: rgba(255, 255, 255, 0.97);
+        --panel-soft: rgba(252, 246, 236, 0.84);
+        --line: rgba(132, 96, 45, 0.12);
+        --line-strong: rgba(174, 126, 51, 0.22);
+        --text: #372919;
+        --text-strong: #23170c;
+        --dim: #625139;
+        --dim-strong: #493a24;
+        --brand: #b07a2f;
+        --brand-hover: #9e6d28;
+        --brand-strong: #d19a52;
+        --brand-soft: rgba(176, 122, 47, 0.16);
+        --ok: #277e5d;
+        --danger: #cc596f;
+        --warning: #9e6d1b;
+        --focus-ring: rgba(176, 122, 47, 0.2);
+        --scrollbar-thumb-start: rgba(166, 121, 60, 0.34);
+        --scrollbar-thumb-end: rgba(205, 156, 90, 0.28);
+        --body-radial-a: rgba(212, 169, 105, 0.16);
+        --body-radial-b: rgba(236, 205, 155, 0.14);
+        --body-linear-start: #fffdf8;
+        --body-linear-mid: #f8f2e8;
+        --body-linear-end: #f2e9d9;
+        --body-glow: rgba(214, 171, 112, 0.17);
+        --auth-title-a: #3b2b1a;
+        --auth-title-b: #8f6631;
+        --auth-title-c: #b98749;
+        --metric-track: rgba(120, 86, 43, 0.12);
+        --metric-primary-start: #b07a2f;
+        --metric-primary-end: #d7a05b;
+        --metric-secondary-start: #2ca176;
+        --metric-secondary-end: #74ce9f;
+        --quota-track: rgba(124, 92, 48, 0.14);
+        --quota-good-start: #2ab28d;
+        --quota-good-end: #4ccfb8;
+        --quota-warn-start: #b37c1f;
+        --quota-warn-end: #d7ad5b;
+        --quota-danger-start: #cf5b6c;
+        --quota-danger-end: #e3919b;
+        --theme-card-bg: rgba(255, 255, 255, 0.9);
+        --theme-card-border: rgba(154, 111, 54, 0.14);
+        --theme-card-active-border: rgba(176, 122, 47, 0.34);
+        --shadow-lg: 0 24px 56px rgba(100, 72, 35, 0.14);
+        --shadow-md: 0 12px 28px rgba(110, 79, 38, 0.1);
+      }
+
+      :root[data-theme="pearl"],
+      :root[data-theme="mist"],
+      :root[data-theme="mint"],
+      :root[data-theme="sand"] {
+        --text: #1a2c42;
+        --text-strong: #0e2137;
+        --dim: #4c6483;
+        --dim-strong: #334d6d;
+        --muted: #526c8d;
+        --input-placeholder: #6781a3;
+        --primary-soft: rgba(73, 116, 194, 0.22);
+        --sidebar-grad-start: rgba(255, 255, 255, 0.98);
+        --sidebar-grad-end: rgba(245, 250, 255, 0.95);
+        --sidebar-brand-chip-border: rgba(73, 116, 194, 0.22);
+        --sidebar-brand-chip-bg: rgba(73, 116, 194, 0.12);
+        --sidebar-brand-chip-text: #345a8f;
+        --sidebar-title: var(--text-strong);
+        --sidebar-title-glow: rgba(73, 116, 194, 0.24);
+        --sidebar-version-text: #305486;
+        --sidebar-version-bg: rgba(73, 116, 194, 0.14);
+        --sidebar-version-border: rgba(73, 116, 194, 0.24);
+        --sidebar-nav-bg: rgba(255, 255, 255, 0.86);
+        --sidebar-nav-border: rgba(87, 122, 173, 0.12);
+        --sidebar-nav-icon-bg: rgba(73, 116, 194, 0.12);
+        --sidebar-nav-hover-bg: rgba(73, 116, 194, 0.08);
+        --sidebar-nav-hover-border: rgba(73, 116, 194, 0.26);
+        --sidebar-foot-bg: rgba(255, 255, 255, 0.82);
+        --btn-bg: rgba(255, 255, 255, 0.92);
+        --btn-bg-hover: rgba(246, 250, 255, 0.98);
+        --btn-border-hover: rgba(73, 116, 194, 0.26);
+        --btn-primary-end: #5f95ef;
+        --btn-primary-shadow: 0 14px 28px rgba(73, 116, 194, 0.24);
+        --input-bg: rgba(255, 255, 255, 0.95);
+        --input-bg-strong: rgba(255, 255, 255, 0.98);
+        --input-border: rgba(92, 123, 170, 0.24);
+        --input-border-strong: rgba(92, 123, 170, 0.34);
+        --input-placeholder: #6f87aa;
+        --card-grad-start: rgba(255, 255, 255, 0.98);
+        --card-grad-end: rgba(244, 248, 255, 0.94);
+        --card-glow: rgba(73, 116, 194, 0.16);
+        --card-glow-strong: rgba(73, 116, 194, 0.22);
+        --card-glow-alt: rgba(114, 154, 219, 0.16);
+        --panel-grad-start: rgba(255, 255, 255, 0.98);
+        --panel-grad-end: rgba(244, 248, 255, 0.95);
+        --panel-glow: rgba(73, 116, 194, 0.12);
+        --surface-top-highlight: rgba(255, 255, 255, 0.9);
+        --surface-top-highlight-soft: rgba(255, 255, 255, 0.76);
+        --surface-accent-glow: rgba(73, 116, 194, 0.16);
+        --table-surface: rgba(255, 255, 255, 0.9);
+        --table-head-bg: rgba(73, 116, 194, 0.08);
+        --table-row-border: rgba(84, 117, 165, 0.13);
+        --table-row-hover: rgba(73, 116, 194, 0.06);
+        --table-head-text: #4a6488;
+        --badge-bg: #3a6bc2;
+        --badge-text: #f2f7ff;
+        --chip-bg: rgba(73, 116, 194, 0.1);
+        --chip-border: rgba(73, 116, 194, 0.24);
+        --chip-text: #2a4567;
+        --shadow-lg: 0 26px 64px rgba(58, 92, 145, 0.14);
+        --shadow-md: 0 14px 34px rgba(60, 96, 152, 0.1);
+        --shadow-sm: 0 8px 20px rgba(64, 103, 162, 0.1);
+      }
+
+      :root[data-theme="pearl"] .settings-panel-note,
+      :root[data-theme="mist"] .settings-panel-note,
+      :root[data-theme="mint"] .settings-panel-note,
+      :root[data-theme="sand"] .settings-panel-note,
+      :root[data-theme="pearl"] .settings-kv-row span,
+      :root[data-theme="mist"] .settings-kv-row span,
+      :root[data-theme="mint"] .settings-kv-row span,
+      :root[data-theme="sand"] .settings-kv-row span,
+      :root[data-theme="pearl"] .field-line label,
+      :root[data-theme="mist"] .field-line label,
+      :root[data-theme="mint"] .field-line label,
+      :root[data-theme="sand"] .field-line label,
+      :root[data-theme="pearl"] .info-item span,
+      :root[data-theme="mist"] .info-item span,
+      :root[data-theme="mint"] .info-item span,
+      :root[data-theme="sand"] .info-item span,
+      :root[data-theme="pearl"] .theme-option-description,
+      :root[data-theme="mist"] .theme-option-description,
+      :root[data-theme="mint"] .theme-option-description,
+      :root[data-theme="sand"] .theme-option-description,
+      :root[data-theme="pearl"] .account-card-sub,
+      :root[data-theme="mist"] .account-card-sub,
+      :root[data-theme="mint"] .account-card-sub,
+      :root[data-theme="sand"] .account-card-sub,
+      :root[data-theme="pearl"] .account-card-meta,
+      :root[data-theme="mist"] .account-card-meta,
+      :root[data-theme="mint"] .account-card-meta,
+      :root[data-theme="sand"] .account-card-meta {
+        color: var(--dim-strong);
+      }
+
       * {
         box-sizing: border-box;
       }
@@ -352,20 +709,26 @@
         color: inherit;
       }
 
+      input::placeholder,
+      textarea::placeholder {
+        color: var(--input-placeholder);
+        opacity: 1;
+      }
+
       button:focus-visible,
       input:focus-visible,
       select:focus-visible,
       textarea:focus-visible {
         outline: none;
-        box-shadow: 0 0 0 4px rgba(75, 177, 255, 0.18);
+        box-shadow: 0 0 0 4px var(--focus-ring);
       }
 
       body {
         position: relative;
         background:
-          radial-gradient(circle at top left, rgba(43, 191, 204, 0.22), transparent 28%),
-          radial-gradient(circle at 82% 12%, rgba(83, 111, 255, 0.18), transparent 26%),
-          linear-gradient(140deg, #07111f 0%, #0a1728 46%, #08111d 100%);
+          radial-gradient(circle at top left, var(--body-radial-a), transparent 28%),
+          radial-gradient(circle at 82% 12%, var(--body-radial-b), transparent 26%),
+          linear-gradient(140deg, var(--body-linear-start) 0%, var(--body-linear-mid) 46%, var(--body-linear-end) 100%);
       }
 
       body::before,
@@ -385,7 +748,7 @@
         min-width: 340px;
         min-height: 340px;
         border-radius: 50%;
-        background: radial-gradient(circle, rgba(29, 157, 181, 0.18), rgba(29, 157, 181, 0) 68%);
+        background: radial-gradient(circle, var(--body-glow), rgba(0, 0, 0, 0) 68%);
         filter: blur(28px);
       }
 
@@ -397,7 +760,7 @@
         min-width: 280px;
         min-height: 280px;
         border-radius: 50%;
-        background: radial-gradient(circle, rgba(82, 114, 255, 0.16), rgba(82, 114, 255, 0) 70%);
+        background: radial-gradient(circle, var(--body-radial-b), rgba(0, 0, 0, 0) 70%);
         filter: blur(16px);
       }
 
@@ -462,7 +825,7 @@
         height: 300px;
         top: 8%;
         left: 6%;
-        background: radial-gradient(circle, rgba(15, 211, 220, 0.42) 0%, rgba(15, 211, 220, 0) 72%);
+        background: radial-gradient(circle, var(--body-radial-a) 0%, rgba(0, 0, 0, 0) 72%);
         animation: float-soft 8s ease-in-out infinite;
       }
 
@@ -471,7 +834,7 @@
         height: 360px;
         right: 4%;
         bottom: 8%;
-        background: radial-gradient(circle, rgba(72, 127, 255, 0.3) 0%, rgba(72, 127, 255, 0) 72%);
+        background: radial-gradient(circle, var(--body-radial-b) 0%, rgba(0, 0, 0, 0) 72%);
         animation: float-soft 10s ease-in-out infinite reverse;
       }
 
@@ -479,10 +842,10 @@
         position: absolute;
         inset: 0;
         background:
-          radial-gradient(circle at 18% 18%, rgba(13, 188, 201, 0.18), transparent 26%),
-          radial-gradient(circle at 82% 82%, rgba(69, 123, 255, 0.2), transparent 28%),
-          radial-gradient(circle at 40% 60%, rgba(11, 87, 153, 0.16), transparent 34%),
-          linear-gradient(135deg, rgba(5, 12, 24, 0.97), rgba(8, 19, 37, 0.92));
+          radial-gradient(circle at 18% 18%, var(--body-radial-a), transparent 26%),
+          radial-gradient(circle at 82% 82%, var(--body-radial-b), transparent 28%),
+          radial-gradient(circle at 40% 60%, var(--body-glow), transparent 34%),
+          linear-gradient(135deg, var(--body-linear-start), var(--body-linear-end));
         overflow: hidden;
       }
 
@@ -491,8 +854,8 @@
         position: absolute;
         inset: 0;
         background-image:
-          linear-gradient(rgba(114, 214, 255, 0.08) 1px, transparent 1px),
-          linear-gradient(90deg, rgba(114, 214, 255, 0.08) 1px, transparent 1px);
+          linear-gradient(var(--line-strong) 1px, transparent 1px),
+          linear-gradient(90deg, var(--line-strong) 1px, transparent 1px);
         background-size: 48px 48px;
         mask-image: linear-gradient(to bottom, transparent 0%, rgba(0, 0, 0, 0.95) 14%, rgba(0, 0, 0, 0.95) 86%, transparent 100%);
       }
@@ -520,13 +883,13 @@
         position: absolute;
         inset: 8% 2% 8% 0;
         border-radius: 34px;
-        border: 1px solid rgba(146, 222, 255, 0.14);
+        border: 1px solid var(--line-strong);
         background:
-          linear-gradient(180deg, rgba(18, 29, 49, 0.74), rgba(9, 16, 31, 0.22)),
-          linear-gradient(145deg, rgba(15, 197, 208, 0.09), rgba(74, 126, 255, 0.12));
+          linear-gradient(180deg, var(--panel), var(--panel-soft)),
+          linear-gradient(145deg, var(--brand-soft), rgba(0, 0, 0, 0));
         box-shadow:
-          inset 0 1px 0 rgba(255, 255, 255, 0.06),
-          0 28px 80px rgba(0, 0, 0, 0.25);
+          inset 0 1px 0 rgba(255, 255, 255, 0.08),
+          0 28px 80px rgba(0, 0, 0, 0.16);
       }
 
       .auth-hero-inner {
@@ -541,9 +904,9 @@
         width: fit-content;
         padding: 8px 14px;
         border-radius: 999px;
-        border: 1px solid rgba(117, 217, 255, 0.2);
-        background: rgba(17, 27, 47, 0.42);
-        color: #8fe8ff;
+        border: 1px solid var(--line-strong);
+        background: var(--panel-soft);
+        color: var(--brand);
         font-size: 12px;
         letter-spacing: 0.24em;
         text-transform: uppercase;
@@ -566,7 +929,7 @@
 
       .auth-description {
         max-width: 560px;
-        color: rgba(227, 235, 248, 0.8);
+        color: var(--dim-strong);
         font-size: 16px;
       }
 
@@ -580,11 +943,11 @@
       .auth-feature {
         padding: 16px 18px;
         border-radius: 18px;
-        border: 1px solid rgba(136, 219, 255, 0.12);
-        background: rgba(13, 22, 38, 0.5);
+        border: 1px solid var(--line);
+        background: var(--panel-soft);
         box-shadow:
-          inset 0 1px 0 rgba(255, 255, 255, 0.05),
-          0 12px 28px rgba(2, 7, 20, 0.14);
+          inset 0 1px 0 rgba(255, 255, 255, 0.08),
+          0 12px 28px rgba(2, 7, 20, 0.12);
         transition:
           transform 0.22s ease,
           border-color 0.22s ease,
@@ -594,8 +957,8 @@
       .auth-feature:hover,
       .auth-meta-card:hover {
         transform: translateY(-2px);
-        border-color: rgba(136, 219, 255, 0.24);
-        background: rgba(16, 28, 46, 0.62);
+        border-color: var(--line-strong);
+        background: var(--panel);
       }
 
       .auth-feature strong,
@@ -603,12 +966,12 @@
         display: block;
         margin-bottom: 6px;
         font-size: 15px;
-        color: #f5fbff;
+        color: var(--text-strong);
       }
 
       .auth-feature span,
       .auth-meta-card span {
-        color: rgba(217, 227, 242, 0.72);
+        color: var(--dim);
         font-size: 13px;
       }
 
@@ -621,8 +984,8 @@
       .auth-meta-card {
         padding: 16px 18px;
         border-radius: 18px;
-        border: 1px solid rgba(136, 219, 255, 0.12);
-        background: rgba(10, 18, 31, 0.54);
+        border: 1px solid var(--line);
+        background: var(--panel-soft);
         box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
         transition:
           transform 0.22s ease,
@@ -639,9 +1002,9 @@
       .auth-tags span {
         padding: 8px 12px;
         border-radius: 999px;
-        background: rgba(255, 255, 255, 0.06);
-        border: 1px solid rgba(255, 255, 255, 0.08);
-        color: rgba(240, 246, 255, 0.82);
+        background: var(--panel-soft);
+        border: 1px solid var(--line);
+        color: var(--dim-strong);
         font-size: 13px;
       }
 
@@ -651,11 +1014,11 @@
         align-self: center;
         padding: clamp(26px, 3.2vw, 34px);
         border-radius: 32px;
-        border: 1px solid rgba(146, 222, 255, 0.18);
-        background: linear-gradient(180deg, rgba(10, 18, 31, 0.88), rgba(12, 20, 34, 0.76));
+        border: 1px solid var(--line-strong);
+        background: linear-gradient(180deg, var(--panel-strong), var(--panel));
         backdrop-filter: blur(20px);
         box-shadow:
-          0 30px 80px rgba(0, 0, 0, 0.48),
+          0 30px 80px rgba(0, 0, 0, 0.28),
           inset 0 1px 0 rgba(255, 255, 255, 0.07);
         overflow: hidden;
         animation: rise-fade 0.8s ease both 0.06s;
@@ -666,8 +1029,8 @@
         position: absolute;
         inset: 0;
         background:
-          linear-gradient(145deg, rgba(20, 140, 144, 0.16), transparent 34%, rgba(76, 115, 255, 0.14)),
-          radial-gradient(circle at top right, rgba(157, 224, 255, 0.08), transparent 32%);
+          linear-gradient(145deg, var(--brand-soft), transparent 34%, var(--body-radial-b)),
+          radial-gradient(circle at top right, var(--body-radial-a), transparent 32%);
         pointer-events: none;
       }
 
@@ -712,7 +1075,7 @@
 
       .auth-card-head p {
         margin: 0;
-        color: rgba(221, 232, 244, 0.74);
+        color: var(--dim);
         font-size: 14px;
       }
 
@@ -728,7 +1091,7 @@
 
       .auth-field span {
         font-size: 13px;
-        color: rgba(213, 226, 241, 0.82);
+        color: var(--dim-strong);
       }
 
       .auth-input,
@@ -736,8 +1099,8 @@
         width: 100%;
         min-height: 54px;
         border-radius: 16px;
-        border: 1px solid rgba(142, 216, 255, 0.16);
-        background: rgba(8, 15, 28, 0.84);
+        border: 1px solid var(--line);
+        background: var(--panel-strong);
         padding: 14px 16px;
         outline: none;
         transition:
@@ -748,13 +1111,13 @@
 
       .auth-input::placeholder,
       .auth-secret-row input::placeholder {
-        color: rgba(187, 204, 224, 0.34);
+        color: var(--input-placeholder);
       }
 
       .auth-input:focus,
       .auth-secret-row input:focus {
-        border-color: rgba(126, 226, 255, 0.56);
-        box-shadow: 0 0 0 4px rgba(67, 189, 255, 0.14);
+        border-color: var(--line-strong);
+        box-shadow: 0 0 0 4px var(--focus-ring);
       }
 
       .auth-secret-row {
@@ -766,10 +1129,10 @@
 
       .auth-ghost-btn {
         min-height: 52px;
-        border: 1px solid rgba(142, 216, 255, 0.16);
+        border: 1px solid var(--line);
         border-radius: 16px;
-        background: rgba(255, 255, 255, 0.06);
-        color: rgba(232, 240, 248, 0.88);
+        background: var(--panel-soft);
+        color: var(--text);
         padding: 0 16px;
         cursor: pointer;
         display: inline-flex;
@@ -782,8 +1145,8 @@
       }
 
       .auth-ghost-btn:hover {
-        background: rgba(255, 255, 255, 0.1);
-        border-color: rgba(155, 220, 255, 0.24);
+        background: var(--panel);
+        border-color: var(--line-strong);
         transform: translateY(-1px);
       }
 
@@ -792,7 +1155,7 @@
         align-items: center;
         gap: 10px;
         font-size: 13px;
-        color: rgba(214, 226, 241, 0.76);
+        color: var(--dim);
       }
 
       .auth-check input {
@@ -809,15 +1172,15 @@
       }
 
       .auth-error {
-        border: 1px solid rgba(244, 100, 122, 0.34);
-        background: rgba(112, 27, 48, 0.38);
-        color: #ffd8dd;
+        border: 1px solid rgba(230, 96, 126, 0.42);
+        background: rgba(227, 93, 123, 0.14);
+        color: #d65070;
       }
 
       .auth-status {
-        border: 1px solid rgba(122, 213, 255, 0.14);
-        background: rgba(15, 28, 51, 0.52);
-        color: rgba(224, 235, 246, 0.74);
+        border: 1px solid var(--line);
+        background: var(--panel-soft);
+        color: var(--dim);
       }
 
       .auth-actions {
@@ -830,7 +1193,7 @@
         border: none;
         border-radius: 18px;
         padding: 0 18px;
-        background: linear-gradient(135deg, #19c0cb 0%, #4f71ff 100%);
+        background: linear-gradient(135deg, var(--brand) 0%, var(--brand-strong) 100%);
         color: #f7fbff;
         font-size: 15px;
         font-weight: 600;
@@ -860,7 +1223,7 @@
       .auth-link-btn {
         border: none;
         background: transparent;
-        color: #98e9ff;
+        color: var(--brand);
         padding: 0;
         cursor: pointer;
         font-size: 13px;
@@ -868,12 +1231,12 @@
       }
 
       .auth-link-btn:hover {
-        color: #b6f1ff;
+        color: var(--brand-hover);
       }
 
       .auth-footnote {
         margin-top: 18px;
-        color: rgba(204, 219, 237, 0.62);
+        color: var(--dim);
         font-size: 12px;
         line-height: 1.7;
       }
@@ -881,18 +1244,18 @@
       .auth-footer {
         margin-top: 18px;
         padding-top: 16px;
-        border-top: 1px solid rgba(255, 255, 255, 0.08);
+        border-top: 1px solid var(--line);
         display: flex;
         justify-content: space-between;
         gap: 12px;
-        color: rgba(200, 214, 233, 0.68);
+        color: var(--dim);
         font-size: 12px;
       }
 
       .auth-footer strong {
         display: block;
         margin-top: 4px;
-        color: #f5fbff;
+        color: var(--text-strong);
         font-size: 13px;
       }
 
@@ -933,7 +1296,7 @@
 
       .sidebar {
         background:
-          linear-gradient(180deg, rgba(10, 18, 31, 0.95), rgba(11, 20, 35, 0.82)),
+          linear-gradient(180deg, var(--sidebar-grad-start), var(--sidebar-grad-end)),
           var(--side-bg);
         border: 1px solid var(--line);
         border-right: 1px solid var(--line-strong);
@@ -963,9 +1326,9 @@
         margin-top: 12px;
         padding: 7px 10px;
         border-radius: 999px;
-        border: 1px solid rgba(154, 216, 255, 0.16);
-        background: rgba(255, 255, 255, 0.04);
-        color: rgba(190, 212, 236, 0.74);
+        border: 1px solid var(--sidebar-brand-chip-border);
+        background: var(--sidebar-brand-chip-bg);
+        color: var(--sidebar-brand-chip-text);
         font-size: 11px;
         letter-spacing: 0.16em;
         text-transform: uppercase;
@@ -974,14 +1337,14 @@
       .brand h1 {
         margin: 0;
         font-size: clamp(31px, 2.6vw, 38px);
-        color: #dcf7ff;
+        color: var(--sidebar-title);
         line-height: 0.98;
         letter-spacing: -0.04em;
-        text-shadow: 0 10px 30px rgba(13, 162, 167, 0.22);
+        text-shadow: 0 10px 30px var(--sidebar-title-glow);
       }
 
       .brand .ver {
-        color: #8ddbe6;
+        color: var(--sidebar-version-text);
         margin-top: 10px;
         font-size: 12px;
         display: inline-flex;
@@ -989,8 +1352,8 @@
         gap: 6px;
         padding: 6px 10px;
         border-radius: 999px;
-        background: rgba(17, 171, 177, 0.14);
-        border: 1px solid rgba(17, 171, 177, 0.16);
+        background: var(--sidebar-version-bg);
+        border: 1px solid var(--sidebar-version-border);
         width: fit-content;
       }
 
@@ -1004,9 +1367,9 @@
 
       .nav-btn {
         min-height: 50px;
-        border: 1px solid rgba(255, 255, 255, 0.04);
+        border: 1px solid var(--sidebar-nav-border);
         border-radius: 16px;
-        background: rgba(255, 255, 255, 0.03);
+        background: var(--sidebar-nav-bg);
         display: flex;
         align-items: center;
         gap: 10px;
@@ -1029,14 +1392,14 @@
         border-radius: 12px;
         display: inline-grid;
         place-items: center;
-        background: rgba(255, 255, 255, 0.05);
-        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+        background: var(--sidebar-nav-icon-bg);
+        box-shadow: inset 0 1px 0 color-mix(in oklab, var(--line-strong) 32%, transparent);
       }
 
       .nav-btn:hover {
         transform: translateX(2px);
-        border-color: rgba(145, 216, 255, 0.18);
-        background: rgba(255, 255, 255, 0.06);
+        border-color: var(--sidebar-nav-hover-border);
+        background: var(--sidebar-nav-hover-bg);
       }
 
       .nav-btn.active {
@@ -1060,7 +1423,7 @@
         align-items: center;
         justify-content: space-between;
         gap: 12px;
-        background: rgba(255, 255, 255, 0.025);
+        background: var(--sidebar-foot-bg);
       }
 
       .side-foot-actions {
@@ -1135,7 +1498,7 @@
         min-height: 40px;
         border-radius: 12px;
         border: 1px solid var(--line);
-        background: rgba(255, 255, 255, 0.04);
+        background: var(--btn-bg);
         padding: 8px 14px;
         cursor: pointer;
         font-size: var(--fs-sm);
@@ -1149,8 +1512,8 @@
 
       .btn:hover {
         transform: translateY(-1px);
-        border-color: rgba(160, 220, 255, 0.18);
-        background: rgba(255, 255, 255, 0.065);
+        border-color: var(--btn-border-hover);
+        background: var(--btn-bg-hover);
         box-shadow: var(--shadow-md);
       }
 
@@ -1165,16 +1528,18 @@
       .btn.primary {
         border-color: transparent;
         background: linear-gradient(135deg, var(--brand) 0%, var(--brand-strong) 100%);
-        box-shadow: 0 16px 34px rgba(24, 108, 176, 0.28);
+        box-shadow: var(--btn-primary-shadow);
+        color: #f7fbff;
       }
 
       .btn.primary:hover {
-        background: linear-gradient(135deg, var(--brand-hover) 0%, #648cff 100%);
+        background: linear-gradient(135deg, var(--brand-hover) 0%, var(--btn-primary-end) 100%);
       }
 
       .btn.danger {
         border-color: transparent;
         background: var(--danger);
+        color: #fff5f7;
       }
 
       .stats-grid {
@@ -1187,7 +1552,7 @@
       .card,
       .panel {
         position: relative;
-        background: linear-gradient(180deg, rgba(18, 29, 47, 0.92), rgba(15, 25, 41, 0.82));
+        background: linear-gradient(180deg, var(--card-grad-start), var(--card-grad-end));
         border: 1px solid var(--line);
         border-radius: 22px;
         box-shadow: var(--shadow-md);
@@ -1203,7 +1568,7 @@
         content: "";
         position: absolute;
         inset: 0;
-        background: linear-gradient(180deg, rgba(255, 255, 255, 0.07), transparent 24%);
+        background: linear-gradient(180deg, var(--surface-top-highlight), transparent 24%);
         pointer-events: none;
       }
 
@@ -1216,22 +1581,26 @@
         padding: 18px 18px 16px;
         text-align: left;
         background:
-          radial-gradient(circle at top right, rgba(68, 122, 255, 0.16), transparent 36%),
-          linear-gradient(180deg, rgba(18, 29, 47, 0.95), rgba(13, 22, 37, 0.82));
+          radial-gradient(circle at top right, var(--card-glow), transparent 36%),
+          linear-gradient(180deg, var(--card-grad-start), var(--card-grad-end));
       }
 
       .card:nth-child(1),
       .card:nth-child(2) {
         background:
-          radial-gradient(circle at top right, rgba(51, 207, 213, 0.22), transparent 38%),
-          linear-gradient(180deg, rgba(19, 37, 58, 0.96), rgba(12, 24, 42, 0.88));
+          radial-gradient(circle at top right, var(--card-glow-strong), transparent 38%),
+          linear-gradient(
+            180deg,
+            color-mix(in oklab, var(--card-grad-start) 88%, var(--brand) 12%),
+            color-mix(in oklab, var(--card-grad-end) 92%, var(--brand-strong) 8%)
+          );
       }
 
       .card:nth-child(4),
       .card:nth-child(8) {
         background:
-          radial-gradient(circle at top right, rgba(107, 122, 255, 0.18), transparent 38%),
-          linear-gradient(180deg, rgba(18, 29, 47, 0.95), rgba(13, 22, 37, 0.82));
+          radial-gradient(circle at top right, var(--card-glow-alt), transparent 38%),
+          linear-gradient(180deg, var(--card-grad-start), var(--card-grad-end));
       }
 
       .card .num {
@@ -1335,8 +1704,8 @@
         padding: 18px;
         min-width: 0;
         background:
-          radial-gradient(circle at top right, rgba(45, 106, 235, 0.1), transparent 30%),
-          linear-gradient(180deg, rgba(17, 28, 46, 0.94), rgba(14, 24, 40, 0.84));
+          radial-gradient(circle at top right, var(--panel-glow), transparent 30%),
+          linear-gradient(180deg, var(--panel-grad-start), var(--panel-grad-end));
       }
 
       .panel h3 {
@@ -1347,7 +1716,7 @@
 
       .empty {
         min-height: 120px;
-        border: 1px dashed #3b404c;
+        border: 1px dashed color-mix(in oklab, var(--line-strong) 72%, transparent);
         border-radius: 8px;
         color: var(--dim);
         display: grid;
@@ -1365,9 +1734,9 @@
       }
 
       .usage-item {
-        border: 1px solid #3d4350;
+        border: 1px solid var(--line);
         border-radius: 14px;
-        background: rgba(255, 255, 255, 0.035);
+        background: color-mix(in oklab, var(--panel-soft) 84%, var(--panel));
         padding: 10px 12px;
         display: flex;
         justify-content: space-between;
@@ -1376,7 +1745,7 @@
       }
 
       .usage-item .token {
-        color: #46dce3;
+        color: color-mix(in oklab, var(--brand) 86%, var(--brand-strong));
         font-weight: 700;
       }
 
@@ -1432,7 +1801,7 @@
         padding: 6px;
         border-radius: 16px;
         border: 1px solid var(--line);
-        background: rgba(10, 19, 33, 0.66);
+        background: color-mix(in oklab, var(--panel-soft) 88%, var(--panel-strong));
         width: fit-content;
         max-width: 100%;
         flex-wrap: wrap;
@@ -1477,9 +1846,9 @@
 
       .log-line {
         min-height: 40px;
-        border: 1px solid rgba(147, 189, 232, 0.08);
+        border: 1px solid color-mix(in oklab, var(--line-strong) 58%, transparent);
         border-radius: 14px;
-        background: rgba(255, 255, 255, 0.028);
+        background: color-mix(in oklab, var(--panel-soft) 82%, var(--panel));
         padding: 8px 10px;
         display: flex;
         align-items: center;
@@ -1488,11 +1857,11 @@
       }
 
       .log-line:last-child {
-        border-bottom: 1px solid rgba(147, 189, 232, 0.08);
+        border-bottom: 1px solid color-mix(in oklab, var(--line-strong) 58%, transparent);
       }
 
       .log-time {
-        color: #b6c1d5;
+        color: var(--dim);
         white-space: nowrap;
       }
 
@@ -1510,9 +1879,9 @@
       .toolbar-control {
         min-height: 42px;
         width: 100%;
-        border: 1px solid rgba(135, 170, 210, 0.16);
+        border: 1px solid var(--input-border);
         border-radius: 12px;
-        background: rgba(8, 15, 28, 0.74);
+        background: var(--input-bg);
         padding: 0 12px;
       }
 
@@ -1544,28 +1913,28 @@
         min-height: 24px;
         padding: 2px 8px;
         border-radius: 999px;
-        border: 1px solid rgba(141, 177, 214, 0.16);
+        border: 1px solid var(--chip-border);
         font-size: 12px;
         font-weight: 700;
         letter-spacing: 0.02em;
       }
 
       .request-status.ok {
-        color: #8ff0bb;
-        border-color: rgba(72, 216, 142, 0.28);
-        background: rgba(72, 216, 142, 0.12);
+        color: var(--ok);
+        border-color: rgba(42, 170, 122, 0.4);
+        background: rgba(42, 170, 122, 0.14);
       }
 
       .request-status.warn {
-        color: #ffd985;
-        border-color: rgba(243, 201, 109, 0.26);
-        background: rgba(243, 201, 109, 0.12);
+        color: var(--warning);
+        border-color: rgba(208, 151, 55, 0.42);
+        background: rgba(208, 151, 55, 0.14);
       }
 
       .request-status.error {
-        color: #ffb0bc;
-        border-color: rgba(239, 111, 136, 0.28);
-        background: rgba(239, 111, 136, 0.12);
+        color: var(--danger);
+        border-color: rgba(221, 90, 117, 0.42);
+        background: rgba(221, 90, 117, 0.14);
       }
 
       .request-error {
@@ -1601,26 +1970,26 @@
         min-height: 28px;
         padding: 4px 10px;
         border-radius: 999px;
-        border: 1px solid rgba(141, 177, 214, 0.16);
-        background: rgba(255, 255, 255, 0.04);
-        color: var(--dim-strong);
+        border: 1px solid var(--chip-border);
+        background: var(--chip-bg);
+        color: var(--chip-text);
         font-size: 12px;
         font-weight: 600;
       }
 
       .status-chip.ok {
-        color: #8ff0bb;
-        border-color: rgba(72, 216, 142, 0.24);
+        color: var(--ok);
+        border-color: rgba(42, 170, 122, 0.38);
       }
 
       .status-chip.warn {
-        color: #ffd985;
-        border-color: rgba(243, 201, 109, 0.22);
+        color: var(--warning);
+        border-color: rgba(208, 151, 55, 0.38);
       }
 
       .status-chip.error {
-        color: #ffb0bc;
-        border-color: rgba(239, 111, 136, 0.24);
+        color: var(--danger);
+        border-color: rgba(221, 90, 117, 0.38);
       }
 
       .settings-grid {
@@ -1725,6 +2094,35 @@
         gap: 10px;
       }
 
+      .theme-sections {
+        display: grid;
+        gap: 14px;
+      }
+
+      .theme-section {
+        display: grid;
+        gap: 10px;
+      }
+
+      .theme-section-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+      }
+
+      .theme-section-title {
+        font-size: 13px;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        color: var(--dim-strong);
+      }
+
+      .theme-section-count {
+        font-size: 12px;
+        color: var(--dim);
+      }
+
       .theme-option {
         display: grid;
         gap: 10px;
@@ -1791,6 +2189,30 @@
         line-height: 1.5;
       }
 
+      :root[data-theme="pearl"] .theme-option,
+      :root[data-theme="mist"] .theme-option,
+      :root[data-theme="mint"] .theme-option,
+      :root[data-theme="sand"] .theme-option {
+        color: var(--text-strong);
+        border-color: rgba(86, 118, 165, 0.18);
+        background: rgba(255, 255, 255, 0.9);
+      }
+
+      :root[data-theme="pearl"] .theme-option.active,
+      :root[data-theme="mist"] .theme-option.active,
+      :root[data-theme="mint"] .theme-option.active,
+      :root[data-theme="sand"] .theme-option.active {
+        border-color: rgba(73, 116, 194, 0.4);
+        background: rgba(245, 250, 255, 0.98);
+      }
+
+      :root[data-theme="pearl"] .theme-option:hover,
+      :root[data-theme="mist"] .theme-option:hover,
+      :root[data-theme="mint"] .theme-option:hover,
+      :root[data-theme="sand"] .theme-option:hover {
+        box-shadow: 0 8px 20px rgba(74, 103, 148, 0.16);
+      }
+
       .table-wrap {
         overflow-x: auto;
         overflow-y: hidden;
@@ -1799,7 +2221,7 @@
         max-width: 100%;
         min-width: 0;
         position: relative;
-        background: rgba(12, 22, 36, 0.66);
+        background: var(--table-surface);
       }
 
       table {
@@ -1809,20 +2231,20 @@
       }
 
       thead {
-        background: rgba(255, 255, 255, 0.04);
+        background: var(--table-head-bg);
       }
 
       th,
       td {
         padding: 12px 12px;
-        border-bottom: 1px solid rgba(141, 177, 214, 0.08);
+        border-bottom: 1px solid var(--table-row-border);
         text-align: left;
         font-size: var(--fs-sm);
         vertical-align: top;
       }
 
       th {
-        color: rgba(188, 210, 232, 0.74);
+        color: var(--table-head-text);
         font-size: 12px;
         letter-spacing: 0.08em;
         text-transform: uppercase;
@@ -1833,7 +2255,7 @@
       }
 
       tbody tr:hover {
-        background: rgba(255, 255, 255, 0.035);
+        background: var(--table-row-hover);
       }
 
       .type-badge {
@@ -1842,20 +2264,21 @@
         min-height: 22px;
         padding: 2px 8px;
         border-radius: 8px;
-        background: rgba(20, 140, 144, 0.95);
+        background: var(--badge-bg);
+        color: var(--badge-text);
         font-size: var(--fs-xs);
       }
 
       .status-ok {
-        color: #39de69;
+        color: var(--ok);
       }
 
       .status-error {
-        color: #ff6b78;
+        color: var(--danger);
       }
 
       .status-warn {
-        color: #f7c66a;
+        color: var(--warning);
       }
 
       .quota-cell {
@@ -1890,11 +2313,11 @@
         flex-direction: column;
         gap: 14px;
         padding: 18px;
-        border: 1px solid rgba(140, 167, 214, 0.18);
+        border: 1px solid color-mix(in oklab, var(--line-strong) 84%, transparent);
         border-radius: 20px;
         background:
-          radial-gradient(circle at top right, rgba(62, 148, 255, 0.12), transparent 34%),
-          linear-gradient(180deg, rgba(19, 31, 49, 0.95), rgba(15, 25, 40, 0.86));
+          radial-gradient(circle at top right, var(--surface-accent-glow), transparent 34%),
+          linear-gradient(180deg, var(--card-grad-start), var(--card-grad-end));
         box-shadow: var(--shadow-sm);
         overflow: hidden;
       }
@@ -1903,7 +2326,7 @@
         content: "";
         position: absolute;
         inset: 0;
-        background: linear-gradient(180deg, rgba(255, 255, 255, 0.05), transparent 28%);
+        background: linear-gradient(180deg, var(--surface-top-highlight-soft), transparent 28%);
         pointer-events: none;
       }
 
@@ -1930,13 +2353,202 @@
       .account-plan-badge {
         display: inline-flex;
         align-items: center;
+        justify-content: center;
         min-height: 22px;
-        padding: 2px 10px;
+        padding: 2px 11px;
         border-radius: 999px;
-        background: rgba(255, 255, 255, 0.06);
-        color: var(--muted);
+        position: relative;
+        overflow: hidden;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        background: linear-gradient(135deg, rgba(255, 255, 255, 0.07), rgba(255, 255, 255, 0.04));
+        color: rgba(241, 245, 249, 0.92);
         font-size: 12px;
+        font-weight: 700;
         letter-spacing: 0.03em;
+        text-shadow: 0 0 14px rgba(255, 255, 255, 0.12);
+        box-shadow:
+          inset 0 1px 0 rgba(255, 255, 255, 0.08),
+          0 8px 20px rgba(5, 10, 24, 0.18);
+      }
+
+      .account-plan-badge::after {
+        content: "";
+        position: absolute;
+        top: -35%;
+        bottom: -35%;
+        left: -42%;
+        width: 36%;
+        transform: skewX(-22deg);
+        background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.42), transparent);
+        opacity: 0;
+        animation: none;
+        pointer-events: none;
+      }
+
+      .account-plan-badge:hover {
+        transform: translateY(-1px);
+      }
+
+      .account-plan-badge.plan-free {
+        border-color: rgba(190, 205, 220, 0.24);
+        background: linear-gradient(135deg, rgba(180, 196, 210, 0.16), rgba(115, 136, 160, 0.08));
+        color: #d5e3ee;
+        box-shadow:
+          inset 0 1px 0 rgba(255, 255, 255, 0.08),
+          0 8px 20px rgba(69, 86, 112, 0.16),
+          0 0 14px rgba(167, 190, 212, 0.08);
+      }
+
+      .account-plan-badge.plan-plus {
+        border-color: rgba(123, 156, 255, 0.34);
+        background: linear-gradient(135deg, rgba(96, 133, 255, 0.2), rgba(116, 88, 255, 0.16));
+        color: #dbe7ff;
+        box-shadow:
+          inset 0 1px 0 rgba(255, 255, 255, 0.14),
+          0 10px 24px rgba(73, 109, 255, 0.22),
+          0 0 16px rgba(116, 88, 255, 0.12);
+      }
+
+      .account-plan-badge.plan-plus:hover {
+        box-shadow:
+          inset 0 1px 0 rgba(255, 255, 255, 0.16),
+          0 10px 24px rgba(73, 109, 255, 0.24),
+          0 0 22px rgba(116, 88, 255, 0.18);
+      }
+
+      .account-plan-badge.plan-plus:hover::after {
+        opacity: 0.62;
+        animation: accountPlanShine 0.9s ease-out 1;
+      }
+
+      .account-plan-badge.plan-team {
+        border-color: rgba(255, 214, 102, 0.42);
+        background: linear-gradient(135deg, rgba(255, 215, 120, 0.22), rgba(230, 170, 50, 0.16));
+        color: #fff3c4;
+        text-shadow: 0 0 16px rgba(255, 220, 122, 0.3);
+        box-shadow:
+          inset 0 1px 0 rgba(255, 245, 204, 0.22),
+          0 10px 26px rgba(185, 132, 25, 0.24),
+          0 0 18px rgba(255, 204, 86, 0.16);
+      }
+
+      .account-plan-badge.plan-team:hover {
+        box-shadow:
+          inset 0 1px 0 rgba(255, 245, 204, 0.24),
+          0 10px 26px rgba(185, 132, 25, 0.26),
+          0 0 24px rgba(255, 204, 86, 0.2);
+      }
+
+      .account-plan-badge.plan-team:hover::after {
+        opacity: 0.8;
+        animation: accountPlanShine 0.75s ease-out 1;
+      }
+
+      .account-plan-badge.plan-default {
+        color: rgba(241, 245, 249, 0.88);
+      }
+
+      :root[data-theme="pearl"] .account-plan-badge,
+      :root[data-theme="mist"] .account-plan-badge,
+      :root[data-theme="mint"] .account-plan-badge,
+      :root[data-theme="sand"] .account-plan-badge {
+        text-shadow: none;
+        border-color: rgba(94, 125, 173, 0.26);
+        box-shadow:
+          inset 0 1px 0 rgba(255, 255, 255, 0.84),
+          0 6px 16px rgba(88, 119, 163, 0.16);
+      }
+
+      :root[data-theme="pearl"] .account-plan-badge.plan-free,
+      :root[data-theme="mist"] .account-plan-badge.plan-free,
+      :root[data-theme="mint"] .account-plan-badge.plan-free,
+      :root[data-theme="sand"] .account-plan-badge.plan-free {
+        color: #3e556f;
+        background: linear-gradient(135deg, rgba(221, 231, 244, 0.9), rgba(236, 243, 252, 0.82));
+      }
+
+      :root[data-theme="pearl"] .account-plan-badge.plan-plus,
+      :root[data-theme="mist"] .account-plan-badge.plan-plus,
+      :root[data-theme="mint"] .account-plan-badge.plan-plus,
+      :root[data-theme="sand"] .account-plan-badge.plan-plus {
+        color: #1f4f8e;
+        background: linear-gradient(135deg, rgba(174, 208, 255, 0.78), rgba(205, 226, 255, 0.9));
+      }
+
+      :root[data-theme="pearl"] .account-plan-badge.plan-team,
+      :root[data-theme="mist"] .account-plan-badge.plan-team,
+      :root[data-theme="mint"] .account-plan-badge.plan-team,
+      :root[data-theme="sand"] .account-plan-badge.plan-team {
+        color: #6f4300;
+        background: linear-gradient(135deg, rgba(255, 220, 135, 0.62), rgba(228, 174, 72, 0.42));
+        border-color: rgba(189, 135, 34, 0.32);
+        box-shadow:
+          inset 0 1px 0 rgba(255, 246, 214, 0.9),
+          0 8px 18px rgba(172, 126, 42, 0.22);
+      }
+
+      :root[data-theme="pearl"] .account-plan-badge.plan-plus:hover,
+      :root[data-theme="mist"] .account-plan-badge.plan-plus:hover,
+      :root[data-theme="mint"] .account-plan-badge.plan-plus:hover,
+      :root[data-theme="sand"] .account-plan-badge.plan-plus:hover {
+        box-shadow:
+          inset 0 1px 0 rgba(255, 255, 255, 0.84),
+          0 9px 20px rgba(73, 116, 194, 0.2);
+      }
+
+      :root[data-theme="pearl"] .account-plan-badge.plan-team:hover,
+      :root[data-theme="mist"] .account-plan-badge.plan-team:hover,
+      :root[data-theme="mint"] .account-plan-badge.plan-team:hover,
+      :root[data-theme="sand"] .account-plan-badge.plan-team:hover {
+        box-shadow:
+          inset 0 1px 0 rgba(255, 248, 218, 0.95),
+          0 10px 22px rgba(172, 126, 42, 0.26);
+      }
+
+      :root[data-theme="pearl"] .status-ok,
+      :root[data-theme="mist"] .status-ok,
+      :root[data-theme="mint"] .status-ok,
+      :root[data-theme="sand"] .status-ok {
+        color: #157d55;
+      }
+
+      :root[data-theme="pearl"] .status-warn,
+      :root[data-theme="mist"] .status-warn,
+      :root[data-theme="mint"] .status-warn,
+      :root[data-theme="sand"] .status-warn {
+        color: #9f6a13;
+      }
+
+      :root[data-theme="pearl"] .status-error,
+      :root[data-theme="mist"] .status-error,
+      :root[data-theme="mint"] .status-error,
+      :root[data-theme="sand"] .status-error {
+        color: #bd4860;
+      }
+
+      :root[data-theme="pearl"] .table-wrap,
+      :root[data-theme="mist"] .table-wrap,
+      :root[data-theme="mint"] .table-wrap,
+      :root[data-theme="sand"] .table-wrap {
+        border-color: rgba(95, 126, 173, 0.2);
+      }
+
+      @keyframes accountPlanShine {
+        0% {
+          transform: translateX(0) skewX(-22deg);
+          opacity: 0;
+        }
+        18% {
+          opacity: 0.72;
+        }
+        42% {
+          transform: translateX(410%) skewX(-22deg);
+          opacity: 0;
+        }
+        100% {
+          transform: translateX(410%) skewX(-22deg);
+          opacity: 0;
+        }
       }
 
       .account-card-identity {
@@ -1965,7 +2577,7 @@
         flex-direction: column;
         gap: 12px;
         padding-top: 12px;
-        border-top: 1px solid rgba(140, 167, 214, 0.14);
+        border-top: 1px solid color-mix(in oklab, var(--line) 88%, transparent);
       }
 
       .account-quota-row {
@@ -2049,6 +2661,7 @@
         padding: 4px 8px;
         cursor: pointer;
         font-size: var(--fs-xs);
+        color: #f7fbff;
       }
 
       .mini-btn.test {
@@ -2073,9 +2686,9 @@
       }
 
       .provider-card {
-        border: 1px solid #3d4350;
+        border: 1px solid var(--line);
         border-radius: 16px;
-        background: rgba(255, 255, 255, 0.035);
+        background: color-mix(in oklab, var(--panel-soft) 84%, var(--panel));
         padding: 12px;
         position: relative;
         overflow: hidden;
@@ -2090,7 +2703,7 @@
       .method-row {
         margin-top: 8px;
         padding-top: 8px;
-        border-top: 1px dashed #454c5a;
+        border-top: 1px dashed color-mix(in oklab, var(--line-strong) 72%, transparent);
         display: grid;
         gap: 8px;
       }
@@ -2113,17 +2726,17 @@
 
       .field-line input {
         min-height: 40px;
-        border: 1px solid rgba(135, 170, 210, 0.16);
+        border: 1px solid var(--input-border);
         border-radius: 12px;
-        background: rgba(8, 15, 28, 0.76);
+        background: var(--input-bg);
         padding: 0 12px;
       }
 
       .session-box {
         min-height: 76px;
-        border: 1px solid #3d4350;
+        border: 1px solid var(--line);
         border-radius: 16px;
-        background: rgba(255, 255, 255, 0.035);
+        background: color-mix(in oklab, var(--panel-soft) 84%, var(--panel));
         padding: 12px;
         font-size: var(--fs-sm);
         line-height: 1.55;
@@ -2143,9 +2756,9 @@
         flex: 1 1 300px;
         min-width: 220px;
         min-height: 32px;
-        border: 1px solid #4a5262;
+        border: 1px solid var(--input-border-strong);
         border-radius: 8px;
-        background: #22262f;
+        background: var(--input-bg-strong);
         color: var(--text);
         padding: 0 10px;
       }
@@ -2155,7 +2768,7 @@
       }
 
       .muted.is-error {
-        color: #ff9da8;
+        color: color-mix(in oklab, var(--danger) 78%, #8d233d);
       }
 
       .test-modal {
@@ -2176,9 +2789,9 @@
       .test-dialog {
         width: min(980px, 100%);
         max-height: calc(100vh - 40px);
-        border: 1px solid rgba(133, 175, 222, 0.12);
+        border: 1px solid color-mix(in oklab, var(--line-strong) 72%, transparent);
         border-radius: 22px;
-        background: linear-gradient(180deg, rgba(17, 28, 46, 0.96), rgba(13, 22, 37, 0.92));
+        background: linear-gradient(180deg, var(--panel-grad-start), var(--panel-grad-end));
         overflow: hidden;
         display: grid;
         grid-template-rows: auto auto 1fr auto;
@@ -2191,7 +2804,7 @@
         justify-content: space-between;
         align-items: center;
         padding: 12px 14px;
-        border-bottom: 1px solid #3a3f4a;
+        border-bottom: 1px solid color-mix(in oklab, var(--line) 90%, transparent);
       }
 
       .test-title {
@@ -2206,7 +2819,7 @@
 
       .test-controls {
         padding: 10px 14px;
-        border-bottom: 1px solid #3a3f4a;
+        border-bottom: 1px solid var(--line);
         display: grid;
         grid-template-columns: 1fr 220px;
         gap: 10px;
@@ -2214,9 +2827,9 @@
 
       .test-controls select {
         height: 38px;
-        border: 1px solid #4a5262;
+        border: 1px solid var(--input-border-strong);
         border-radius: 8px;
-        background: #22262f;
+        background: var(--input-bg-strong);
         padding: 0 8px;
       }
 
@@ -2228,14 +2841,14 @@
       }
 
       .chat-item {
-        border: 1px solid #3d4350;
+        border: 1px solid var(--line);
         border-radius: 8px;
-        background: #2c313c;
+        background: var(--panel-soft);
         padding: 8px;
       }
 
       .chat-item .meta {
-        color: #b6c1d5;
+        color: var(--dim);
         font-size: var(--fs-xs);
         margin-bottom: 4px;
       }
@@ -2251,7 +2864,7 @@
       }
 
       .test-input {
-        border-top: 1px solid #3a3f4a;
+        border-top: 1px solid var(--line);
         padding: 10px 14px;
         display: grid;
         gap: 8px;
@@ -2260,16 +2873,16 @@
       .test-input textarea {
         width: 100%;
         min-height: 88px;
-        border: 1px solid #4a5262;
+        border: 1px solid var(--input-border-strong);
         border-radius: 8px;
-        background: #22262f;
+        background: var(--input-bg-strong);
         padding: 10px;
       }
 
       .key-secret {
-        border: 1px solid #3d4350;
+        border: 1px solid var(--line);
         border-radius: 8px;
-        background: #1e232d;
+        background: var(--panel-soft);
         padding: 10px;
         font-family: Consolas, "Courier New", monospace;
         font-size: var(--fs-xs);
@@ -2286,9 +2899,9 @@
       .key-create select,
       .key-create input {
         height: 38px;
-        border: 1px solid #4a5262;
+        border: 1px solid var(--input-border-strong);
         border-radius: 8px;
-        background: #22262f;
+        background: var(--input-bg-strong);
         padding: 0 10px;
       }
 
@@ -2309,9 +2922,9 @@
       .query-input {
         width: min(420px, 100%);
         height: 42px;
-        border: 1px solid rgba(135, 170, 210, 0.16);
+        border: 1px solid var(--input-border);
         border-radius: 12px;
-        background: rgba(8, 15, 28, 0.74);
+        background: var(--input-bg);
         padding: 0 12px;
       }
 
@@ -2325,6 +2938,7 @@
         padding: 4px 8px;
         font-size: var(--fs-xs);
         cursor: pointer;
+        color: #f7fbff;
       }
 
       .key-mini.reveal {
@@ -2388,9 +3002,9 @@
 
       .key-manage-inline input {
         height: 36px;
-        border: 1px solid #4a5262;
+        border: 1px solid var(--input-border-strong);
         border-radius: 8px;
-        background: #22262f;
+        background: var(--input-bg-strong);
         padding: 0 10px;
       }
 
@@ -2420,15 +3034,15 @@
         min-height: 150px;
         max-height: 260px;
         overflow: auto;
-        border: 1px solid #4a5262;
+        border: 1px solid var(--input-border-strong);
         border-radius: 8px;
-        background: #1f232c;
+        background: var(--input-bg-strong);
         padding: 10px 12px;
         white-space: pre-wrap;
         word-break: break-all;
         font-family: "Cascadia Mono", "Consolas", "Courier New", monospace;
         font-size: var(--fs-sm);
-        color: #d7e5ff;
+        color: var(--text);
       }
 
       .token-secret {
@@ -2912,7 +3526,7 @@
       <aside class="sidebar">
         <div class="brand">
           <h1>Codex Gateway</h1>
-          <div class="ver">v1.1.36</div>
+          <div class="ver">v1.1.38</div>
         </div>
         <nav class="nav">
           <button class="nav-btn active" data-view="dashboard"><span>📊</span><span>仪表盘</span></button>
@@ -3449,6 +4063,9 @@
             completionTokens: 0,
             totalTokens: 0,
             estimatedCostUsd: 0,
+            pricedTokens: 0,
+            estimatedCostCoverageRatio: 0,
+            estimatedCostFromTotalTokensUsd: 0,
             updatedAt: 0,
           },
           service: false,
@@ -4772,6 +5389,45 @@
         }
       }
 
+      function coerceUsageTotalsSnapshot(usageTotals) {
+        const promptTokens = normalizeTokenDelta(usageTotals?.promptTokens);
+        const completionTokens = normalizeTokenDelta(usageTotals?.completionTokens);
+        const totalTokens = normalizeTokenDelta(usageTotals?.totalTokens);
+        const estimatedCostUsd = Math.max(0, Number(usageTotals?.estimatedCostUsd || 0));
+        const pricedTokens = normalizeTokenDelta(usageTotals?.pricedTokens);
+        const rawCoverageRatio = Number(usageTotals?.estimatedCostCoverageRatio);
+        const estimatedCostCoverageRatio = Math.max(
+          0,
+          Math.min(
+            1,
+            Number.isFinite(rawCoverageRatio)
+              ? rawCoverageRatio
+              : totalTokens > 0 && pricedTokens > 0
+                ? pricedTokens / totalTokens
+                : 0,
+          ),
+        );
+        const rawEstimatedCostFromTotalTokensUsd = Number(usageTotals?.estimatedCostFromTotalTokensUsd);
+        const estimatedCostFromTotalTokensUsd = Math.max(
+          0,
+          Number.isFinite(rawEstimatedCostFromTotalTokensUsd)
+            ? rawEstimatedCostFromTotalTokensUsd
+            : totalTokens > 0 && pricedTokens > 0 && estimatedCostUsd > 0
+              ? (estimatedCostUsd / pricedTokens) * totalTokens
+              : 0,
+        );
+        return {
+          promptTokens,
+          completionTokens,
+          totalTokens,
+          estimatedCostUsd,
+          pricedTokens,
+          estimatedCostCoverageRatio,
+          estimatedCostFromTotalTokensUsd,
+          updatedAt: normalizeTokenDelta(usageTotals?.updatedAt),
+        };
+      }
+
       function drawStats() {
         const total = S.accounts.length;
         const apiCount = S.accounts.filter((a) => a.methodId === "api" || a.methodId === "api-key").length;
@@ -4780,6 +5436,9 @@
         const healthyCount = Math.max(0, total - abnormalCount);
         const totalTokens = Math.max(0, Math.floor(Number(S.usageTotals?.totalTokens || 0)));
         const totalEstimatedCostUsd = Math.max(0, Number(S.usageTotals?.estimatedCostUsd || 0));
+        const totalPricedTokens = Math.max(0, Math.floor(Number(S.usageTotals?.pricedTokens || 0)));
+        const totalEstimatedCostFromTotalTokensUsd = Math.max(0, Number(S.usageTotals?.estimatedCostFromTotalTokensUsd || 0));
+        const totalEstimatedCostCoverageRatio = Math.max(0, Math.min(1, Number(S.usageTotals?.estimatedCostCoverageRatio || 0)));
         const totalEl = document.getElementById("sTotal");
         if (totalEl) totalEl.textContent = String(total);
         const oauthEl = document.getElementById("sOAuth");
@@ -4801,7 +5460,22 @@
           tokenCostEl.className = "sub";
           tokenEl.parentElement.appendChild(tokenCostEl);
         }
-        if (tokenCostEl) tokenCostEl.textContent = `累计预计费用 ${formatUsd(totalEstimatedCostUsd)}`;
+        let tokenProjectedCostEl = document.getElementById("sTokenProjectedCost");
+        if (!tokenProjectedCostEl && tokenEl?.parentElement) {
+          tokenProjectedCostEl = document.createElement("div");
+          tokenProjectedCostEl.id = "sTokenProjectedCost";
+          tokenProjectedCostEl.className = "sub";
+          tokenEl.parentElement.appendChild(tokenProjectedCostEl);
+        }
+        if (tokenCostEl) tokenCostEl.textContent = `累计审计估价 ${formatUsd(totalEstimatedCostUsd)}`;
+        if (tokenProjectedCostEl) {
+          tokenProjectedCostEl.textContent =
+            totalTokens > 0 && totalEstimatedCostFromTotalTokensUsd > 0
+              ? `按总 Tokens 折算 ≈ ${formatUsd(totalEstimatedCostFromTotalTokensUsd)} · 覆盖 ${formatPercent(totalEstimatedCostCoverageRatio * 100)}`
+              : totalPricedTokens > 0
+                ? `按总 Tokens 折算暂不可用 · 已估 tokens ${formatCompactNumber(totalPricedTokens)}`
+                : "按总 Tokens 折算 暂无足够审计样本";
+        }
         const serviceEl = document.getElementById("sSrv");
         if (serviceEl) serviceEl.textContent = S.service ? "运行中" : "离线";
         renderTodayStats();
@@ -5567,22 +6241,22 @@
         const hasDelta = !(promptTokens === 0 && completionTokens === 0 && totalTokens === 0);
         if (!hasDelta && !hasUsageTotals) return;
         if (usageTotals && typeof usageTotals === "object") {
-          S.usageTotals = {
-            promptTokens: normalizeTokenDelta(usageTotals.promptTokens),
-            completionTokens: normalizeTokenDelta(usageTotals.completionTokens),
-            totalTokens: normalizeTokenDelta(usageTotals.totalTokens),
-            estimatedCostUsd: Math.max(0, Number(usageTotals.estimatedCostUsd || 0)),
-            updatedAt: normalizeTokenDelta(usageTotals.updatedAt),
-          };
+          S.usageTotals = coerceUsageTotalsSnapshot(usageTotals);
         } else {
-          S.usageTotals.promptTokens = Number(S.usageTotals.promptTokens || 0) + promptTokens;
-          S.usageTotals.completionTokens = Number(S.usageTotals.completionTokens || 0) + completionTokens;
-          S.usageTotals.totalTokens = Number(S.usageTotals.totalTokens || 0) + totalTokens;
-          S.usageTotals.estimatedCostUsd = Math.max(
-            0,
-            Number(S.usageTotals.estimatedCostUsd || 0) + (Number.isFinite(estimatedCostUsd) ? estimatedCostUsd : 0),
-          );
-          S.usageTotals.updatedAt = Date.now();
+          const hasEstimatedCostUsd =
+            payload?.estimatedCostUsd !== null && payload?.estimatedCostUsd !== undefined && payload?.estimatedCostUsd !== "";
+          S.usageTotals = coerceUsageTotalsSnapshot({
+            ...S.usageTotals,
+            promptTokens: Number(S.usageTotals.promptTokens || 0) + promptTokens,
+            completionTokens: Number(S.usageTotals.completionTokens || 0) + completionTokens,
+            totalTokens: Number(S.usageTotals.totalTokens || 0) + totalTokens,
+            estimatedCostUsd: Math.max(
+              0,
+              Number(S.usageTotals.estimatedCostUsd || 0) + (Number.isFinite(estimatedCostUsd) ? estimatedCostUsd : 0),
+            ),
+            pricedTokens: Number(S.usageTotals.pricedTokens || 0) + (hasEstimatedCostUsd ? totalTokens : 0),
+            updatedAt: Date.now(),
+          });
         }
 
         if (promptTokens || completionTokens || cachedInputTokens || reasoningOutputTokens || estimatedCostUsd) {
@@ -5943,13 +6617,43 @@
         await runBusyAction(
           "accounts:quota:refresh",
           async () => {
-            await loadAccounts({ refreshQuota: true, forceQuota: true, loadVirtualKeys: false });
-            log(`已刷新全部账号额度（${refreshableAccounts.length} 个）`);
+            const button = triggerButton || document.getElementById("btnRefreshQuota");
+            let successCount = 0;
+            let failureCount = 0;
+            const total = refreshableAccounts.length;
+
+            for (let index = 0; index < total; index += 1) {
+              const accountId = String(refreshableAccounts[index]?.id || "").trim();
+              if (!accountId) continue;
+              const label = getAccountDisplayLabel(accountId);
+              if (button) {
+                button.textContent = `刷新中 ${index + 1}/${total}`;
+              }
+              try {
+                const output = await api(`/api/accounts/${encodeURIComponent(accountId)}/refresh-quota`, { method: "POST" });
+                applyRefreshedAccountQuota(output?.account || null, output?.dashboardMetrics || null);
+                successCount += 1;
+                log(`已刷新账号额度：${label}（${successCount}/${total}）`);
+              } catch (error) {
+                failureCount += 1;
+                log(`刷新账号额度失败：${label}（${toErrorMessage(error)}）`, "error");
+              }
+            }
+
+            if (!successCount && failureCount) {
+              throw new Error(`全部账号额度刷新失败（${failureCount} 个）`);
+            }
+            if (failureCount) {
+              showToast(`账号额度刷新完成，成功 ${successCount} 个，失败 ${failureCount} 个`, "info", 3200);
+            } else {
+              showToast(`已按顺序刷新 ${successCount} 个账号额度`, "success");
+            }
+            log(`账号额度刷新完成：成功 ${successCount} 个，失败 ${failureCount} 个`);
           },
           {
             button: triggerButton || document.getElementById("btnRefreshQuota"),
             busyLabel: "刷新中...",
-            successToast: `已刷新 ${refreshableAccounts.length} 个账号额度`,
+            successToast: false,
             errorToast: "刷新账号额度失败",
             rethrow: false,
           },
@@ -5992,16 +6696,58 @@
           return;
         }
 
+        const button = triggerButton || document.getElementById("btnRefreshQuota");
+        const queue = refreshableAccounts.map((account) => String(account?.id || "").trim()).filter(Boolean);
+
         await runBusyAction(
           "accounts:quota:refresh",
           async () => {
-            await loadAccounts({ refreshQuota: true, forceQuota: true, loadVirtualKeys: false });
-            log(`已刷新全部账号额度（${refreshableAccounts.length} 个）`);
+            let successCount = 0;
+            let failureCount = 0;
+
+            for (let index = 0; index < queue.length; index += 1) {
+              const accountId = queue[index];
+              const currentAccount = (S.accounts || []).find((item) => String(item?.id || "") === accountId);
+              const label = getAccountDisplayLabel(accountId);
+
+              if (button) button.textContent = `刷新中 ${index + 1}/${queue.length}`;
+
+              if (!currentAccount) {
+                failureCount += 1;
+                log(`刷新账号额度已跳过：${label}（账号不存在）`);
+                continue;
+              }
+              if (!accountSupportsQuotaRefresh(currentAccount)) {
+                failureCount += 1;
+                log(`刷新账号额度已跳过：${label}（当前账号不支持额度刷新）`);
+                continue;
+              }
+
+              try {
+                const output = await api(`/api/accounts/${encodeURIComponent(accountId)}/refresh-quota`, { method: "POST" });
+                applyRefreshedAccountQuota(output?.account || null, output?.dashboardMetrics || null);
+                successCount += 1;
+                log(`已刷新账号额度：${label}（${successCount}/${queue.length}）`);
+              } catch (error) {
+                failureCount += 1;
+                log(`刷新账号额度失败：${label} - ${toErrorMessage(error)}`);
+              }
+            }
+
+            if (failureCount > 0) {
+              const toastType = successCount > 0 ? "info" : "error";
+              showToast(`已按顺序刷新 ${successCount}/${queue.length} 个账号额度，失败 ${failureCount} 个`, toastType, 4200);
+              log(`批量刷新账号额度完成：成功 ${successCount} 个，失败 ${failureCount} 个`);
+              return;
+            }
+
+            showToast(`已按顺序刷新 ${successCount} 个账号额度`, "success");
+            log(`已按顺序刷新全部账号额度（${successCount} 个）`);
           },
           {
-            button: triggerButton || document.getElementById("btnRefreshQuota"),
+            button,
             busyLabel: "刷新中...",
-            successToast: `已刷新 ${refreshableAccounts.length} 个账号额度`,
+            successToast: false,
             errorToast: "刷新账号额度失败",
             rethrow: false,
           },
@@ -7540,13 +8286,7 @@
           const { accounts, usageTotals, dashboardMetrics } = await api(endpoint);
           if (!isLatestRequest("accounts", requestId)) return;
           S.accounts = Array.isArray(accounts) ? accounts : [];
-          S.usageTotals = {
-            promptTokens: normalizeTokenDelta(usageTotals?.promptTokens),
-            completionTokens: normalizeTokenDelta(usageTotals?.completionTokens),
-            totalTokens: normalizeTokenDelta(usageTotals?.totalTokens),
-            estimatedCostUsd: Math.max(0, Number(usageTotals?.estimatedCostUsd || 0)),
-            updatedAt: normalizeTokenDelta(usageTotals?.updatedAt),
-          };
+          S.usageTotals = coerceUsageTotalsSnapshot(usageTotals);
           S.dashboardMetrics = coerceDashboardMetrics(dashboardMetrics);
           const knownIds = new Set(S.accounts.map((item) => item.id));
           Object.keys(S.refreshTokenCache).forEach((id) => {
@@ -8242,6 +8982,7 @@
           finishSyncSuccess,
           finishSyncError,
           coerceDashboardMetrics,
+          coerceUsageTotalsSnapshot,
           normalizeTokenDelta,
           drawStats,
           drawTokenUsage,
@@ -8291,6 +9032,12 @@
           ensureTestHistory,
           rememberTestModel,
           log,
+          renderThemePicker,
+          getThemeLabel,
+          normalizeThemeId,
+          readStoredTheme,
+          applyTheme,
+          getThemeOptions,
         }) || {};
       } catch (error) {
         const msg = error instanceof Error ? error.stack || error.message : String(error);
@@ -8357,13 +9104,7 @@
           const output = await api("/api/dashboard/metrics");
           const metricsPayload = output?.metrics || {};
           S.dashboardMetrics = coerceDashboardMetrics(metricsPayload);
-          S.usageTotals = {
-            promptTokens: normalizeTokenDelta(metricsPayload?.usageTotals?.promptTokens),
-            completionTokens: normalizeTokenDelta(metricsPayload?.usageTotals?.completionTokens),
-            totalTokens: normalizeTokenDelta(metricsPayload?.usageTotals?.totalTokens),
-            estimatedCostUsd: Math.max(0, Number(metricsPayload?.usageTotals?.estimatedCostUsd || 0)),
-            updatedAt: normalizeTokenDelta(metricsPayload?.usageTotals?.updatedAt),
-          };
+          S.usageTotals = coerceUsageTotalsSnapshot(metricsPayload?.usageTotals);
           drawStats();
           drawTokenUsage();
           renderTodayStats();
@@ -10032,35 +10773,57 @@
         if (themeChip) themeChip.textContent = getThemeLabel(current);
         const themeState = document.getElementById("settingsThemeState");
         if (themeState) {
-          themeState.textContent = `Current theme: ${getThemeLabel(current)}. Click a card to preview, then save to persist.`;
+          themeState.textContent = `当前主题：${getThemeLabel(current)}。支持暗色与浅色主题，点击卡片立即预览。`;
         }
-        container.innerHTML = getThemeOptions()
-          .map((option) => {
-            const isActive = option.id === current;
-            const preview = Array.isArray(option.preview) ? option.preview : [];
-            const swatches = preview
-              .map(
-                (color) =>
-                  `<span class="theme-option-swatch" style="background:${esc(String(color || "#000"))}"></span>`,
-              )
-              .join("");
-            return `
-              <button
-                type="button"
-                class="theme-option${isActive ? " active" : ""}"
-                data-theme-option="${esc(option.id)}"
-                aria-pressed="${isActive ? "true" : "false"}"
-              >
-                <div class="theme-option-head">
-                  <span class="theme-option-title">${esc(option.label)}</span>
-                  <span class="theme-option-check">${isActive ? "Active" : "Preview"}</span>
-                </div>
-                <div class="theme-option-preview">${swatches}</div>
-                <div class="theme-option-description">${esc(option.description || "")}</div>
-              </button>
-            `;
-          })
-          .join("");
+        const allThemes = getThemeOptions();
+        const darkThemes = allThemes.filter((option) => String(option?.tone || "dark") !== "light");
+        const lightThemes = allThemes.filter((option) => String(option?.tone || "dark") === "light");
+        const renderThemeCards = (themes) =>
+          themes
+            .map((option) => {
+              const isActive = option.id === current;
+              const preview = Array.isArray(option.preview) ? option.preview : [];
+              const swatches = preview
+                .map(
+                  (color) =>
+                    `<span class="theme-option-swatch" style="background:${esc(String(color || "#000"))}"></span>`,
+                )
+                .join("");
+              return `
+                <button
+                  type="button"
+                  class="theme-option${isActive ? " active" : ""}"
+                  data-theme-option="${esc(option.id)}"
+                  aria-pressed="${isActive ? "true" : "false"}"
+                >
+                  <div class="theme-option-head">
+                    <span class="theme-option-title">${esc(option.label)}</span>
+                    <span class="theme-option-check">${isActive ? "已启用" : "预览"}</span>
+                  </div>
+                  <div class="theme-option-preview">${swatches}</div>
+                  <div class="theme-option-description">${esc(option.description || "")}</div>
+                </button>
+              `;
+            })
+            .join("");
+        container.innerHTML = `
+          <div class="theme-sections">
+            <section class="theme-section">
+              <div class="theme-section-head">
+                <span class="theme-section-title">暗色主题</span>
+                <span class="theme-section-count">${darkThemes.length} 个</span>
+              </div>
+              <div class="theme-grid">${renderThemeCards(darkThemes)}</div>
+            </section>
+            <section class="theme-section">
+              <div class="theme-section-head">
+                <span class="theme-section-title">浅色主题</span>
+                <span class="theme-section-count">${lightThemes.length} 个</span>
+              </div>
+              <div class="theme-grid">${renderThemeCards(lightThemes)}</div>
+            </section>
+          </div>
+        `;
         container.querySelectorAll("[data-theme-option]").forEach((button) => {
           button.addEventListener("click", () => {
             const themeId = normalizeThemeId(button.dataset.themeOption || current);

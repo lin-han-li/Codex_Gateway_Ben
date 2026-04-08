@@ -10,14 +10,43 @@ function toneForPercent(percent, abnormalCategory) {
   return "good"
 }
 
-function normalizeQuotaLabel(value) {
+function formatQuotaDurationLabel(windowMinutes, fallbackLabel = "") {
+  const minutes = Number(windowMinutes)
+  if (!Number.isFinite(minutes) || minutes <= 0) return fallbackLabel
+  const MINUTES_PER_HOUR = 60
+  const MINUTES_PER_DAY = 24 * MINUTES_PER_HOUR
+  const MINUTES_PER_WEEK = 7 * MINUTES_PER_DAY
+  const MINUTES_PER_MONTH = 30 * MINUTES_PER_DAY
+  const ROUNDING_BIAS_MINUTES = 3
+  const normalizedMinutes = Math.max(0, Math.floor(minutes))
+
+  if (normalizedMinutes <= MINUTES_PER_DAY + ROUNDING_BIAS_MINUTES) {
+    const hours = Math.max(1, Math.floor((normalizedMinutes + ROUNDING_BIAS_MINUTES) / MINUTES_PER_HOUR))
+    return `${hours}小时额度`
+  }
+  if (normalizedMinutes <= MINUTES_PER_WEEK + ROUNDING_BIAS_MINUTES) return "周额度"
+  if (normalizedMinutes <= MINUTES_PER_MONTH + ROUNDING_BIAS_MINUTES) return "月额度"
+  return "年额度"
+}
+
+function normalizeQuotaBucketLabel(value) {
   const normalized = String(value || "").trim()
   if (!normalized) return ""
   const lower = normalized.toLowerCase()
-  if (lower.includes("review") || normalized.includes("审查")) return "代码审查周额度"
-  if (lower.includes("week") || normalized.includes("周")) return "周额度"
-  if (lower.includes("hour") || normalized.includes("小时")) return "5小时额度"
+  if (lower.includes("review") || normalized.includes("审查")) return "代码审查"
+  if (lower.includes("week") || normalized.includes("周")) return ""
+  if (lower.includes("hour") || normalized.includes("小时")) return ""
+  if (["codex", "chatgpt", "openai", "default", "primary", "secondary", "main", "core"].includes(lower)) return ""
   return normalized
+}
+
+function buildQuotaRowLabel(entry, window, fallbackLabel) {
+  const bucketLabel = normalizeQuotaBucketLabel(entry?.limitName || entry?.limitId)
+  const durationLabel = formatQuotaDurationLabel(window?.windowMinutes, fallbackLabel)
+  if (!bucketLabel) return durationLabel
+  if (!durationLabel) return `${bucketLabel}额度`
+  if (bucketLabel === "代码审查") return `${bucketLabel}${durationLabel}`
+  return `${bucketLabel} ${durationLabel}`
 }
 
 function formatQuotaResetStamp(resetsAt) {
@@ -40,7 +69,7 @@ function buildQuotaRows(account) {
     const window = entry?.[windowKey]
     if (!window) return
     rows.push({
-      label: normalizeQuotaLabel(entry?.limitName || entry?.limitId) || fallbackLabel,
+      label: buildQuotaRowLabel(entry, window, fallbackLabel) || fallbackLabel,
       remainingPercent: clampPercent(window.remainingPercent),
       resetText: formatQuotaResetStamp(window.resetsAt),
     })
@@ -50,9 +79,9 @@ function buildQuotaRows(account) {
   pushWindow(quota.primary, "secondary", "周额度")
 
   for (const entry of quota.additional || []) {
-    pushWindow(entry, "primary", "代码审查周额度")
+    pushWindow(entry, "primary", "5小时额度")
     if (rows.length >= 3) break
-    pushWindow(entry, "secondary", "附加额度")
+    pushWindow(entry, "secondary", "周额度")
     if (rows.length >= 3) break
   }
 
@@ -61,6 +90,51 @@ function buildQuotaRows(account) {
 
 function resolvePlanLabel(account) {
   return account?.quota?.planType || account?.chatgptPlanType || account?.metadata?.chatgptPlanType || "未知套餐"
+}
+
+function resolvePlanMeta(account) {
+  const rawLabel = String(resolvePlanLabel(account) || "").trim()
+  const normalized = rawLabel.toLowerCase()
+
+  if (normalized.includes("team") || normalized.includes("business") || normalized.includes("enterprise")) {
+    const label = normalized.includes("enterprise")
+      ? "Enterprise"
+      : normalized.includes("business")
+        ? "Business"
+        : "Team"
+    return {
+      kind: "team",
+      label,
+      rawLabel: rawLabel || label,
+    }
+  }
+
+  if (normalized.includes("plus") || normalized.includes("pro") || normalized.includes("premium")) {
+    const label = normalized.includes("pro") && !normalized.includes("plus")
+      ? "Pro"
+      : normalized.includes("premium")
+        ? "Premium"
+        : "Plus"
+    return {
+      kind: "plus",
+      label,
+      rawLabel: rawLabel || label,
+    }
+  }
+
+  if (normalized.includes("free") || normalized.includes("trial") || normalized.includes("starter")) {
+    return {
+      kind: "free",
+      label: "Free",
+      rawLabel: rawLabel || "Free",
+    }
+  }
+
+  return {
+    kind: "default",
+    label: rawLabel || "Plan",
+    rawLabel: rawLabel || "Plan",
+  }
 }
 
 export function createAccountsView(deps) {
@@ -96,7 +170,8 @@ export function createAccountsView(deps) {
     if (thead) thead.style.display = "none"
 
     if (!S.accounts.length) {
-      tbody.innerHTML = '<tr class="account-card-row"><td colspan="7"><div class="account-empty muted">暂无账号，请先添加 OAuth 或 API Key 账号。</div></td></tr>'
+      tbody.innerHTML =
+        '<tr class="account-card-row"><td colspan="7"><div class="account-empty muted">暂无账号，请先添加 OAuth 或 API Key 账号。</div></td></tr>'
       return
     }
 
@@ -143,7 +218,8 @@ export function createAccountsView(deps) {
       .map(({ account }) => account)
 
     if (!rows.length) {
-      tbody.innerHTML = '<tr class="account-card-row"><td colspan="7"><div class="account-empty muted">未找到匹配账号。</div></td></tr>'
+      tbody.innerHTML =
+        '<tr class="account-card-row"><td colspan="7"><div class="account-empty muted">未找到匹配账号。</div></td></tr>'
       return
     }
 
@@ -154,9 +230,9 @@ export function createAccountsView(deps) {
         const tokenUsed = Number(account.totalTokens || 0)
         const quotaText = formatAccountQuota(account.quota)
         const quotaRows = buildQuotaRows(account)
-        const planLabel = resolvePlanLabel(account)
+        const planMeta = resolvePlanMeta(account)
         const statusBanner = abnormal
-          ? `<div class="account-status-banner ${abnormal.category === "soft_drained" ? "warn" : "danger"}">${esc(status.text)}${status.detail ? ` · ${esc(status.detail)}` : ""}</div>`
+          ? `<div class="account-status-banner ${abnormal.category === "soft_drained" ? "warn" : "danger"}">${esc(status.text)}${status.detail ? ` 路 ${esc(status.detail)}` : ""}</div>`
           : ""
         const quotaSection =
           quotaRows.length > 0
@@ -177,10 +253,12 @@ export function createAccountsView(deps) {
                   `
                 })
                 .join("")
-            : `<div class="account-quota-empty">${esc(quotaText.text)}${quotaText.detail ? ` · ${esc(quotaText.detail)}` : ""}</div>`
+            : `<div class="account-quota-empty">${esc(quotaText.text)}${quotaText.detail ? ` 路 ${esc(quotaText.detail)}` : ""}</div>`
+
         const refreshQuotaBtn = canRefreshAccountQuota(account)
           ? `<button class="mini-btn" data-account-action="refresh-quota" data-id="${esc(account.id)}" title="刷新额度">额度</button>`
           : ""
+
         const activateBtn = account.isActive
           ? '<button class="mini-btn activate" disabled>当前</button>'
           : `<button class="mini-btn activate" data-account-action="activate" data-id="${esc(account.id)}">设为默认</button>`
@@ -191,7 +269,7 @@ export function createAccountsView(deps) {
               <div class="account-card-badges">
                 <span class="type-badge provider">${esc(providerDisplayName(account))}</span>
                 <span class="type-badge">${esc(accountType(account))}</span>
-                <span class="account-plan-badge">${esc(planLabel)}</span>
+                <span class="account-plan-badge plan-${esc(planMeta.kind)}" title="${esc(planMeta.rawLabel)}">${esc(planMeta.label)}</span>
               </div>
               <div class="account-card-status">${status.html}</div>
             </div>

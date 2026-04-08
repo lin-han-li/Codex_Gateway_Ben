@@ -115,6 +115,7 @@ export type RequestAuditFilterSummary = {
   outputTokens: number
   totalTokens: number
   billableTokens: number
+  pricedTokens: number
   reasoningOutputTokens: number
   estimatedCostUsd: number
   unpricedRequestCount: number
@@ -2232,6 +2233,7 @@ export class AccountStore {
               COALESCE(SUM(CASE WHEN output_tokens IS NOT NULL AND output_tokens > 0 THEN output_tokens ELSE 0 END), 0) AS output_tokens,
               COALESCE(SUM(${REQUEST_AUDIT_TOTAL_TOKENS_SQL}), 0) AS total_tokens,
               COALESCE(SUM(${REQUEST_AUDIT_BILLABLE_TOKENS_SQL}), 0) AS billable_tokens,
+              COALESCE(SUM(CASE WHEN estimated_cost_usd IS NOT NULL AND ${REQUEST_AUDIT_TOTAL_TOKENS_SQL} > 0 THEN ${REQUEST_AUDIT_TOTAL_TOKENS_SQL} ELSE 0 END), 0) AS priced_tokens,
               COALESCE(SUM(CASE WHEN reasoning_output_tokens IS NOT NULL AND reasoning_output_tokens > 0 THEN reasoning_output_tokens ELSE 0 END), 0) AS reasoning_output_tokens,
               COALESCE(SUM(CASE WHEN estimated_cost_usd IS NOT NULL AND estimated_cost_usd > 0 THEN estimated_cost_usd ELSE 0 END), 0) AS estimated_cost_usd,
               COALESCE(SUM(CASE WHEN total_tokens IS NOT NULL AND total_tokens > 0 AND estimated_cost_usd IS NULL THEN 1 ELSE 0 END), 0) AS unpriced_request_count
@@ -2249,6 +2251,7 @@ export class AccountStore {
             output_tokens: number
             total_tokens: number
             billable_tokens: number
+            priced_tokens: number
             reasoning_output_tokens: number
             estimated_cost_usd: number
             unpriced_request_count: number
@@ -2262,6 +2265,7 @@ export class AccountStore {
         output_tokens: 0,
         total_tokens: 0,
         billable_tokens: 0,
+        priced_tokens: 0,
         reasoning_output_tokens: 0,
         estimated_cost_usd: 0,
         unpriced_request_count: 0,
@@ -2277,6 +2281,7 @@ export class AccountStore {
       outputTokens: Math.max(0, Math.floor(Number(summaryRow.output_tokens ?? 0))),
       totalTokens: Math.max(0, Math.floor(Number(summaryRow.total_tokens ?? 0))),
       billableTokens: Math.max(0, Math.floor(Number(summaryRow.billable_tokens ?? 0))),
+      pricedTokens: Math.max(0, Math.floor(Number(summaryRow.priced_tokens ?? 0))),
       reasoningOutputTokens: Math.max(0, Math.floor(Number(summaryRow.reasoning_output_tokens ?? 0))),
       estimatedCostUsd: Math.max(0, Number(summaryRow.estimated_cost_usd ?? 0)),
       unpricedRequestCount: Math.max(0, Math.floor(Number(summaryRow.unpriced_request_count ?? 0))),

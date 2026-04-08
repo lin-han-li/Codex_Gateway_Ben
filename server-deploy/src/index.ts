@@ -141,9 +141,36 @@ const extendedUsageTotalsState = {
   cachedInputTokens: 0,
   reasoningOutputTokens: 0,
   estimatedCostUsd: 0,
+  pricedTokens: 0,
   updatedAt: 0,
 }
 const STATS_TIMEZONE = Intl.DateTimeFormat().resolvedOptions().timeZone || "Asia/Shanghai"
+
+function roundProjectedCostUsd(value: number) {
+  if (!Number.isFinite(value) || value <= 0) return 0
+  return Math.round(value * 1_000_000_000) / 1_000_000_000
+}
+
+function normalizeCoverageRatio(value: number) {
+  if (!Number.isFinite(value) || value <= 0) return 0
+  return Math.max(0, Math.min(1, value))
+}
+
+function buildUsageCostProjection(input: { totalTokens: number; pricedTokens: number; estimatedCostUsd: number }) {
+  const totalTokens = Math.max(0, Math.floor(Number(input.totalTokens ?? 0)))
+  const pricedTokens = Math.max(0, Math.floor(Number(input.pricedTokens ?? 0)))
+  const estimatedCostUsd = Math.max(0, Number(input.estimatedCostUsd ?? 0))
+  const estimatedCostCoverageRatio = totalTokens > 0 ? normalizeCoverageRatio(pricedTokens / totalTokens) : 0
+  const estimatedCostFromTotalTokensUsd =
+    totalTokens > 0 && pricedTokens > 0 && estimatedCostUsd > 0
+      ? roundProjectedCostUsd((estimatedCostUsd / pricedTokens) * totalTokens)
+      : 0
+  return {
+    pricedTokens,
+    estimatedCostCoverageRatio,
+    estimatedCostFromTotalTokensUsd,
+  }
+}
 
 type AccountRoutingState = {
   state: "eligible" | "soft_drained" | "excluded"
@@ -1496,6 +1523,9 @@ function accumulateExtendedUsageTotals(usage: UsageMetrics, now = Date.now()) {
   extendedUsageTotalsState.cachedInputTokens += usage.cachedInputTokens
   extendedUsageTotalsState.reasoningOutputTokens += usage.reasoningOutputTokens
   extendedUsageTotalsState.estimatedCostUsd += usage.estimatedCostUsd ?? 0
+  if (usage.totalTokens > 0 && usage.estimatedCostUsd !== null) {
+    extendedUsageTotalsState.pricedTokens += usage.totalTokens
+  }
   extendedUsageTotalsState.updatedAt = now
 }
 
@@ -1516,32 +1546,46 @@ function getUsageTotalsSnapshot() {
     hasOwnKey(raw, "estimated_cost_usd") ||
     hasOwnKey(raw, "costUsd") ||
     hasOwnKey(raw, "cost_usd")
+  const promptTokens = normalizeNonNegativeInt(pickFirstDefinedValue(raw.promptTokens, raw.prompt_tokens))
+  const completionTokens = normalizeNonNegativeInt(pickFirstDefinedValue(raw.completionTokens, raw.completion_tokens))
+  const totalTokens = normalizeNonNegativeInt(pickFirstDefinedValue(raw.totalTokens, raw.total_tokens))
+  const cachedInputTokens = hasCached
+    ? normalizeNonNegativeInt(
+        pickFirstDefinedValue(raw.cachedInputTokens, raw.cached_input_tokens, raw.cachedTokens, raw.cached_tokens),
+      )
+    : extendedUsageTotalsState.cachedInputTokens
+  const reasoningOutputTokens = hasReasoning
+    ? normalizeNonNegativeInt(
+        pickFirstDefinedValue(
+          raw.reasoningOutputTokens,
+          raw.reasoning_output_tokens,
+          raw.reasoningTokens,
+          raw.reasoning_tokens,
+        ),
+      )
+    : extendedUsageTotalsState.reasoningOutputTokens
+  const estimatedCostUsd = hasCost
+    ? normalizeNullableNonNegativeNumber(
+        pickFirstDefinedValue(raw.estimatedCostUsd, raw.estimated_cost_usd, raw.costUsd, raw.cost_usd),
+      ) ?? 0
+    : extendedUsageTotalsState.estimatedCostUsd
+  const costProjection = buildUsageCostProjection({
+    totalTokens,
+    pricedTokens: extendedUsageTotalsState.pricedTokens,
+    estimatedCostUsd,
+  })
 
   return {
     ...raw,
-    promptTokens: normalizeNonNegativeInt(pickFirstDefinedValue(raw.promptTokens, raw.prompt_tokens)),
-    completionTokens: normalizeNonNegativeInt(pickFirstDefinedValue(raw.completionTokens, raw.completion_tokens)),
-    totalTokens: normalizeNonNegativeInt(pickFirstDefinedValue(raw.totalTokens, raw.total_tokens)),
-    cachedInputTokens: hasCached
-      ? normalizeNonNegativeInt(
-          pickFirstDefinedValue(raw.cachedInputTokens, raw.cached_input_tokens, raw.cachedTokens, raw.cached_tokens),
-        )
-      : extendedUsageTotalsState.cachedInputTokens,
-    reasoningOutputTokens: hasReasoning
-      ? normalizeNonNegativeInt(
-          pickFirstDefinedValue(
-            raw.reasoningOutputTokens,
-            raw.reasoning_output_tokens,
-            raw.reasoningTokens,
-            raw.reasoning_tokens,
-          ),
-        )
-      : extendedUsageTotalsState.reasoningOutputTokens,
-    estimatedCostUsd: hasCost
-      ? normalizeNullableNonNegativeNumber(
-          pickFirstDefinedValue(raw.estimatedCostUsd, raw.estimated_cost_usd, raw.costUsd, raw.cost_usd),
-        ) ?? 0
-      : extendedUsageTotalsState.estimatedCostUsd,
+    promptTokens,
+    completionTokens,
+    totalTokens,
+    cachedInputTokens,
+    reasoningOutputTokens,
+    estimatedCostUsd,
+    pricedTokens: costProjection.pricedTokens,
+    estimatedCostCoverageRatio: costProjection.estimatedCostCoverageRatio,
+    estimatedCostFromTotalTokensUsd: costProjection.estimatedCostFromTotalTokensUsd,
     updatedAt: Math.max(
       normalizeNonNegativeInt(pickFirstDefinedValue(raw.updatedAt, raw.updated_at)),
       extendedUsageTotalsState.updatedAt,
@@ -4157,6 +4201,7 @@ function syncExtendedUsageTotalsStateFromAudits(now = Date.now()) {
   extendedUsageTotalsState.cachedInputTokens = Math.max(0, Math.floor(Number(summary.cachedInputTokens ?? 0)))
   extendedUsageTotalsState.reasoningOutputTokens = Math.max(0, Math.floor(Number(summary.reasoningOutputTokens ?? 0)))
   extendedUsageTotalsState.estimatedCostUsd = Math.max(0, Number(summary.estimatedCostUsd ?? 0))
+  extendedUsageTotalsState.pricedTokens = Math.max(0, Math.floor(Number(summary.pricedTokens ?? 0)))
   extendedUsageTotalsState.updatedAt = now
 }
 

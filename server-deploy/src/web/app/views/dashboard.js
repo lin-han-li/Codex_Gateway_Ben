@@ -7,6 +7,7 @@ export function createDashboardView(deps) {
     finishSyncError,
     coerceDashboardMetrics,
     normalizeTokenDelta,
+    coerceUsageTotalsSnapshot,
     drawStats,
     drawTokenUsage,
     formatCompactNumber,
@@ -90,13 +91,7 @@ export function createDashboardView(deps) {
       const output = await api("/api/dashboard/metrics")
       const metricsPayload = output?.metrics || {}
       S.dashboardMetrics = coerceDashboardMetrics(metricsPayload)
-      S.usageTotals = {
-        promptTokens: normalizeTokenDelta(metricsPayload?.usageTotals?.promptTokens),
-        completionTokens: normalizeTokenDelta(metricsPayload?.usageTotals?.completionTokens),
-        totalTokens: normalizeTokenDelta(metricsPayload?.usageTotals?.totalTokens),
-        estimatedCostUsd: Math.max(0, Number(metricsPayload?.usageTotals?.estimatedCostUsd || 0)),
-        updatedAt: normalizeTokenDelta(metricsPayload?.usageTotals?.updatedAt),
-      }
+      S.usageTotals = coerceUsageTotalsSnapshot(metricsPayload?.usageTotals)
       drawStats()
       drawTokenUsage()
       renderTodayStats()
