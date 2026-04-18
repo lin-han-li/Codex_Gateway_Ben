@@ -1,5 +1,6 @@
 import { cp, mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import { existsSync } from "node:fs"
+import { spawn } from "node:child_process"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 
@@ -20,6 +21,28 @@ const distDir = path.join(rootDir, "dist-server")
 const bundleName = `Codex-Gateway-${platformTag}-${version}`
 const bundleDir = path.join(distDir, bundleName)
 
+function run(command, args, options = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      cwd: rootDir,
+      stdio: "inherit",
+      shell: false,
+      ...options,
+    })
+    child.on("error", reject)
+    child.on("exit", (code) => {
+      if (code === 0) resolve()
+      else reject(new Error(`${command} ${args.join(" ")} exited with code ${code ?? "unknown"}`))
+    })
+  })
+}
+
+async function syncDerivedSources() {
+  console.log("[bundle-server] syncing derived source copies")
+  await run("node", ["scripts/sync-derived-copies.mjs", "--write"])
+}
+
+await syncDerivedSources()
 await rm(bundleDir, { recursive: true, force: true })
 await mkdir(bundleDir, { recursive: true })
 await mkdir(distDir, { recursive: true })

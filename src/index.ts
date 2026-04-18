@@ -489,6 +489,7 @@ type RuntimeSettings = {
   upstreamPrivacyStrict: boolean
   officialStrictPassthrough: boolean
   themeId: string
+  codexInstallationId: string
 }
 
 const DEFAULT_UI_THEME_ID = "ocean"
@@ -644,6 +645,7 @@ async function loadRuntimeSettings() {
     upstreamPrivacyStrict: true,
     officialStrictPassthrough: false,
     themeId: DEFAULT_UI_THEME_ID,
+    codexInstallationId: crypto.randomUUID(),
   }
 
   try {
@@ -657,6 +659,7 @@ async function loadRuntimeSettings() {
       upstreamPrivacyStrict: parsed?.upstreamPrivacyStrict === false ? false : true,
       officialStrictPassthrough: parsed?.officialStrictPassthrough === true,
       themeId: normalizeUiThemeId(parsed?.themeId),
+      codexInstallationId: normalizeNullableString(parsed?.codexInstallationId, 200) ?? defaults.codexInstallationId,
     }
   } catch {
     return defaults
@@ -685,6 +688,241 @@ function isStrictUpstreamPrivacyEnabled() {
 
 function isOfficialStrictPassthroughEnabled() {
   return runtimeSettings.officialStrictPassthrough === true
+}
+
+const OFFICIAL_CODEX_CLIENT_METADATA_HEADER_NAMES = new Set([
+  "x-codex-installation-id",
+  "x-codex-window-id",
+  "x-codex-parent-thread-id",
+  "x-openai-subagent",
+])
+const RESPONSES_TURN_STATE_HEADER = "x-codex-turn-state"
+const WS_REQUEST_HEADER_TRACEPARENT_CLIENT_METADATA_KEY = "ws_request_header_traceparent"
+const WS_REQUEST_HEADER_TRACESTATE_CLIENT_METADATA_KEY = "ws_request_header_tracestate"
+const responsesTurnStateBySessionId = new Map<string, string>()
+
+function getStoredResponsesTurnState(sessionRouteId?: string | null) {
+  const normalizedSessionId = normalizeNullableString(sessionRouteId, 240)
+  if (!normalizedSessionId) return null
+  return normalizeNullableString(responsesTurnStateBySessionId.get(normalizedSessionId), 512)
+}
+
+function storeResponsesTurnState(sessionRouteId?: string | null, turnState?: string | null) {
+  const normalizedSessionId = normalizeNullableString(sessionRouteId, 240)
+  const normalizedTurnState = normalizeNullableString(turnState, 512)
+  if (!normalizedSessionId || !normalizedTurnState) return
+  responsesTurnStateBySessionId.set(normalizedSessionId, normalizedTurnState)
+}
+
+function clearStoredResponsesTurnState(sessionRouteId?: string | null) {
+  const normalizedSessionId = normalizeNullableString(sessionRouteId, 240)
+  if (!normalizedSessionId) return
+  responsesTurnStateBySessionId.delete(normalizedSessionId)
+}
+
+function persistResponsesTurnStateFromHeaders(sessionRouteId?: string | null, headers?: Headers | null) {
+  storeResponsesTurnState(sessionRouteId, headers?.get(RESPONSES_TURN_STATE_HEADER))
+}
+
+function buildTraceClientMetadata(incoming?: Headers) {
+  const metadata: Record<string, string> = {}
+  const traceparent = normalizeNullableString(incoming?.get("traceparent"), 512)
+  const tracestate = normalizeNullableString(incoming?.get("tracestate"), 512)
+  if (traceparent) metadata[WS_REQUEST_HEADER_TRACEPARENT_CLIENT_METADATA_KEY] = traceparent
+  if (tracestate) metadata[WS_REQUEST_HEADER_TRACESTATE_CLIENT_METADATA_KEY] = tracestate
+  return Object.keys(metadata).length > 0 ? metadata : null
+}
+
+function buildResponsesTurnMetadataHeader(sessionRouteId?: string | null) {
+  const turnId = normalizeNullableString(sessionRouteId, 240)
+  if (!turnId) return null
+  return JSON.stringify({ turn_id: turnId })
+}
+
+function buildResponsesClientMetadata(input: { incoming?: Headers; sessionRouteId?: string | null }) {
+  return {
+    ...buildOfficialCodexClientMetadata(input),
+    ...(buildTraceClientMetadata(input.incoming) ?? {}),
+  }
+}
+
+function appendResponsesProtocolHeaders(headers: Headers, input: { incoming?: Headers; sessionRouteId?: string | null }) {
+  const storedTurnState = getStoredResponsesTurnState(input.sessionRouteId)
+  if (storedTurnState) {
+    headers.set(RESPONSES_TURN_STATE_HEADER, storedTurnState)
+  }
+  const turnMetadata = buildResponsesTurnMetadataHeader(input.sessionRouteId)
+  if (turnMetadata) {
+    headers.set("x-codex-turn-metadata", turnMetadata)
+  }
+  return headers
+}
+
+function withResponsesProtocolMetadata(
+  parsedRoot: Record<string, unknown> | null,
+  input: { incoming?: Headers; sessionRouteId?: string | null },
+) {
+  return withOfficialCodexClientMetadata(parsedRoot, buildResponsesClientMetadata(input))
+}
+
+function stripResponsesClientMetadata(parsedRoot: Record<string, unknown> | null) {
+  if (!parsedRoot) return parsedRoot
+  if (!hasOwnKey(parsedRoot, "client_metadata") && !hasOwnKey(parsedRoot, "clientMetadata")) {
+    return parsedRoot
+  }
+  const next = { ...parsedRoot }
+  delete next.client_metadata
+  delete next.clientMetadata
+  return next
+}
+
+function finalizeResponsesUpstreamHeaders(sessionRouteId?: string | null, headers?: Headers | null) {
+  persistResponsesTurnStateFromHeaders(sessionRouteId, headers)
+  return headers ? new Headers(headers) : new Headers()
+}
+
+function maybeResetResponsesTurnState(sessionRouteId?: string | null, statusCode?: number | null) {
+  if (statusCode === 401) {
+    clearStoredResponsesTurnState(sessionRouteId)
+  }
+}
+
+function buildResponsesAuditWriter(
+  route: string,
+  method: string,
+  reasoningEffort: string | null,
+  clientMode?: "codex" | "cursor" | null,
+  wireApi?: "responses" | "chat_completions" | null,
+) {
+  return (
+    input: Omit<RequestAuditCompatInput, "route" | "method" | "reasoningEffort" | "clientMode" | "wireApi">,
+    sessionRouteId?: string | null,
+  ) =>
+    writeRequestAuditCompat({
+      route,
+      method,
+      reasoningEffort,
+      clientMode,
+      wireApi,
+      ...input,
+      error:
+        input.error && getStoredResponsesTurnState(sessionRouteId)
+          ? `${input.error} [turn_state=${getStoredResponsesTurnState(sessionRouteId)}]`
+          : input.error,
+    })
+}
+
+function getCodexInstallationId() {
+  return normalizeNullableString(runtimeSettings.codexInstallationId, 200) ?? crypto.randomUUID()
+}
+
+function resolveCodexWindowId(sessionRouteId?: string | null) {
+  const normalized = normalizeNullableString(sessionRouteId, 200)
+  return normalized ? `${normalized}:0` : null
+}
+
+function pickCodexForwardMetadataHeader(incoming: Headers | undefined, headerName: string) {
+  return normalizeNullableString(incoming?.get(headerName), 400)
+}
+
+function buildOfficialCodexClientMetadata(input: { incoming?: Headers; sessionRouteId?: string | null }) {
+  const metadata: Record<string, string> = {
+    "x-codex-installation-id": getCodexInstallationId(),
+  }
+
+  const windowId = resolveCodexWindowId(input.sessionRouteId)
+  if (windowId) {
+    metadata["x-codex-window-id"] = windowId
+  }
+
+  const parentThreadId = pickCodexForwardMetadataHeader(input.incoming, "x-codex-parent-thread-id")
+  if (parentThreadId) {
+    metadata["x-codex-parent-thread-id"] = parentThreadId
+  }
+
+  const subagent = pickCodexForwardMetadataHeader(input.incoming, "x-openai-subagent")
+  if (subagent) {
+    metadata["x-openai-subagent"] = subagent
+  }
+
+  return metadata
+}
+
+function mergeOfficialCodexClientMetadata(
+  clientMetadata: Record<string, unknown> | null | undefined,
+  codexClientMetadata: Record<string, string> | null | undefined,
+) {
+  const officialEntries = Object.entries(codexClientMetadata ?? {})
+  if (officialEntries.length === 0) return clientMetadata ?? null
+
+  const next = clientMetadata && !Array.isArray(clientMetadata) ? { ...clientMetadata } : {}
+  for (const [key, value] of officialEntries) {
+    if (!Object.prototype.hasOwnProperty.call(next, key)) {
+      next[key] = value
+    }
+  }
+  return next
+}
+
+function appendOfficialCodexForwardHeaders(headers: Headers, codexClientMetadata: Record<string, string> | null | undefined) {
+  for (const [key, value] of Object.entries(codexClientMetadata ?? {})) {
+    if (!OFFICIAL_CODEX_CLIENT_METADATA_HEADER_NAMES.has(key)) continue
+    headers.set(key, value)
+  }
+}
+
+function withOfficialCodexClientMetadata(
+  parsedRoot: Record<string, unknown> | null,
+  codexClientMetadata: Record<string, string> | null | undefined,
+) {
+  const root = parsedRoot ?? {}
+  const existingClientMetadata = asRecord(root.client_metadata) ?? asRecord(root.clientMetadata)
+  const mergedClientMetadata = mergeOfficialCodexClientMetadata(existingClientMetadata, codexClientMetadata)
+  if (!mergedClientMetadata) return parsedRoot
+  if (existingClientMetadata && mergedClientMetadata === existingClientMetadata) return parsedRoot
+  return {
+    ...root,
+    client_metadata: mergedClientMetadata,
+  }
+}
+
+function buildUpstreamForwardHeadersForAccount(input: {
+  incoming?: Headers
+  accessToken: string
+  accountId?: string
+  boundAccountId?: string
+  providerMode?: UpstreamProfile["providerMode"]
+  attachChatgptAccountId?: boolean
+  organizationId?: string
+  projectId?: string
+  codexClientMetadata?: Record<string, string> | null
+}) {
+  return buildUpstreamForwardHeaders({
+    incoming: input.incoming,
+    accessToken: input.accessToken,
+    accountId: input.accountId,
+    boundAccountId: input.boundAccountId,
+    providerMode: input.providerMode,
+    attachChatgptAccountId: input.attachChatgptAccountId,
+    organizationId: input.organizationId,
+    projectId: input.projectId,
+    codexClientMetadata: input.codexClientMetadata,
+  })
+}
+
+function buildAccountOpenAIHeadersForProfile(account: StoredAccount, providerMode?: UpstreamProfile["providerMode"]) {
+  return providerMode === "openai" ? resolveAccountOpenAIHeaders(account) : null
+}
+
+function mergeParsedJsonBodyWithCodexMetadata(input: {
+  body?: Uint8Array
+  parsedRoot?: Record<string, unknown> | null
+  codexClientMetadata?: Record<string, string> | null
+}) {
+  const mergedRoot = withOfficialCodexClientMetadata(input.parsedRoot ?? null, input.codexClientMetadata)
+  const encodedRoot = mergedRoot ?? input.parsedRoot
+  if (!encodedRoot) return input.body
+  return new TextEncoder().encode(JSON.stringify(encodedRoot))
 }
 
 const STRICT_PRIVACY_SESSION_KEYS_LOWER = new Set([
@@ -802,6 +1040,8 @@ type CodexModelCatalogEntry = {
   id: string
   defaultReasoningLevel: string
   supportedReasoningLevels: string[]
+  supportsParallelToolCalls: boolean
+  maxContextWindow: number | null
 }
 
 type CodexOfficialModelsFile = {
@@ -810,17 +1050,61 @@ type CodexOfficialModelsFile = {
     supported_in_api?: boolean
     default_reasoning_level?: string
     supported_reasoning_levels?: Array<{ effort?: string }>
+    supports_parallel_tool_calls?: boolean
+    max_context_window?: number
   }>
 }
 
 const FALLBACK_MODEL_CATALOG: CodexModelCatalogEntry[] = [
-  { id: "gpt-5.1-codex-max", defaultReasoningLevel: "medium", supportedReasoningLevels: ["low", "medium", "high", "xhigh"] },
-  { id: "gpt-5.1-codex-mini", defaultReasoningLevel: "medium", supportedReasoningLevels: ["medium", "high"] },
-  { id: "gpt-5.2", defaultReasoningLevel: "medium", supportedReasoningLevels: ["low", "medium", "high", "xhigh"] },
-  { id: "gpt-5.4", defaultReasoningLevel: "medium", supportedReasoningLevels: ["low", "medium", "high", "xhigh"] },
-  { id: "gpt-5.3-codex", defaultReasoningLevel: "medium", supportedReasoningLevels: ["low", "medium", "high", "xhigh"] },
-  { id: "gpt-5.2-codex", defaultReasoningLevel: "medium", supportedReasoningLevels: ["low", "medium", "high", "xhigh"] },
-  { id: "gpt-5.1-codex", defaultReasoningLevel: "medium", supportedReasoningLevels: ["low", "medium", "high", "xhigh"] },
+  {
+    id: "gpt-5.1-codex-max",
+    defaultReasoningLevel: "medium",
+    supportedReasoningLevels: ["low", "medium", "high", "xhigh"],
+    supportsParallelToolCalls: true,
+    maxContextWindow: 272000,
+  },
+  {
+    id: "gpt-5.1-codex-mini",
+    defaultReasoningLevel: "medium",
+    supportedReasoningLevels: ["medium", "high"],
+    supportsParallelToolCalls: false,
+    maxContextWindow: 272000,
+  },
+  {
+    id: "gpt-5.2",
+    defaultReasoningLevel: "medium",
+    supportedReasoningLevels: ["low", "medium", "high", "xhigh"],
+    supportsParallelToolCalls: true,
+    maxContextWindow: 272000,
+  },
+  {
+    id: "gpt-5.4",
+    defaultReasoningLevel: "medium",
+    supportedReasoningLevels: ["low", "medium", "high", "xhigh"],
+    supportsParallelToolCalls: true,
+    maxContextWindow: 1000000,
+  },
+  {
+    id: "gpt-5.3-codex",
+    defaultReasoningLevel: "medium",
+    supportedReasoningLevels: ["low", "medium", "high", "xhigh"],
+    supportsParallelToolCalls: true,
+    maxContextWindow: 272000,
+  },
+  {
+    id: "gpt-5.2-codex",
+    defaultReasoningLevel: "medium",
+    supportedReasoningLevels: ["low", "medium", "high", "xhigh"],
+    supportsParallelToolCalls: true,
+    maxContextWindow: 272000,
+  },
+  {
+    id: "gpt-5.1-codex",
+    defaultReasoningLevel: "medium",
+    supportedReasoningLevels: ["low", "medium", "high", "xhigh"],
+    supportsParallelToolCalls: true,
+    maxContextWindow: 272000,
+  },
 ]
 
 async function loadCodexModelCatalog(): Promise<CodexModelCatalogEntry[]> {
@@ -847,10 +1131,15 @@ async function loadCodexModelCatalog(): Promise<CodexModelCatalogEntry[]> {
               .filter((level): level is string => Boolean(level)) || []
           const normalizedSupported = supported.length > 0 ? supported : ["medium"]
           const defaultReasoningLevel = extractModelID(model.default_reasoning_level) ?? "medium"
+          const maxContextWindow = Number.isFinite(Number(model.max_context_window))
+            ? Math.max(0, Math.floor(Number(model.max_context_window)))
+            : null
           return {
             id,
             defaultReasoningLevel,
             supportedReasoningLevels: normalizedSupported,
+            supportsParallelToolCalls: model.supports_parallel_tool_calls !== false,
+            maxContextWindow,
           } satisfies CodexModelCatalogEntry
         })
         .filter((item): item is CodexModelCatalogEntry => Boolean(item))
@@ -877,6 +1166,12 @@ const MODEL_REASONING_LEVELS: Record<string, string[]> = Object.fromEntries(
 )
 const MODEL_DEFAULT_REASONING_LEVELS: Record<string, string> = Object.fromEntries(
   CODEX_MODEL_CATALOG.map((item) => [item.id, item.defaultReasoningLevel]),
+)
+const MODEL_SUPPORTS_PARALLEL_TOOL_CALLS: Record<string, boolean> = Object.fromEntries(
+  CODEX_MODEL_CATALOG.map((item) => [item.id, item.supportsParallelToolCalls]),
+)
+const MODEL_MAX_CONTEXT_WINDOWS: Record<string, number | null> = Object.fromEntries(
+  CODEX_MODEL_CATALOG.map((item) => [item.id, item.maxContextWindow]),
 )
 
 const StartLoginSchema = z.object({
@@ -3475,38 +3770,74 @@ async function ensureResolvedPoolAccountConsistent(input: {
   return { ok: true as const, resolved: rerouted }
 }
 
-function parseAuditRequestFields(input: { body: Uint8Array; contentType?: string | null }) {
-  const contentType = String(input.contentType ?? "").toLowerCase()
-  if (!contentType.includes("application/json")) {
-    return { model: null as string | null, sessionId: null as string | null, reasoningEffort: null as string | null }
-  }
+type JsonRequestBodyAnalysis = {
+  parsedRoot: Record<string, unknown> | null
+  model: string | null
+  sessionId: string | null
+  reasoningEffort: string | null
+}
+
+function tryParseJsonObjectBody(body?: Uint8Array) {
+  if (!body || body.byteLength === 0) return null
 
   try {
-    const text = new TextDecoder().decode(input.body)
-    const parsed = JSON.parse(text) as Record<string, unknown>
-    const modelRaw = parsed.model
-    const model = typeof modelRaw === "string" && modelRaw.trim().length > 0 ? modelRaw.trim() : null
-    const sessionCandidates = [
-      parsed.session_id,
-      parsed.sessionId,
-      parsed.prompt_cache_key,
-      parsed.promptCacheKey,
-      parsed.thread_id,
-      parsed.threadId,
-      parsed.conversation,
-      parsed.conversation_id,
-      parsed.conversationId,
-      parsed.previous_response_id,
-      parsed.previousResponseId,
-    ]
-    const sessionId =
-      sessionCandidates.find((value) => typeof value === "string" && String(value).trim().length > 0)?.toString() ?? null
-    const reasoningEffort = normalizeReasoningEffort(
-      pickFirstDefinedValue(parsed.reasoning_effort, parsed.reasoningEffort, parsed.reasoning),
-    )
-    return { model, sessionId, reasoningEffort }
+    const text = new TextDecoder().decode(body)
+    const parsed = JSON.parse(text) as unknown
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return null
+    }
+    return parsed as Record<string, unknown>
   } catch {
-    return { model: null as string | null, sessionId: null as string | null, reasoningEffort: null as string | null }
+    return null
+  }
+}
+
+function analyzeJsonRequestBody(input: { body?: Uint8Array; contentType?: string | null }): JsonRequestBodyAnalysis {
+  const parsedRoot = tryParseJsonObjectBody(input.body)
+  if (!parsedRoot) {
+    return {
+      parsedRoot: null,
+      model: null,
+      sessionId: null,
+      reasoningEffort: null,
+    }
+  }
+
+  const root = parsedRoot
+  const modelRaw = root.model
+  const model = typeof modelRaw === "string" && modelRaw.trim().length > 0 ? modelRaw.trim() : null
+  const sessionCandidates = [
+    root.session_id,
+    root.sessionId,
+    root.prompt_cache_key,
+    root.promptCacheKey,
+    root.thread_id,
+    root.threadId,
+    root.conversation,
+    root.conversation_id,
+    root.conversationId,
+    root.previous_response_id,
+    root.previousResponseId,
+  ]
+  const sessionId =
+    sessionCandidates.find((value) => typeof value === "string" && String(value).trim().length > 0)?.toString() ?? null
+  const reasoningEffort = normalizeReasoningEffort(
+    pickFirstDefinedValue(root.reasoning_effort, root.reasoningEffort, root.reasoning),
+  )
+  return {
+    parsedRoot: root,
+    model,
+    sessionId,
+    reasoningEffort,
+  }
+}
+
+function parseAuditRequestFields(input: { body: Uint8Array; contentType?: string | null }) {
+  const analysis = analyzeJsonRequestBody(input)
+  return {
+    model: analysis.model,
+    sessionId: analysis.sessionId,
+    reasoningEffort: analysis.reasoningEffort,
   }
 }
 
@@ -4413,6 +4744,8 @@ function buildModelCatalogPayload(input: { ids?: string[] } = {}): ModelCatalogP
         owned_by: "openai",
         default_reasoning_level: defaultReasoningLevel,
         supported_reasoning_levels: levels.map((effort) => ({ effort })),
+        supports_parallel_tool_calls: MODEL_SUPPORTS_PARALLEL_TOOL_CALLS[id] ?? false,
+        max_context_window: MODEL_MAX_CONTEXT_WINDOWS[id] ?? null,
       }
     }),
   }
@@ -4510,6 +4843,10 @@ function toOpenAIModelListPayloadFromUpstream(payload: unknown): ModelCatalogPay
     const defaultReasoningLevel =
       extractModelID(model.default_reasoning_level ?? model.defaultReasoningLevel) ??
       (levels.includes("medium") ? "medium" : levels[0] ?? "medium")
+    const supportsParallelToolCalls = Boolean(model.supports_parallel_tool_calls)
+    const maxContextWindow = Number.isFinite(Number(model.max_context_window))
+      ? Math.max(0, Math.floor(Number(model.max_context_window)))
+      : null
     data.push({
       id,
       object: "model",
@@ -4517,6 +4854,8 @@ function toOpenAIModelListPayloadFromUpstream(payload: unknown): ModelCatalogPay
       owned_by: "openai",
       default_reasoning_level: defaultReasoningLevel,
       supported_reasoning_levels: levels.length > 0 ? levels.map((effort) => ({ effort })) : [{ effort: "medium" }],
+      supports_parallel_tool_calls: supportsParallelToolCalls,
+      max_context_window: maxContextWindow,
     })
   }
 
@@ -5265,13 +5604,16 @@ function sanitizeUpstreamJsonBody(input: {
   contentType?: string | null
   strictPrivacy: boolean
   accountId?: string | null
+  parsedRoot?: Record<string, unknown> | null
 }) {
   if (!input.body || (!input.strictPrivacy && !input.accountId)) return { body: input.body, strippedFields: [] as string[] }
   const contentType = String(input.contentType ?? "").toLowerCase()
-  if (!contentType.includes("application/json")) return { body: input.body, strippedFields: [] as string[] }
+  if (!input.parsedRoot && !contentType.includes("application/json")) {
+    return { body: input.body, strippedFields: [] as string[] }
+  }
 
   try {
-    const payload = JSON.parse(new TextDecoder().decode(input.body)) as unknown
+    const payload = input.parsedRoot ?? (JSON.parse(new TextDecoder().decode(input.body)) as unknown)
     if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
       return { body: input.body, strippedFields: [] as string[] }
     }
@@ -5288,13 +5630,15 @@ function sanitizeUpstreamJsonBody(input: {
 
     for (const key of STRICT_PRIVACY_BODY_SESSION_FIELDS) {
       if (!Object.prototype.hasOwnProperty.call(root, key)) continue
+      const currentValue = root[key]
       const rewritten = rewriteClientIdentifierForUpstream({
         accountId: input.accountId,
         fieldKey: key,
-        value: root[key],
+        value: currentValue,
         strictPrivacy: input.strictPrivacy,
       })
       if (!rewritten) continue
+      if (String(currentValue ?? "") === rewritten) continue
       root[key] = rewritten
       strippedFields.push(`${input.accountId ? "bound" : "anonymized"}:${key}`)
     }
@@ -5309,13 +5653,15 @@ function sanitizeUpstreamJsonBody(input: {
           continue
         }
         if (STRICT_PRIVACY_SESSION_KEYS_LOWER.has(normalizedKey)) {
+          const currentValue = metadata[key]
           const rewritten = rewriteClientIdentifierForUpstream({
             accountId: input.accountId,
             fieldKey: normalizedKey,
-            value: metadata[key],
+            value: currentValue,
             strictPrivacy: input.strictPrivacy,
           })
           if (!rewritten) continue
+          if (String(currentValue ?? "") === rewritten) continue
           metadata[key] = rewritten
           strippedFields.push(`${input.accountId ? "bound" : "anonymized"}:metadata.${key}`)
         }
@@ -5404,6 +5750,13 @@ function shouldDropForwardHeader(headerName: string, strictPrivacy: boolean) {
   if (!strictPrivacy) return false
   if (STRICT_PRIVACY_DROPPED_FORWARD_HEADERS.has(lower)) return true
   if (lower === "x-client-request-id") return false
+  if (lower === "x-codex-beta-features") return false
+  if (lower === "x-responsesapi-include-timing-metrics") return false
+  if (lower === "openai-beta") return false
+  if (lower === "traceparent") return false
+  if (lower === "tracestate") return false
+  if (lower === "x-codex-turn-metadata") return false
+  if (lower === RESPONSES_TURN_STATE_HEADER) return false
   return STRICT_PRIVACY_DROPPED_HEADER_PREFIXES.some((prefix) => lower.startsWith(prefix))
 }
 
@@ -5495,6 +5848,7 @@ function buildUpstreamForwardHeaders(input: {
   organizationId?: string
   projectId?: string
   strictPrivacy?: boolean
+  codexClientMetadata?: Record<string, string> | null
 }) {
   const strictPrivacy = input.strictPrivacy ?? isStrictUpstreamPrivacyEnabled()
   const identity = resolveForwardClientIdentity(input.incoming)
@@ -5530,6 +5884,7 @@ function buildUpstreamForwardHeaders(input: {
   } else {
     headers.delete("ChatGPT-Account-ID")
   }
+  appendOfficialCodexForwardHeaders(headers, input.codexClientMetadata)
   return headers
 }
 
@@ -6040,6 +6395,7 @@ function buildCodexRequestBody(input: {
   sessionId: string
   accountId?: string | null
   payloadInput: Array<Record<string, unknown>>
+  codexClientMetadata?: Record<string, string> | null
 }) {
   const modelConfig = getResponsesModelConfig(input.model)
   const promptCacheKey = rewriteClientIdentifierForUpstream({
@@ -6055,6 +6411,11 @@ function buildCodexRequestBody(input: {
     instructions: CHAT_INSTRUCTIONS,
     prompt_cache_key: promptCacheKey,
     stream: true,
+  }
+
+  const clientMetadata = mergeOfficialCodexClientMetadata(null, input.codexClientMetadata)
+  if (clientMetadata) {
+    requestBody.client_metadata = clientMetadata
   }
 
   if (modelConfig.requiredAutoTruncation) {
@@ -6216,6 +6577,7 @@ function buildCursorResponsesRequestBody(input: {
   parallelToolCalls?: boolean
   reasoningEffort?: string | null
   stream?: boolean
+  codexClientMetadata?: Record<string, string> | null
 }) {
   const payloadInput = convertCursorMessagesToResponsesInput(input.messages)
   const instructions = buildCursorResponsesInstructions(input.messages)
@@ -6249,6 +6611,11 @@ function buildCursorResponsesRequestBody(input: {
   }
   if (input.parallelToolCalls !== undefined) {
     requestBody.parallel_tool_calls = Boolean(input.parallelToolCalls)
+  }
+
+  const clientMetadata = mergeOfficialCodexClientMetadata(null, input.codexClientMetadata)
+  if (clientMetadata) {
+    requestBody.client_metadata = clientMetadata
   }
 
   const toolDefs = convertCursorToolsToResponsesTools(input.tools)
@@ -6825,15 +7192,18 @@ async function runChatWithAccount(input: {
     strictPrivacy: isStrictUpstreamPrivacyEnabled(),
   })
 
-  const headers = new Headers({
-    "Content-Type": "application/json",
-    Accept: "text/event-stream",
-    authorization: `Bearer ${accessToken}`,
-    originator: CODEX_ORIGINATOR,
-    "User-Agent": CODEX_USER_AGENT,
-    session_id: boundSessionId,
-    "x-client-request-id": boundSessionId,
-  })
+  const headers = appendResponsesProtocolHeaders(
+    new Headers({
+      "Content-Type": "application/json",
+      Accept: "text/event-stream",
+      authorization: `Bearer ${accessToken}`,
+      originator: CODEX_ORIGINATOR,
+      "User-Agent": CODEX_USER_AGENT,
+      session_id: boundSessionId,
+      "x-client-request-id": boundSessionId,
+    }),
+    { sessionRouteId: sessionId },
+  )
 
   if (accountId) {
     headers.set("ChatGPT-Account-ID", accountId)
@@ -6849,6 +7219,9 @@ async function runChatWithAccount(input: {
     sessionId,
     accountId: input.account.id,
     payloadInput,
+    codexClientMetadata: buildResponsesClientMetadata({
+      sessionRouteId: sessionId,
+    }),
   })
   const requestBodyBytes = new TextEncoder().encode(JSON.stringify(requestBody))
   const behaviorSignal = input.behaviorSignal ?? {
@@ -6879,6 +7252,7 @@ async function runChatWithAccount(input: {
     ).response
 
     if (chatResponse.status === 401) {
+      maybeResetResponsesTurnState(sessionId, chatResponse.status)
       const latest = accountStore.get(input.account.id) ?? input.account
       const refreshed = await refreshChatgptAccountAccess(latest)
       headers.set("authorization", `Bearer ${refreshed.accessToken}`)
@@ -7315,15 +7689,7 @@ async function proxyVirtualKeyCodexRequest(c: any, upstreamPath = "/responses") 
   let auditWireApi: "responses" | "chat_completions" | null = null
   let outgoingBody: Uint8Array | undefined = undefined
   let auditRoutingMode = "single"
-  const writeAudit = (input: Omit<RequestAuditCompatInput, "route" | "method" | "reasoningEffort">) =>
-    writeRequestAuditCompat({
-      route,
-      method,
-      reasoningEffort: auditReasoningEffort,
-      clientMode: auditClientMode,
-      wireApi: auditWireApi,
-      ...input,
-    })
+  const writeAudit = buildResponsesAuditWriter(route, method, auditReasoningEffort, auditClientMode, auditWireApi)
 
   try {
     const bearer = extractBearerToken(c.req.header("authorization"))
@@ -7337,19 +7703,32 @@ async function proxyVirtualKeyCodexRequest(c: any, upstreamPath = "/responses") 
       return c.json({ error: "Missing Authorization Bearer token" }, 401)
     }
 
+    const contentType = c.req.header("content-type")
+    const strictUpstreamPrivacy = isStrictUpstreamPrivacyEnabled()
     const outgoingBytes = await c.req.arrayBuffer()
     outgoingBody = outgoingBytes.byteLength > 0 ? new Uint8Array(outgoingBytes) : undefined
-    const auditFields = parseAuditRequestFields({
-      body: outgoingBody ?? new Uint8Array(0),
-      contentType: c.req.header("content-type"),
+    const requestBodyAnalysis = analyzeJsonRequestBody({
+      body: outgoingBody,
+      contentType,
     })
-    auditModel = auditFields.model
-    auditReasoningEffort = auditFields.reasoningEffort
     const sessionRouteId = resolveSessionRouteID({
       headers: c.req.raw.headers,
       requestUrl: c.req.url,
-      bodySessionId: auditFields.sessionId,
+      bodySessionId: requestBodyAnalysis.sessionId,
     })
+    const codexClientMetadata = buildResponsesClientMetadata({
+      incoming: c.req.raw.headers,
+      sessionRouteId,
+    })
+    const requestBodyBaseRoot =
+      upstreamPath === "/responses/compact"
+        ? stripResponsesClientMetadata(requestBodyAnalysis.parsedRoot)
+        : withResponsesProtocolMetadata(requestBodyAnalysis.parsedRoot, {
+            incoming: c.req.raw.headers,
+            sessionRouteId,
+          })
+    auditModel = requestBodyAnalysis.model
+    auditReasoningEffort = requestBodyAnalysis.reasoningEffort
     auditSessionId = sessionRouteId ?? null
 
     const resolved = resolveVirtualApiKeyWithPoolFallback(bearer, sessionRouteId)
@@ -7449,17 +7828,24 @@ async function proxyVirtualKeyCodexRequest(c: any, upstreamPath = "/responses") 
       )
 
     const buildHeadersForCurrentAccount = (auth: { accessToken: string; accountId?: string }) => {
-      const openAIHeaders = profile.providerMode === "openai" ? resolveAccountOpenAIHeaders(account) : null
-      return buildUpstreamForwardHeaders({
-        incoming: c.req.raw.headers,
-        accessToken: auth.accessToken,
-        accountId: auth.accountId,
-        boundAccountId: account.id,
-        providerMode: profile.providerMode,
-        attachChatgptAccountId: profile.attachChatgptAccountId,
-        organizationId: openAIHeaders?.organizationId,
-        projectId: openAIHeaders?.projectId,
-      })
+      const openAIHeaders = buildAccountOpenAIHeadersForProfile(account, profile.providerMode)
+      return appendResponsesProtocolHeaders(
+        buildUpstreamForwardHeadersForAccount({
+          incoming: c.req.raw.headers,
+          accessToken: auth.accessToken,
+          accountId: auth.accountId,
+          boundAccountId: account.id,
+          providerMode: profile.providerMode,
+          attachChatgptAccountId: profile.attachChatgptAccountId,
+          organizationId: openAIHeaders?.organizationId,
+          projectId: openAIHeaders?.projectId,
+          codexClientMetadata,
+        }),
+        {
+          incoming: c.req.raw.headers,
+          sessionRouteId,
+        },
+      )
     }
 
     const rerouteTriedAccounts = new Set<string>()
@@ -7553,33 +7939,31 @@ async function proxyVirtualKeyCodexRequest(c: any, upstreamPath = "/responses") 
 
     let auth: { accessToken: string; accountId?: string } = { accessToken: "" }
     let headers = new Headers()
-    const originalUpstreamRequestBody = outgoingBody
-      ? (() => {
-          const bodyCopy = new Uint8Array(outgoingBody.byteLength)
-          bodyCopy.set(outgoingBody)
-          return bodyCopy
-        })()
-      : undefined
+    const requestBodyCache = new Map<string, Uint8Array | undefined>()
     let upstreamRequestBody: Uint8Array | undefined
     const buildRequestBodyForCurrentAccount = () => {
-      const source = originalUpstreamRequestBody
-        ? (() => {
-            const bodyCopy = new Uint8Array(originalUpstreamRequestBody.byteLength)
-            bodyCopy.set(originalUpstreamRequestBody)
-            return bodyCopy
-          })()
-        : undefined
+      const cacheKey = `${strictUpstreamPrivacy ? "strict" : "standard"}:${account.id}`
+      if (requestBodyCache.has(cacheKey)) {
+        return requestBodyCache.get(cacheKey)
+      }
+      const requestBodyBytes = mergeParsedJsonBodyWithCodexMetadata({
+        body: outgoingBody,
+        parsedRoot: requestBodyBaseRoot,
+        codexClientMetadata: upstreamPath === "/responses/compact" ? null : codexClientMetadata,
+      })
       const bodySanitized = sanitizeUpstreamJsonBody({
-        body: source,
-        contentType: c.req.header("content-type"),
-        strictPrivacy: isStrictUpstreamPrivacyEnabled(),
+        body: requestBodyBytes,
+        contentType,
+        strictPrivacy: strictUpstreamPrivacy,
         accountId: account.id,
+        parsedRoot: requestBodyBaseRoot,
       })
       if (bodySanitized.strippedFields.length > 0) {
         console.log(
           `[oauth-multi-login] strict-privacy sanitized request fields route=${route} key=${auditKeyId ?? "-"} account=${account.id} fields=${bodySanitized.strippedFields.join(",")}`,
         )
       }
+      requestBodyCache.set(cacheKey, bodySanitized.body)
       return bodySanitized.body
     }
 
@@ -7827,7 +8211,7 @@ async function proxyVirtualKeyCodexRequest(c: any, upstreamPath = "/responses") 
       })
     }
 
-    const responseHeaders = new Headers(upstream.headers)
+    const responseHeaders = finalizeResponsesUpstreamHeaders(auditSessionId, upstream.headers)
 
     if (!upstream.body) {
       const text = await upstream.text().catch(() => "")
@@ -7981,15 +8365,7 @@ async function proxyVirtualKeyCursorChatCompletions(c: any) {
   let auditRoutingMode = "single"
   const auditClientMode: "cursor" = "cursor"
   const auditWireApi: "chat_completions" = "chat_completions"
-  const writeAudit = (input: Omit<RequestAuditCompatInput, "route" | "method" | "reasoningEffort">) =>
-    writeRequestAuditCompat({
-      route,
-      method,
-      reasoningEffort: auditReasoningEffort,
-      clientMode: auditClientMode,
-      wireApi: auditWireApi,
-      ...input,
-    })
+  const writeAudit = buildResponsesAuditWriter(route, method, auditReasoningEffort, auditClientMode, auditWireApi)
 
   try {
     const outgoingBytes = await c.req.arrayBuffer()
@@ -8037,10 +8413,41 @@ async function proxyVirtualKeyCursorChatCompletions(c: any) {
       return toOpenAICompatibleErrorResponse(message, status, status === 401 ? "authentication_error" : "invalid_request_error")
     }
 
+    const sessionRouteId = context.sessionId ?? null
     const consistentContext = await ensureResolvedPoolAccountConsistent({
       resolved: context.resolved,
-      sessionId: context.sessionId,
+      sessionId: sessionRouteId,
     })
+    const codexClientMetadata = buildResponsesClientMetadata({
+      incoming: c.req.raw.headers,
+      sessionRouteId,
+    })
+    const parsedBodyRecord = parsedBody as Record<string, unknown>
+    const encodedCursorClientMetadata = mergeOfficialCodexClientMetadata(
+      asRecord(parsedBodyRecord.client_metadata) ?? asRecord(parsedBodyRecord.clientMetadata),
+      codexClientMetadata,
+    )
+    const cursorRequestBody =
+      encodedCursorClientMetadata && !hasOwnKey(parsedBodyRecord, "client_metadata")
+        ? ({ ...parsedBody, client_metadata: encodedCursorClientMetadata } as typeof parsedBody)
+        : parsedBody
+    if (encodedCursorClientMetadata && hasOwnKey(parsedBodyRecord, "client_metadata")) {
+      ;(cursorRequestBody as Record<string, unknown>).client_metadata = encodedCursorClientMetadata as Record<string, unknown>
+    }
+    if (encodedCursorClientMetadata && hasOwnKey(parsedBodyRecord, "clientMetadata")) {
+      delete (cursorRequestBody as Record<string, unknown>).clientMetadata
+    }
+    const normalizedCursorMessages = cursorRequestBody.messages as Array<Record<string, unknown>>
+    const normalizedCursorTools = cursorRequestBody.tools as Array<Record<string, unknown>>
+    const normalizedCursorToolChoice = cursorRequestBody.tool_choice
+    const normalizedCursorTemperature = cursorRequestBody.temperature
+    const normalizedCursorMaxTokens = cursorRequestBody.max_tokens
+    const normalizedCursorParallelToolCalls = cursorRequestBody.parallel_tool_calls
+    const normalizedCursorStream = cursorRequestBody.stream === true
+    const normalizedCursorReasoningEffort = auditReasoningEffort
+    const normalizedCursorRawBody = new TextEncoder().encode(JSON.stringify(cursorRequestBody))
+    outgoingBody = normalizedCursorRawBody
+
     if (!consistentContext.ok) {
       writeAudit({
         virtualKeyId: context.resolved.key.id,
@@ -8092,17 +8499,24 @@ async function proxyVirtualKeyCursorChatCompletions(c: any) {
       )
 
     const buildHeadersForCurrentAccount = (auth: { accessToken: string; accountId?: string }) => {
-      const openAIHeaders = profile.providerMode === "openai" ? resolveAccountOpenAIHeaders(account) : null
-      return buildUpstreamForwardHeaders({
-        incoming: c.req.raw.headers,
-        accessToken: auth.accessToken,
-        accountId: auth.accountId,
-        boundAccountId: account.id,
-        providerMode: profile.providerMode,
-        attachChatgptAccountId: profile.attachChatgptAccountId,
-        organizationId: openAIHeaders?.organizationId,
-        projectId: openAIHeaders?.projectId,
-      })
+      const openAIHeaders = buildAccountOpenAIHeadersForProfile(account, profile.providerMode)
+      return appendResponsesProtocolHeaders(
+        buildUpstreamForwardHeadersForAccount({
+          incoming: c.req.raw.headers,
+          accessToken: auth.accessToken,
+          accountId: auth.accountId,
+          boundAccountId: account.id,
+          providerMode: profile.providerMode,
+          attachChatgptAccountId: profile.attachChatgptAccountId,
+          organizationId: openAIHeaders?.organizationId,
+          projectId: openAIHeaders?.projectId,
+          codexClientMetadata,
+        }),
+        {
+          incoming: c.req.raw.headers,
+          sessionRouteId,
+        },
+      )
     }
 
     const rerouteTriedAccounts = new Set<string>()
@@ -8253,14 +8667,15 @@ async function proxyVirtualKeyCursorChatCompletions(c: any) {
         model: resolvedModelId,
         sessionId: context.sessionId,
         accountId: account.id,
-        messages: parsedBody.messages as Array<Record<string, unknown>>,
-        tools: parsedBody.tools as Array<Record<string, unknown>>,
-        toolChoice: parsedBody.tool_choice,
-        temperature: parsedBody.temperature,
-        maxTokens: parsedBody.max_tokens,
-        parallelToolCalls: parsedBody.parallel_tool_calls,
-        reasoningEffort: auditReasoningEffort,
-        stream: parsedBody.stream === true,
+        messages: normalizedCursorMessages,
+        tools: normalizedCursorTools,
+        toolChoice: normalizedCursorToolChoice,
+        temperature: normalizedCursorTemperature,
+        maxTokens: normalizedCursorMaxTokens,
+        parallelToolCalls: normalizedCursorParallelToolCalls,
+        reasoningEffort: normalizedCursorReasoningEffort,
+        stream: normalizedCursorStream,
+        codexClientMetadata,
       })
       return new TextEncoder().encode(JSON.stringify(requestBody))
     }
@@ -8482,7 +8897,7 @@ async function proxyVirtualKeyCursorChatCompletions(c: any) {
       return toOpenAICompatibleErrorResponse(bodyText || `Upstream request failed (${upstream.status})`, upstream.status, upstream.status === 401 ? "authentication_error" : "server_error")
     }
 
-    if (parsedBody.stream) {
+    if (normalizedCursorStream) {
       const auditId = writeAudit({
         providerId: auditProviderId,
         accountId: auditAccountId,
@@ -8514,7 +8929,7 @@ async function proxyVirtualKeyCursorChatCompletions(c: any) {
           virtualKeyId: auditKeyId,
           sessionId: auditSessionId,
           reasoningEffort: auditReasoningEffort,
-          includeUsage: parsedBody.stream_options?.include_usage === true,
+          includeUsage: cursorRequestBody.stream_options?.include_usage === true,
         }),
         {
           status: 200,
@@ -8613,6 +9028,7 @@ async function proxyVirtualKeyRateLimitUsage(c: any) {
   let auditProviderId: string | null = null
   let auditAccountId: string | null = null
   let auditKeyId: string | null = null
+  let auditSessionId: string | null = null
   let auditClientMode: "codex" | "cursor" | null = null
   let auditWireApi: "responses" | "chat_completions" | null = null
   let behaviorRelease: (() => void) | null = null
@@ -8642,6 +9058,7 @@ async function proxyVirtualKeyRateLimitUsage(c: any) {
       headers: c.req.raw.headers,
       requestUrl: c.req.url,
     })
+    auditSessionId = sessionRouteId ?? null
     const resolved = resolveVirtualApiKeyWithPoolFallback(bearer, sessionRouteId)
     if (!resolved) {
       writeAudit({
@@ -8766,7 +9183,7 @@ async function proxyVirtualKeyRateLimitUsage(c: any) {
       return c.json({ error: message }, 401)
     }
 
-    const openAIHeaders = profile.providerMode === "openai" ? resolveAccountOpenAIHeaders(account) : null
+    const openAIHeaders = buildAccountOpenAIHeadersForProfile(account, profile.providerMode)
     const headers = buildUpstreamForwardHeaders({
       incoming: c.req.raw.headers,
       accessToken,
@@ -8825,7 +9242,7 @@ async function proxyVirtualKeyRateLimitUsage(c: any) {
       markAccountHealthy(account.id, "usage")
     }
 
-    const responseHeaders = new Headers(upstream.headers)
+    const responseHeaders = finalizeResponsesUpstreamHeaders(auditSessionId, upstream.headers)
     const upstreamRequestId =
       upstream.headers.get("x-request-id") ||
       upstream.headers.get("x-oai-request-id") ||

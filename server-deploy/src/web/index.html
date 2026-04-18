@@ -3526,7 +3526,7 @@
       <aside class="sidebar">
         <div class="brand">
           <h1>Codex Gateway</h1>
-          <div class="ver">v1.1.38</div>
+          <div class="ver">v1.2.0</div>
         </div>
         <nav class="nav">
           <button class="nav-btn active" data-view="dashboard"><span>📊</span><span>仪表盘</span></button>
@@ -5492,8 +5492,9 @@
       }
 
       function formatLatencyMs(value) {
-        const ms = Math.max(0, Math.floor(Number(value || 0)));
-        return `${ms.toLocaleString()} ms`;
+        const ms = Math.max(0, Number(value || 0));
+        const seconds = ms / 1000;
+        return `${seconds.toLocaleString(undefined, { minimumFractionDigits: 3, maximumFractionDigits: 3 })} s`;
       }
 
       function formatPercent(value) {

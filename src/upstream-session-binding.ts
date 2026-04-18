@@ -12,9 +12,8 @@ export const ACCOUNT_BOUND_SESSION_KEYS_LOWER = new Set([
   "sessionid",
   "session-id",
   "x-session-id",
-  "previous_response_id",
-  "previousresponseid",
-  "previous-response-id",
+  // previous_response_id is upstream-issued and must pass through unchanged
+  // so official Codex incremental continuation keeps working.
   "conversation",
   "conversation_id",
   "conversationid",

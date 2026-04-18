@@ -33,6 +33,14 @@ function normalizeQuotaBucketLabel(value) {
   const normalized = String(value || "").trim()
   if (!normalized) return ""
   const lower = normalized.toLowerCase()
+  if (
+    lower.includes("codex_other") ||
+    lower.includes("codex-other") ||
+    lower.includes("code_review") ||
+    lower.includes("code-review")
+  ) {
+    return "代码审查"
+  }
   if (lower.includes("review") || normalized.includes("审查")) return "代码审查"
   if (lower.includes("week") || normalized.includes("周")) return ""
   if (lower.includes("hour") || normalized.includes("小时")) return ""
@@ -80,12 +88,10 @@ function buildQuotaRows(account) {
 
   for (const entry of quota.additional || []) {
     pushWindow(entry, "primary", "5小时额度")
-    if (rows.length >= 3) break
     pushWindow(entry, "secondary", "周额度")
-    if (rows.length >= 3) break
   }
 
-  return rows.slice(0, 3)
+  return rows
 }
 
 function resolvePlanLabel(account) {

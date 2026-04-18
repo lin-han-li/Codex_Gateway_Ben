@@ -120,6 +120,12 @@ function run(command, args, options = {}) {
   })
 }
 
+async function syncDerivedSources() {
+  console.log("[build-server] syncing derived source copies")
+  await run("node", ["scripts/sync-derived-copies.mjs", "--write"])
+}
+
+await syncDerivedSources()
 await mkdir(serverDir, { recursive: true })
 for (const entry of await readdir(serverDir, { withFileTypes: true }).catch(() => [])) {
   if (entry.isFile() && entry.name.startsWith("oauth-server")) {

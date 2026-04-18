@@ -92,8 +92,22 @@ export function normalizeRateLimitUsagePayload(payload: unknown) {
   const planType = planTypeRaw.length > 0 ? planTypeRaw : null
 
   const allEntries: AccountQuotaEntry[] = []
+  const seenEntryKeys = new Set<string>()
+  const pushUniqueEntry = (entry: AccountQuotaEntry | null) => {
+    if (!entry) return
+    const key = `${entry.limitId ?? ""}::${entry.limitName ?? ""}`
+    if (seenEntryKeys.has(key)) return
+    seenEntryKeys.add(key)
+    allEntries.push(entry)
+  }
+
   const codexEntry = normalizeQuotaEntry(root.rate_limit, "codex", null)
-  if (codexEntry) allEntries.push(codexEntry)
+  pushUniqueEntry(codexEntry)
+
+  // OpenAI has started returning code review quota as a dedicated top-level field
+  // instead of only via additional_rate_limits.
+  const codeReviewEntry = normalizeQuotaEntry(root.code_review_rate_limit, "code_review", "code_review")
+  pushUniqueEntry(codeReviewEntry)
 
   const additionalRaw = Array.isArray(root.additional_rate_limits) ? root.additional_rate_limits : []
   for (const item of additionalRaw) {
@@ -103,7 +117,7 @@ export function normalizeRateLimitUsagePayload(payload: unknown) {
     const limitName = String(row.limit_name ?? "").trim()
     const limitId = meteredFeature.length > 0 ? meteredFeature : limitName.length > 0 ? limitName : null
     const entry = normalizeQuotaEntry(row.rate_limit, limitId, limitName || null)
-    if (entry) allEntries.push(entry)
+    pushUniqueEntry(entry)
   }
 
   const primary = allEntries.find((item) => item.limitId === "codex") ?? allEntries[0] ?? null

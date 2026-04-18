@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(bun run *)",
+      "Bash(git -C codex_office_source remote -v)",
+      "Bash(git -C codex_office_source status --short --branch)",
+      "Bash(git -C codex_office_source rev-parse --abbrev-ref HEAD)",
+      "Bash(git -C codex_office_source fetch origin)",
+      "Bash(git -C codex_office_source pull --ff-only origin main)",
+      "Bash(git -C codex_office_source rev-parse HEAD)",
+      "Bash(git -C codex_office_source log -1 --oneline)",
+      "Bash(python *)"
+    ]
+  }
+}
