@@ -1,4 +1,246 @@
 import type { Hono } from "hono"
+import os from "node:os"
+import path from "node:path"
+import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises"
+import { restartOfficialCodexApp } from "../codex-local-auth"
+import { loadCodexInstructionsText } from "../codex-version"
+
+const CODEX_GATEWAY_BASE_INSTRUCTIONS =
+  (await loadCodexInstructionsText().catch(() => ({ content: "You are Codex, a coding agent based on GPT-5." }))).content ||
+  "You are Codex, a coding agent based on GPT-5."
+
+const CODEX_GATEWAY_REASONING_LEVELS = [
+  { effort: "low", description: "Fast responses with lighter reasoning" },
+  { effort: "medium", description: "Balances speed and reasoning depth for everyday tasks" },
+  { effort: "high", description: "Greater reasoning depth for complex problems" },
+  { effort: "xhigh", description: "Extra high reasoning depth for complex problems" },
+]
+
+function buildCodexGatewayModelInfo(
+  id: string,
+  displayName: string,
+  priority: number,
+  defaultReasoningLevel: string,
+  additionalSpeedTiers: string[] = [],
+) {
+  return {
+    slug: id,
+    id,
+    object: "model",
+    created: 0,
+    owned_by: "openai",
+    display_name: displayName,
+    displayName,
+    description: `${displayName} via Codex Gateway`,
+    default_reasoning_level: defaultReasoningLevel,
+    defaultReasoningEffort: defaultReasoningLevel,
+    supported_reasoning_levels: CODEX_GATEWAY_REASONING_LEVELS,
+    supportedReasoningEfforts: CODEX_GATEWAY_REASONING_LEVELS,
+    shell_type: "shell_command",
+    visibility: "list",
+    hidden: false,
+    supported_in_api: true,
+    priority,
+    additional_speed_tiers: additionalSpeedTiers,
+    additionalSpeedTiers,
+    availability_nux: null,
+    availabilityNux: null,
+    upgrade: null,
+    upgradeInfo: null,
+    base_instructions: CODEX_GATEWAY_BASE_INSTRUCTIONS,
+    supports_reasoning_summaries: true,
+    default_reasoning_summary: "none",
+    support_verbosity: true,
+    default_verbosity: "low",
+    apply_patch_tool_type: "freeform",
+    web_search_tool_type: "text_and_image",
+    truncation_policy: { mode: "tokens", limit: 10000 },
+    supports_parallel_tool_calls: true,
+    supports_image_detail_original: true,
+    context_window: 272000,
+    max_context_window: id === "gpt-5.4" ? 1000000 : 272000,
+    effective_context_window_percent: 95,
+    experimental_supported_tools: [],
+    input_modalities: ["text", "image"],
+    inputModalities: ["text", "image"],
+    supports_search_tool: true,
+    supportsPersonality: true,
+    isDefault: id === "gpt-5.5",
+  }
+}
+
+const CODEX_GATEWAY_MODEL_CATALOG: Record<string, Record<string, unknown>> = {
+  "gpt-5.5": buildCodexGatewayModelInfo("gpt-5.5", "GPT-5.5", 0, "xhigh", ["fast"]),
+  "gpt-5.4": buildCodexGatewayModelInfo("gpt-5.4", "GPT-5.4", 1, "medium", ["fast"]),
+  "gpt-5.4-mini": buildCodexGatewayModelInfo("gpt-5.4-mini", "GPT-5.4-Mini", 2, "medium", []),
+  "gpt-5.3-codex": buildCodexGatewayModelInfo("gpt-5.3-codex", "GPT-5.3 Codex", 3, "medium", []),
+  "gpt-5.2": buildCodexGatewayModelInfo("gpt-5.2", "GPT-5.2", 4, "medium", []),
+}
+
+function timestampForFilename() {
+  return new Date().toISOString().replace(/[-:]/g, "").replace(/\..+$/, "").replace("T", "_")
+}
+
+function toTomlString(value: string) {
+  return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`
+}
+
+function normalizeNonEmpty(value: unknown) {
+  const normalized = String(value ?? "").trim()
+  return normalized.length > 0 ? normalized : ""
+}
+
+function normalizeEpochMs(value: unknown) {
+  if (value === null || value === undefined || value === "") return null
+  const numeric = typeof value === "number" ? value : Number(value)
+  if (Number.isFinite(numeric)) return numeric
+  const parsed = Date.parse(String(value))
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+function resolveCodexHome() {
+  return process.env.CODEX_HOME ? path.resolve(process.env.CODEX_HOME) : path.join(os.homedir(), ".codex")
+}
+
+async function readTextIfExists(filePath: string) {
+  try {
+    return await readFile(filePath, "utf8")
+  } catch {
+    return ""
+  }
+}
+
+async function backupFileIfExists(filePath: string, stamp: string) {
+  try {
+    await readFile(filePath)
+  } catch {
+    return null
+  }
+  const parsed = path.parse(filePath)
+  const backupPath = path.join(parsed.dir, `${parsed.name}.backup.${stamp}${parsed.ext}`)
+  await copyFile(filePath, backupPath)
+  return backupPath
+}
+
+async function readCurrentCodexAuthBinding(authPath: string) {
+  let raw = ""
+  try {
+    raw = await readFile(authPath, "utf8")
+  } catch {
+    throw new Error("Codex is not logged in. Please click an account Codex login button first, then run direct configuration.")
+  }
+  let parsed: any
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    throw new Error("Codex auth.json is not valid JSON. Please re-login Codex first.")
+  }
+  if (parsed?.auth_mode !== "chatgpt") {
+    throw new Error("Codex direct configuration requires ChatGPT/OAuth login mode. Please login with an account Codex button first.")
+  }
+  const tokens = parsed?.tokens && typeof parsed.tokens === "object" ? parsed.tokens : {}
+  const accessToken = normalizeNonEmpty(tokens.access_token)
+  if (!accessToken) {
+    throw new Error("Codex auth.json is missing access_token. Please re-login Codex first.")
+  }
+  return {
+    accessToken,
+    idToken: normalizeNonEmpty(tokens.id_token),
+    accountId: normalizeNonEmpty(tokens.account_id),
+  }
+}
+
+function withoutGatewayManagedConfigLines(raw: string) {
+  return raw
+    .replace(/^\s*openai_base_url\s*=.*(?:\r?\n)?/gm, "")
+    .replace(/^\s*model_catalog_json\s*=.*(?:\r?\n)?/gm, "")
+    .replace(/^\s*cli_auth_credentials_store\s*=.*(?:\r?\n)?/gm, "")
+    .trimStart()
+}
+
+function ensureFastModeFeature(raw: string) {
+  const lines = raw.split(/\r?\n/)
+  let featuresIndex = lines.findIndex((line) => /^\s*\[features\]\s*$/.test(line))
+  if (featuresIndex < 0) {
+    if (lines.length > 0 && lines[lines.length - 1]?.trim()) lines.push("")
+    lines.push("[features]", "fast_mode = true")
+    return `${lines.join("\n").trimStart()}\n`
+  }
+
+  let nextSection = lines.length
+  for (let index = featuresIndex + 1; index < lines.length; index += 1) {
+    if (/^\s*\[/.test(lines[index] ?? "")) {
+      nextSection = index
+      break
+    }
+  }
+  const fastIndex = lines.findIndex(
+    (line, index) => index > featuresIndex && index < nextSection && /^\s*fast_mode\s*=/.test(line),
+  )
+  if (fastIndex >= 0) {
+    lines[fastIndex] = "fast_mode = true"
+  } else {
+    lines.splice(featuresIndex + 1, 0, "fast_mode = true")
+  }
+  return `${lines.join("\n").trimStart()}\n`
+}
+
+function buildCodexGatewayModelCatalog(row: { fixedModel?: unknown; fixed_model?: unknown }) {
+  const fixedModel = String(row.fixedModel ?? row.fixed_model ?? "").trim()
+  if (fixedModel) {
+    const known = CODEX_GATEWAY_MODEL_CATALOG[fixedModel]
+    return {
+      models: [known ?? buildCodexGatewayModelInfo(fixedModel, fixedModel, 0, "medium", [])],
+    }
+  }
+  return { models: Object.values(CODEX_GATEWAY_MODEL_CATALOG) }
+}
+
+async function writeCodexGatewayConfigForVirtualKey(input: {
+  row: Record<string, unknown>
+  apiBase: string
+  restartCodexApp?: boolean
+}) {
+  const codexHome = resolveCodexHome()
+  await mkdir(codexHome, { recursive: true })
+
+  const stamp = `${timestampForFilename()}.${process.pid}`
+  const configPath = path.join(codexHome, "config.toml")
+  const authPath = path.join(codexHome, "auth.json")
+  const modelCatalogPath = path.join(codexHome, "codex-gateway-models.json")
+  const [configBackupPath, modelCatalogBackupPath] = await Promise.all([
+    backupFileIfExists(configPath, stamp),
+    backupFileIfExists(modelCatalogPath, stamp),
+  ])
+
+  const modelCatalog = buildCodexGatewayModelCatalog(input.row)
+  const modelCatalogJson = `${JSON.stringify(modelCatalog, null, 2)}\n`
+  await writeFile(modelCatalogPath, modelCatalogJson, "utf8")
+
+  const existingConfig = withoutGatewayManagedConfigLines(await readTextIfExists(configPath))
+  const configHeader = [
+    'cli_auth_credentials_store = "file"',
+    `openai_base_url = ${toTomlString(input.apiBase)}`,
+    `model_catalog_json = ${toTomlString(modelCatalogPath)}`,
+  ].join("\n")
+  const nextConfig = ensureFastModeFeature(existingConfig ? `${configHeader}\n${existingConfig}` : `${configHeader}\n`)
+  await writeFile(configPath, nextConfig, "utf8")
+
+  const appRestart = input.restartCodexApp === false ? null : restartOfficialCodexApp()
+  return {
+    codexHome,
+    configPath,
+    authPath,
+    modelCatalogPath,
+    backups: {
+      configPath: configBackupPath,
+      authPath: null,
+      modelCatalogPath: modelCatalogBackupPath,
+    },
+    appRestart,
+    authPreserved: true,
+  }
+}
 
 export type VirtualKeysRouteDeps = {
   accountStore: any
@@ -8,6 +250,13 @@ export type VirtualKeysRouteDeps = {
   getCachedPoolConsistencyResult: (providerId: string) => any
   hasSensitiveActionConfirmation: (c: any) => boolean
   errorMessage: (error: unknown) => string
+  setCodexOAuthBridgeBinding?: (input: {
+    virtualKeyId: string
+    accessToken?: string | null
+    idToken?: string | null
+    accountId?: string | null
+    email?: string | null
+  }) => Promise<{ keys: string[]; updatedAt: number }>
 }
 
 export function registerVirtualKeysRoutes(app: Hono, deps: VirtualKeysRouteDeps) {
@@ -75,6 +324,8 @@ export function registerVirtualKeysRoutes(app: Hono, deps: VirtualKeysRouteDeps)
         clientMode: normalizedClientMode,
         wireApi: normalizedWireApi,
         name: input.name,
+        fixedModel: input.fixedModel,
+        fixedReasoningEffort: input.fixedReasoningEffort,
         validityDays: input.validityDays,
       })
       return c.json({
@@ -138,6 +389,45 @@ export function registerVirtualKeysRoutes(app: Hono, deps: VirtualKeysRouteDeps)
         return c.json({ error: "Virtual API key cannot be decrypted. Please renew or issue a new key." }, 409)
       }
       return c.json({ key })
+    } catch (error) {
+      return c.json({ error: deps.errorMessage(error) }, 400)
+    }
+  })
+
+  app.post("/api/virtual-keys/:id/configure-codex", async (c) => {
+    try {
+      const id = c.req.param("id")
+      const row = deps.accountStore.getVirtualApiKeyByID(id)
+      if (!row) return c.json({ error: "Virtual API key not found" }, 404)
+      if (row.isRevoked) return c.json({ error: "Virtual API key is revoked" }, 409)
+      const expiresAt = normalizeEpochMs(row.expiresAt)
+      if (expiresAt && expiresAt <= Date.now()) {
+        return c.json({ error: "Virtual API key is expired" }, 409)
+      }
+      if (row.clientMode === "cursor" || row.wireApi === "chat_completions") {
+        return c.json({ error: "Cursor keys cannot be configured for Codex App/CLI. Please use a Codex key." }, 400)
+      }
+
+      const rawBody = await c.req.json().catch(() => ({}))
+      const restartCodexApp = rawBody?.restartCodexApp !== false
+      const requestOrigin = new URL(c.req.url).origin
+      const configuredBase = String(rawBody?.apiBase ?? `${requestOrigin}/v1`).trim()
+      const apiBase = configuredBase.endsWith("/") ? configuredBase.slice(0, -1) : configuredBase
+      const codexHome = resolveCodexHome()
+      const authPath = path.join(codexHome, "auth.json")
+      const currentAuth = await readCurrentCodexAuthBinding(authPath)
+      const binding = deps.setCodexOAuthBridgeBinding
+        ? await deps.setCodexOAuthBridgeBinding({
+            virtualKeyId: String(row.id ?? id),
+            ...currentAuth,
+          })
+        : null
+      const result = await writeCodexGatewayConfigForVirtualKey({
+        row,
+        apiBase,
+        restartCodexApp,
+      })
+      return c.json({ success: true, ...result, bridgeBinding: binding })
     } catch (error) {
       return c.json({ error: deps.errorMessage(error) }, 400)
     }

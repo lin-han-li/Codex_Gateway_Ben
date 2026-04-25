@@ -1,0 +1,4 @@
+﻿openai_base_url = "http://127.0.0.1:65260/v1"
+cli_auth_credentials_store = "file"
+model = "gpt-5.5"
+model_reasoning_effort = "xhigh"

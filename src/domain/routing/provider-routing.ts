@@ -53,12 +53,14 @@ export function buildProviderRoutingHintsFromState(input: {
         Boolean(account.accessToken) &&
         !excluded.has(account.id),
     )
-    preferredPlanCohort = selectPreferredPlanCohort({
-      candidates,
-      pressureScoreByAccountId: input.pressureScoreByAccountId,
-      headroomByAccountId: input.headroomByAccountId,
-      preferredPlanCohort,
-    })
+    if (!(cohortMode === "strict" && preferredPlanCohort)) {
+      preferredPlanCohort = selectPreferredPlanCohort({
+        candidates,
+        pressureScoreByAccountId: input.pressureScoreByAccountId,
+        headroomByAccountId: input.headroomByAccountId,
+        preferredPlanCohort,
+      })
+    }
     if (preferredPlanCohort) {
       for (const account of candidates) {
         if (resolveAccountPlanCohort(account) !== preferredPlanCohort) {

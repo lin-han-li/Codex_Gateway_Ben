@@ -19,6 +19,42 @@ export function createLogsView(deps) {
     renderSettingsReadOnly,
   } = deps
 
+  function formatRequestReasoningLabel(value) {
+    const normalized = String(value || "").trim()
+    return normalized ? `强度 ${normalized}` : "未记录"
+  }
+
+  function renderRequestTokenBreakdown(row) {
+    const inputTokens = Math.max(0, Math.floor(Number(row?.inputTokens || 0)))
+    const cachedTokens = Math.max(0, Math.floor(Number(row?.cachedInputTokens || 0)))
+    const outputTokens = Math.max(0, Math.floor(Number(row?.outputTokens || 0)))
+    const totalCandidate = Math.max(0, Math.floor(Number(row?.totalTokens || 0)))
+    const totalTokens = totalCandidate > 0 ? totalCandidate : inputTokens + outputTokens
+    const explicitBillableTokens = Math.max(0, Math.floor(Number(row?.billableTokens || 0)))
+    const billableTokens =
+      explicitBillableTokens > 0 ? explicitBillableTokens : Math.max(0, inputTokens - cachedTokens) + outputTokens
+    const reasoningTokens = Math.max(0, Math.floor(Number(row?.reasoningOutputTokens || 0)))
+    const hasTokenMetrics =
+      totalTokens > 0 ||
+      inputTokens > 0 ||
+      outputTokens > 0 ||
+      cachedTokens > 0 ||
+      billableTokens > 0 ||
+      reasoningTokens > 0
+
+    if (!hasTokenMetrics) return "-"
+
+    const primaryLine = `总 ${formatCompactNumber(totalTokens)} · 输入 ${formatCompactNumber(inputTokens)} · 输出 ${formatCompactNumber(outputTokens)}`
+    const secondaryParts = [
+      `缓存输入 ${formatCompactNumber(cachedTokens)}`,
+      `计费 ${formatCompactNumber(billableTokens)}`,
+    ]
+    if (reasoningTokens > 0) {
+      secondaryParts.push(`推理输出 ${formatCompactNumber(reasoningTokens)}`)
+    }
+    return `<div>${esc(primaryLine)}</div><div class="muted">${esc(secondaryParts.join(" · "))}</div>`
+  }
+
   function drawRequestLogsTable() {
     const tbody = document.getElementById("requestLogsTableBody")
     const meta = document.getElementById("requestLogsMeta")
@@ -52,13 +88,7 @@ export function createLogsView(deps) {
           const model = String(row?.model || "").trim() || "-"
           const reasoningEffort = String(row?.reasoningEffort || "").trim()
           const errorText = String(row?.error || "").trim()
-          const totalTokens = Math.max(0, Math.floor(Number(row?.totalTokens || 0)))
-          const inputTokens = Math.max(0, Math.floor(Number(row?.inputTokens || 0)))
-          const cachedTokens = Math.max(0, Math.floor(Number(row?.cachedInputTokens || 0)))
-          const tokenText =
-            totalTokens > 0 || inputTokens > 0 || cachedTokens > 0
-              ? `${formatCompactNumber(totalTokens)} / ${formatCompactNumber(inputTokens)} / ${formatCompactNumber(cachedTokens)}`
-              : "-"
+          const tokenBreakdown = renderRequestTokenBreakdown(row)
           const estimatedCostText =
             row?.estimatedCostUsd === null || row?.estimatedCostUsd === undefined
               ? "-"
@@ -68,10 +98,10 @@ export function createLogsView(deps) {
               <td>${esc(dt(row?.at))}</td>
               <td><div><strong>${esc(String(row?.method || "-").toUpperCase())}</strong></div><div class="muted">${esc(String(row?.route || "-"))}</div></td>
               <td><div>${esc(formatRequestLogAccount(row?.accountId))}</div><div class="muted">${esc(formatRequestLogKey(row?.virtualKeyId))}</div></td>
-              <td><div>${esc(model)}</div><div class="muted">${esc(reasoningEffort || "-")}</div></td>
+              <td><div>${esc(model)}</div><div class="muted">${esc(formatRequestReasoningLabel(reasoningEffort))}</div></td>
               <td><span class="${statusMeta.className}">${esc(statusMeta.text)}</span></td>
               <td>${esc(formatLatencyMs(row?.latencyMs))}</td>
-              <td class="mono">${esc(tokenText)}</td>
+              <td class="mono">${tokenBreakdown}</td>
               <td class="mono">${esc(estimatedCostText)}</td>
               <td class="request-error" title="${esc(errorText)}">${esc(errorText || "-")}</td>
             </tr>
@@ -136,6 +166,7 @@ export function createLogsView(deps) {
             cachedInputTokens: Math.max(0, Math.floor(Number(item?.cachedInputTokens || 0))),
             outputTokens: Math.max(0, Math.floor(Number(item?.outputTokens || 0))),
             totalTokens: Math.max(0, Math.floor(Number(item?.totalTokens || 0))),
+            billableTokens: Math.max(0, Math.floor(Number(item?.billableTokens || 0))),
             reasoningOutputTokens: Math.max(0, Math.floor(Number(item?.reasoningOutputTokens || 0))),
             estimatedCostUsd:
               item?.estimatedCostUsd === null || item?.estimatedCostUsd === undefined

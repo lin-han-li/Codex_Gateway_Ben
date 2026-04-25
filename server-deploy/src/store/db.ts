@@ -1,5 +1,6 @@
 import { Database } from "bun:sqlite"
 import { createHash, randomBytes } from "node:crypto"
+import { resolveAccountPlanCohort } from "../domain/accounts/quota"
 import type { LoginResult, StoredAccount } from "../types"
 import { isSecretEncryptionEnabled, openSecret, sealSecret } from "../security/secrets"
 import {
@@ -26,6 +27,7 @@ type AccountRow = {
   enterprise_url: string
   access_token: string
   refresh_token: string | null
+  id_token: string | null
   expires_at: number | null
   is_active: number
   metadata_json: string
@@ -50,6 +52,8 @@ export type VirtualApiKeyRecord = {
   clientMode: VirtualKeyClientMode
   wireApi: VirtualKeyWireAPI
   name: string | null
+  fixedModel: string | null
+  fixedReasoningEffort: string | null
   keyPrefix: string
   isRevoked: boolean
   promptTokens: number
@@ -148,6 +152,8 @@ type VirtualApiKeyRow = {
   client_mode: string | null
   wire_api: string | null
   name: string | null
+  fixed_model: string | null
+  fixed_reasoning_effort: string | null
   key_hash: string
   key_secret: string | null
   key_prefix: string
@@ -278,6 +284,7 @@ function toStoredAccount(row: AccountRow): StoredAccount {
     enterpriseUrl: row.enterprise_url || null,
     accessToken: openSecret(row.access_token) ?? "",
     refreshToken: openSecret(row.refresh_token),
+    idToken: openSecret(row.id_token),
     expiresAt: row.expires_at,
     isActive: row.is_active === 1,
     metadata: safeJson(row.metadata_json),
@@ -298,6 +305,8 @@ function toVirtualApiKeyRecord(row: VirtualApiKeyRow): VirtualApiKeyRecord {
     clientMode: row.client_mode === "cursor" ? "cursor" : "codex",
     wireApi: row.wire_api === "chat_completions" ? "chat_completions" : "responses",
     name: row.name,
+    fixedModel: row.fixed_model ?? null,
+    fixedReasoningEffort: row.fixed_reasoning_effort ?? null,
     keyPrefix: row.key_prefix,
     isRevoked: row.is_revoked === 1,
     promptTokens: row.prompt_tokens ?? 0,
@@ -327,6 +336,34 @@ function normalizeSessionRouteID(value?: string | null) {
   const normalized = String(value ?? "").trim()
   if (!normalized) return undefined
   return normalized.slice(0, 240)
+}
+
+function normalizeVirtualKeyOverrideValue(value?: string | null) {
+  const normalized = String(value ?? "").trim().toLowerCase()
+  if (!normalized) return null
+  return normalized.slice(0, 120)
+}
+
+function normalizeVirtualKeyDisplayName(value?: string | null) {
+  const normalized = String(value ?? "").trim()
+  if (!normalized) return null
+  return normalized.slice(0, 120)
+}
+
+function buildVirtualKeyDefaultName(input: {
+  name?: string | null
+  clientMode?: VirtualKeyClientMode | null
+  fixedModel?: string | null
+  fixedReasoningEffort?: string | null
+}) {
+  const explicitName = normalizeVirtualKeyDisplayName(input.name)
+  if (explicitName) return explicitName
+  const fixedModel = normalizeVirtualKeyOverrideValue(input.fixedModel)
+  const fixedReasoningEffort = normalizeVirtualKeyOverrideValue(input.fixedReasoningEffort)
+  if (!fixedModel && !fixedReasoningEffort) return null
+  const clientLabel = input.clientMode === "cursor" ? "Cursor" : "Codex"
+  const suffix = [fixedModel, fixedReasoningEffort].filter(Boolean).join(" ")
+  return normalizeVirtualKeyDisplayName(`${clientLabel} fixed ${suffix}`)
 }
 
 type RequestAuditSqlFilters = {
@@ -557,6 +594,7 @@ export class AccountStore {
         enterprise_url TEXT NOT NULL DEFAULT '',
         access_token TEXT NOT NULL,
         refresh_token TEXT,
+        id_token TEXT,
         expires_at INTEGER,
         is_active INTEGER NOT NULL DEFAULT 0,
         metadata_json TEXT NOT NULL DEFAULT '{}',
@@ -578,6 +616,8 @@ export class AccountStore {
         client_mode TEXT NOT NULL DEFAULT 'codex',
         wire_api TEXT NOT NULL DEFAULT 'responses',
         name TEXT,
+        fixed_model TEXT,
+        fixed_reasoning_effort TEXT,
         key_hash TEXT NOT NULL UNIQUE,
         key_secret TEXT,
         key_prefix TEXT NOT NULL,
@@ -643,10 +683,13 @@ export class AccountStore {
     this.ensureVirtualKeyColumn("routing_mode", "TEXT NOT NULL DEFAULT 'single'")
     this.ensureVirtualKeyColumn("client_mode", "TEXT NOT NULL DEFAULT 'codex'")
     this.ensureVirtualKeyColumn("wire_api", "TEXT NOT NULL DEFAULT 'responses'")
+    this.ensureVirtualKeyColumn("fixed_model", "TEXT")
+    this.ensureVirtualKeyColumn("fixed_reasoning_effort", "TEXT")
     this.ensureVirtualKeyColumn("prompt_tokens", "INTEGER NOT NULL DEFAULT 0")
     this.ensureVirtualKeyColumn("completion_tokens", "INTEGER NOT NULL DEFAULT 0")
     this.ensureVirtualKeyColumn("total_tokens", "INTEGER NOT NULL DEFAULT 0")
     this.ensureVirtualKeyColumn("expires_at", "INTEGER")
+    this.ensureColumn("id_token", "TEXT")
     this.db.exec(`CREATE INDEX IF NOT EXISTS idx_virtual_api_keys_provider ON virtual_api_keys(provider_id);`)
     this.ensureRequestAuditsSchema()
     this.ensureRequestTokenStatsSchema()
@@ -666,15 +709,16 @@ export class AccountStore {
     if (!isSecretEncryptionEnabled()) return
 
     const accountRows = this.db
-      .query<{ id: string; access_token: string; refresh_token: string | null }, []>(
-        `SELECT id, access_token, refresh_token FROM accounts`,
+      .query<{ id: string; access_token: string; refresh_token: string | null; id_token: string | null }, []>(
+        `SELECT id, access_token, refresh_token, id_token FROM accounts`,
       )
       .all()
-    const updateAccount = this.db.query(`UPDATE accounts SET access_token = ?, refresh_token = ? WHERE id = ?`)
+    const updateAccount = this.db.query(`UPDATE accounts SET access_token = ?, refresh_token = ?, id_token = ? WHERE id = ?`)
     for (const row of accountRows) {
       const accessToken = sealSecret(openSecret(row.access_token))
       const refreshToken = sealSecret(openSecret(row.refresh_token))
-      updateAccount.run(accessToken, refreshToken, row.id)
+      const idToken = sealSecret(openSecret(row.id_token))
+      updateAccount.run(accessToken, refreshToken, idToken, row.id)
     }
 
     const keyRows = this.db
@@ -821,6 +865,8 @@ export class AccountStore {
         client_mode TEXT NOT NULL DEFAULT 'codex',
         wire_api TEXT NOT NULL DEFAULT 'responses',
         name TEXT,
+        fixed_model TEXT,
+        fixed_reasoning_effort TEXT,
         key_hash TEXT NOT NULL UNIQUE,
         key_secret TEXT,
         key_prefix TEXT NOT NULL,
@@ -844,6 +890,8 @@ export class AccountStore {
         client_mode,
         wire_api,
         name,
+        fixed_model,
+        fixed_reasoning_effort,
         key_hash,
         key_secret,
         key_prefix,
@@ -864,6 +912,8 @@ export class AccountStore {
         ${clientModeExpr},
         ${wireApiExpr},
         name,
+        NULL,
+        NULL,
         key_hash,
         ${keySecretExpr},
         key_prefix,
@@ -976,6 +1026,7 @@ export class AccountStore {
                 account_id = ?,
                 access_token = ?,
                 refresh_token = ?,
+                id_token = ?,
                 expires_at = ?,
                 metadata_json = ?,
                 updated_at = ?
@@ -990,6 +1041,7 @@ export class AccountStore {
             input.accountId ?? null,
             sealSecret(input.accessToken),
             sealSecret(input.refreshToken ?? null),
+            sealSecret(input.idToken ?? null),
             input.expiresAt ?? null,
             metadata,
             now,
@@ -1016,12 +1068,13 @@ export class AccountStore {
               enterprise_url,
               access_token,
               refresh_token,
+              id_token,
               expires_at,
               metadata_json,
               created_at,
               updated_at,
               is_active
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
           `,
         )
         .run(
@@ -1036,6 +1089,7 @@ export class AccountStore {
           enterpriseUrl,
           sealSecret(input.accessToken),
           sealSecret(input.refreshToken ?? null),
+          sealSecret(input.idToken ?? null),
           input.expiresAt ?? null,
           metadata,
           now,
@@ -1059,6 +1113,7 @@ export class AccountStore {
     accountId?: string | null
     accessToken: string
     refreshToken?: string | null
+    idToken?: string | null
     expiresAt?: number | null
     metadata?: Record<string, unknown>
   }) {
@@ -1072,6 +1127,7 @@ export class AccountStore {
       accountId: input.accountId ?? undefined,
       accessToken: input.accessToken,
       refreshToken: input.refreshToken ?? undefined,
+      idToken: input.idToken ?? undefined,
       expiresAt: input.expiresAt ?? undefined,
       metadata: input.metadata,
     })
@@ -1084,6 +1140,8 @@ export class AccountStore {
     routingMode?: VirtualKeyRoutingMode
     clientMode?: VirtualKeyClientMode
     wireApi?: VirtualKeyWireAPI
+    fixedModel?: string | null
+    fixedReasoningEffort?: string | null
     validityDays?: number | null
   }) {
     const providerId = input.providerId ?? "chatgpt"
@@ -1092,6 +1150,23 @@ export class AccountStore {
     const wireApi =
       input.wireApi === "chat_completions" ? "chat_completions" : clientMode === "cursor" ? "chat_completions" : "responses"
     const accountId = input.accountId ?? null
+    const fixedModel = normalizeVirtualKeyOverrideValue(input.fixedModel)
+    const fixedReasoningEffort = normalizeVirtualKeyOverrideValue(input.fixedReasoningEffort)
+    const resolvedName = buildVirtualKeyDefaultName({
+      name: input.name,
+      clientMode,
+      fixedModel,
+      fixedReasoningEffort,
+    })
+    const fixedModelRequiresPaidPool =
+      providerId === "chatgpt" && Boolean(fixedModel && (fixedModel === "gpt-5.5" || fixedModel.startsWith("gpt-5.5-")))
+
+    const assertFixedModelEligibleForAccount = (account: StoredAccount) => {
+      if (!fixedModelRequiresPaidPool) return
+      if (resolveAccountPlanCohort(account) !== "paid") {
+        throw new Error("Fixed gpt-5.5 key requires a Plus/Pro/Business ChatGPT account")
+      }
+    }
 
     if (routingMode === "single") {
       if (!accountId) throw new Error("Account is required for single-route virtual key")
@@ -1100,15 +1175,20 @@ export class AccountStore {
       if (account.providerId !== providerId) {
         throw new Error("Account provider does not match virtual key provider")
       }
+      assertFixedModelEligibleForAccount(account)
     } else {
       const accounts = this.getAvailableAccountsForProvider(providerId)
       if (accounts.length === 0) throw new Error("No available accounts for pool routing")
+      if (fixedModelRequiresPaidPool && !accounts.some((account) => resolveAccountPlanCohort(account) === "paid")) {
+        throw new Error("No paid ChatGPT accounts available for fixed gpt-5.5 key")
+      }
       if (accountId) {
         const account = this.get(accountId)
         if (!account) throw new Error("Account not found")
         if (account.providerId !== providerId) {
           throw new Error("Account provider does not match virtual key provider")
         }
+        assertFixedModelEligibleForAccount(account)
       }
     }
 
@@ -1131,6 +1211,8 @@ export class AccountStore {
             client_mode,
             wire_api,
             name,
+            fixed_model,
+            fixed_reasoning_effort,
             key_hash,
             key_secret,
             key_prefix,
@@ -1142,7 +1224,7 @@ export class AccountStore {
             last_used_at,
             created_at,
             updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 0, ?, NULL, ?, ?)
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 0, ?, NULL, ?, ?)
         `,
       )
       .run(
@@ -1152,7 +1234,9 @@ export class AccountStore {
         routingMode,
         clientMode,
         wireApi,
-        input.name ?? null,
+        resolvedName,
+        fixedModel,
+        fixedReasoningEffort,
         hash,
         sealSecret(secret),
         keyPrefix,
@@ -1361,6 +1445,95 @@ export class AccountStore {
     }
   }
 
+  resolveVirtualApiKeyByID(
+    id: string,
+    options?: {
+      sessionId?: string | null
+      excludeAccountIds?: string[]
+      deprioritizedAccountIds?: string[]
+      headroomByAccountId?: Map<string, number>
+      pressureScoreByAccountId?: Map<string, number>
+      routeOptionsFactory?: (
+        key: Pick<VirtualApiKeyRecord, "id" | "providerId" | "routingMode">,
+      ) =>
+        | {
+            excludeAccountIds?: string[]
+            deprioritizedAccountIds?: string[]
+            headroomByAccountId?: Map<string, number>
+            pressureScoreByAccountId?: Map<string, number>
+          }
+        | null
+        | undefined
+    },
+  ) {
+    const normalizedId = String(id ?? "").trim()
+    if (!normalizedId) return null
+    const now = Date.now()
+    const row = this.db
+      .query<VirtualApiKeyRow, [string, number]>(
+        `
+          SELECT *
+          FROM virtual_api_keys
+          WHERE id = ? AND is_revoked = 0 AND (expires_at IS NULL OR expires_at > ?)
+          LIMIT 1
+        `,
+      )
+      .get(normalizedId, now)
+    if (!row) return null
+
+    this.db
+      .query(
+        `
+          UPDATE virtual_api_keys
+          SET last_used_at = ?, updated_at = ?
+          WHERE id = ?
+        `,
+      )
+      .run(now, now, row.id)
+
+    const key = toVirtualApiKeyRecord(row)
+    const sessionId = normalizeSessionRouteID(options?.sessionId)
+    const derivedRouteOptions = options?.routeOptionsFactory?.(key)
+    const excludeAccountIds = new Set([
+      ...(options?.excludeAccountIds ?? []),
+      ...(derivedRouteOptions?.excludeAccountIds ?? []),
+    ])
+    const deprioritizedAccountIds = new Set([
+      ...(options?.deprioritizedAccountIds ?? []),
+      ...(derivedRouteOptions?.deprioritizedAccountIds ?? []),
+    ])
+    const headroomByAccountId = new Map<string, number>()
+    for (const [accountId, headroom] of options?.headroomByAccountId ?? []) {
+      headroomByAccountId.set(accountId, headroom)
+    }
+    for (const [accountId, headroom] of derivedRouteOptions?.headroomByAccountId ?? []) {
+      headroomByAccountId.set(accountId, headroom)
+    }
+    const pressureScoreByAccountId = new Map<string, number>()
+    for (const [accountId, score] of options?.pressureScoreByAccountId ?? []) {
+      pressureScoreByAccountId.set(accountId, score)
+    }
+    for (const [accountId, score] of derivedRouteOptions?.pressureScoreByAccountId ?? []) {
+      pressureScoreByAccountId.set(accountId, score)
+    }
+    const routeOptions = {
+      excludeAccountIds,
+      deprioritizedAccountIds,
+      headroomByAccountId,
+      pressureScoreByAccountId,
+    }
+    const account =
+      key.routingMode === "pool"
+        ? this.pickPoolAccountForKey(key.id, key.providerId, sessionId, routeOptions)
+        : this.getSingleRouteAccount(key.providerId, key.accountId)
+
+    if (!account) return null
+    return {
+      key,
+      account,
+    }
+  }
+
   private getSingleRouteAccount(providerId: string, accountID: string | null) {
     if (!accountID) return null
     const account = this.get(accountID)
@@ -1387,7 +1560,7 @@ export class AccountStore {
     this.pruneExpiredVirtualKeySessions()
     if (sessionId) {
       const sticky = this.pickSessionStickyAccount(keyID, providerId, sessionId)
-      if (sticky) return sticky
+      if (sticky && !options?.excludeAccountIds?.has(sticky.id)) return sticky
     }
 
     const selected = this.pickPoolAccountCandidate(keyID, providerId, options)
@@ -1472,6 +1645,7 @@ export class AccountStore {
       const hasHeadroomB = Number.isFinite(headroomB)
       if (hasHeadroomA !== hasHeadroomB) return hasHeadroomA ? -1 : 1
       if (hasHeadroomA && hasHeadroomB && headroomA !== headroomB) return Number(headroomB) - Number(headroomA)
+
 
       const routeA = routeMap.get(a.id)
       const routeB = routeMap.get(b.id)
@@ -1677,9 +1851,17 @@ export class AccountStore {
     this.db.query(`DELETE FROM accounts WHERE id = ?`).run(id)
   }
 
-  updateTokens(input: { id: string; accessToken: string; refreshToken?: string; expiresAt?: number; accountId?: string | null }) {
+  updateTokens(input: {
+    id: string
+    accessToken: string
+    refreshToken?: string
+    idToken?: string | null
+    expiresAt?: number
+    accountId?: string | null
+  }) {
     const row = this.get(input.id)
     if (!row) throw new Error("Account not found")
+    const nextIdToken = input.idToken === undefined ? row.idToken : input.idToken
     this.db
       .query(
         `
@@ -1687,6 +1869,7 @@ export class AccountStore {
           SET
             access_token = ?,
             refresh_token = ?,
+            id_token = ?,
             expires_at = ?,
             account_id = ?,
             updated_at = ?
@@ -1696,6 +1879,7 @@ export class AccountStore {
       .run(
         sealSecret(input.accessToken),
         sealSecret(input.refreshToken ?? null),
+        sealSecret(nextIdToken ?? null),
         input.expiresAt ?? null,
         input.accountId ?? row.accountId ?? null,
         Date.now(),

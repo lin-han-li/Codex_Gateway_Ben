@@ -10,6 +10,7 @@ export type BridgeRouteDeps = {
   invalidatePoolConsistency: (providerId: string, input?: { account?: any }) => void
   handleBackgroundPromise: (label: string, promise: Promise<unknown>) => void
   refreshAndEmitAccountQuota: (accountId: string, source: string) => Promise<void>
+  toPublicAccount: (account: any, quota?: any) => unknown
   errorMessage: (error: unknown) => string
 }
 
@@ -18,23 +19,31 @@ export function registerBridgeRoutes(app: Hono, deps: BridgeRouteDeps) {
     try {
       const raw = await c.req.json()
       const input = deps.parseSyncOAuthInput(raw)
+      const idToken = deps.normalizeIdentity(input.idToken) || deps.normalizeIdentity(input.id_token)
       const accessTokenClaims = deps.parseJwtAuthClaims(input.accessToken)
+      const idTokenClaims = deps.parseJwtAuthClaims(idToken)
       const resolvedAccountId =
         deps.normalizeIdentity(input.accountId) ||
-        deps.normalizeIdentity(accessTokenClaims?.chatgpt_account_id)
+        deps.normalizeIdentity(accessTokenClaims?.chatgpt_account_id) ||
+        deps.normalizeIdentity(idTokenClaims?.chatgpt_account_id)
       const resolvedOrganizationId =
         deps.normalizeIdentity(input.organizationId) ||
-        deps.normalizeIdentity(accessTokenClaims?.organization_id)
+        deps.normalizeIdentity(accessTokenClaims?.organization_id) ||
+        deps.normalizeIdentity(idTokenClaims?.organization_id)
       const resolvedProjectId =
         deps.normalizeIdentity(input.projectId) ||
-        deps.normalizeIdentity(accessTokenClaims?.project_id)
+        deps.normalizeIdentity(accessTokenClaims?.project_id) ||
+        deps.normalizeIdentity(idTokenClaims?.project_id)
       const resolvedChatgptPlanType =
         deps.normalizeIdentity(input.chatgptPlanType) ||
-        deps.normalizeIdentity(accessTokenClaims?.chatgpt_plan_type)
+        deps.normalizeIdentity(accessTokenClaims?.chatgpt_plan_type) ||
+        deps.normalizeIdentity(idTokenClaims?.chatgpt_plan_type)
       const resolvedChatgptUserId =
         deps.normalizeIdentity(input.chatgptUserId) ||
         deps.normalizeIdentity(accessTokenClaims?.chatgpt_user_id) ||
-        deps.normalizeIdentity(accessTokenClaims?.user_id)
+        deps.normalizeIdentity(accessTokenClaims?.user_id) ||
+        deps.normalizeIdentity(idTokenClaims?.chatgpt_user_id) ||
+        deps.normalizeIdentity(idTokenClaims?.user_id)
       const resolvedCompletedPlatformOnboarding =
         typeof input.completedPlatformOnboarding === "boolean"
           ? input.completedPlatformOnboarding
@@ -68,6 +77,7 @@ export function registerBridgeRoutes(app: Hono, deps: BridgeRouteDeps) {
         accountId: resolvedAccountId,
         accessToken: input.accessToken,
         refreshToken: input.refreshToken,
+        idToken,
         expiresAt: input.expiresAt,
         metadata: {
           source: "codex-oauth-sync",
@@ -105,7 +115,7 @@ export function registerBridgeRoutes(app: Hono, deps: BridgeRouteDeps) {
       }
 
       return c.json({
-        account,
+        account: account ? deps.toPublicAccount(account, null) : null,
         virtualKey,
         baseURL: `${new URL(c.req.url).origin}/v1`,
       })

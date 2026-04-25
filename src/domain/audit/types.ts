@@ -28,6 +28,22 @@ export type ServiceStatusSummary = {
   encryptionKeyConfigured: boolean
   upstreamPrivacyStrict: boolean
   officialStrictPassthrough: boolean
+  officialAssets?: {
+    clientVersion: string
+    clientVersionSource: {
+      kind: string
+      path: string | null
+    }
+    promptSource: {
+      kind: string
+      path: string | null
+    }
+    modelsSource: {
+      kind: string
+      path: string | null
+    }
+    modelsFile: string | null
+  }
   restartRequired: boolean
   checkedAt: number
 }

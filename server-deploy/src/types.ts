@@ -37,6 +37,7 @@ export type LoginResult = {
   enterpriseUrl?: string
   accessToken: string
   refreshToken?: string
+  idToken?: string
   expiresAt?: number
   metadata?: Record<string, unknown>
 }
@@ -53,6 +54,7 @@ export type StoredAccount = {
   enterpriseUrl: string | null
   accessToken: string
   refreshToken: string | null
+  idToken: string | null
   expiresAt: number | null
   isActive: boolean
   metadata: Record<string, unknown>
@@ -66,6 +68,7 @@ export type StoredAccount = {
 export type RefreshResult = {
   accessToken: string
   refreshToken?: string
+  idToken?: string
   expiresAt?: number
   accountId?: string
 }

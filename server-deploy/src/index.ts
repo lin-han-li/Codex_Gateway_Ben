@@ -2,12 +2,19 @@ import { Hono } from "hono"
 import { z } from "zod"
 import os from "node:os"
 import path from "node:path"
+import * as zlib from "node:zlib"
 import { createHash } from "node:crypto"
 import { spawnSync } from "node:child_process"
 import { existsSync, statSync } from "node:fs"
 import { readFile, writeFile } from "node:fs/promises"
 import { AppConfig, ensureAppDirs } from "./config"
-import { resolveCodexClientVersion, toWholeCodexClientVersion } from "./codex-version"
+import {
+  loadCodexInstructionsText,
+  resolveCodexClientVersion,
+  resolveCodexRuntimeAssetStatus,
+  toWholeCodexClientVersion,
+  type CodexOfficialAssetSource,
+} from "./codex-version"
 import { buildCodexUserAgent, isFirstPartyCodexOriginator } from "./codex-identity"
 import { buildDashboardMetrics as buildAuditDashboardMetrics } from "./domain/audit/dashboard-metrics"
 import { estimateUsageCostUsd, PRICING_CATALOG_VERSION, PRICING_MODE, withEstimatedUsageCost } from "./domain/audit/pricing"
@@ -59,7 +66,7 @@ import {
   normalizeCaughtCodexFailure,
 } from "./behavior/codex-failure"
 import { fetchWithUpstreamRetry, type UpstreamRetryPolicy } from "./behavior/upstream-retry"
-import { AccountStore } from "./store/db"
+import { AccountStore, type VirtualApiKeyRecord } from "./store/db"
 import { LocalCallbackServer } from "./oauth/callback-server"
 import { ProviderRegistry } from "./providers/registry"
 import { LoginSessionManager } from "./oauth/session-manager"
@@ -78,6 +85,8 @@ import { registerLoginRoutes } from "./routes/login"
 import { registerModelsRoutes } from "./routes/models"
 import { registerSettingsRoutes } from "./routes/settings"
 import { registerVirtualKeysRoutes } from "./routes/virtual-keys"
+import { buildCodexOAuthBridgeBindingKeys } from "./codex-bridge-binding"
+import { writeCodexLocalAuth } from "./codex-local-auth"
 
 await ensureAppDirs()
 
@@ -490,6 +499,7 @@ type RuntimeSettings = {
   officialStrictPassthrough: boolean
   themeId: string
   codexInstallationId: string
+  codexOAuthBridgeBindings: Record<string, { virtualKeyId: string; updatedAt: number }>
 }
 
 const DEFAULT_UI_THEME_ID = "ocean"
@@ -646,6 +656,7 @@ async function loadRuntimeSettings() {
     officialStrictPassthrough: false,
     themeId: DEFAULT_UI_THEME_ID,
     codexInstallationId: crypto.randomUUID(),
+    codexOAuthBridgeBindings: {},
   }
 
   try {
@@ -660,6 +671,10 @@ async function loadRuntimeSettings() {
       officialStrictPassthrough: parsed?.officialStrictPassthrough === true,
       themeId: normalizeUiThemeId(parsed?.themeId),
       codexInstallationId: normalizeNullableString(parsed?.codexInstallationId, 200) ?? defaults.codexInstallationId,
+      codexOAuthBridgeBindings:
+        parsed?.codexOAuthBridgeBindings && typeof parsed.codexOAuthBridgeBindings === "object"
+          ? parsed.codexOAuthBridgeBindings
+          : defaults.codexOAuthBridgeBindings,
     }
   } catch {
     return defaults
@@ -673,6 +688,35 @@ async function saveRuntimeSettings(settings: RuntimeSettings) {
 const runtimeSettings = await loadRuntimeSettings()
 const behaviorController = new BehaviorController(OFFICIAL_BEHAVIOR_CONFIG)
 const upstreamRetryPolicy = { ...OFFICIAL_UPSTREAM_RETRY_POLICY }
+
+async function setCodexOAuthBridgeBinding(input: {
+  virtualKeyId: string
+  accessToken?: string | null
+  idToken?: string | null
+  accountId?: string | null
+  email?: string | null
+}) {
+  const virtualKeyId = normalizeNullableString(input.virtualKeyId, 200)
+  if (!virtualKeyId) throw new Error("Virtual key id is required")
+  const keys = buildCodexOAuthBridgeBindingKeys(input)
+  if (keys.length === 0) {
+    throw new Error("Current Codex login does not expose a usable account identity for gateway binding")
+  }
+  const nextBindings = { ...(runtimeSettings.codexOAuthBridgeBindings ?? {}) }
+  const updatedAt = Date.now()
+  for (const key of keys) {
+    nextBindings[key] = {
+      virtualKeyId,
+      updatedAt,
+    }
+  }
+  runtimeSettings.codexOAuthBridgeBindings = nextBindings
+  await saveRuntimeSettings(runtimeSettings)
+  return {
+    keys,
+    updatedAt,
+  }
+}
 
 function getEffectiveManagementToken() {
   return String(AppConfig.adminToken ?? "").trim() || String(runtimeSettings.adminToken ?? "").trim()
@@ -721,7 +765,12 @@ function clearStoredResponsesTurnState(sessionRouteId?: string | null) {
 }
 
 function persistResponsesTurnStateFromHeaders(sessionRouteId?: string | null, headers?: Headers | null) {
-  storeResponsesTurnState(sessionRouteId, headers?.get(RESPONSES_TURN_STATE_HEADER))
+  const turnState = normalizeNullableString(headers?.get(RESPONSES_TURN_STATE_HEADER), 512)
+  if (!turnState) {
+    clearStoredResponsesTurnState(sessionRouteId)
+    return
+  }
+  storeResponsesTurnState(sessionRouteId, turnState)
 }
 
 function buildTraceClientMetadata(incoming?: Headers) {
@@ -790,26 +839,30 @@ function maybeResetResponsesTurnState(sessionRouteId?: string | null, statusCode
 function buildResponsesAuditWriter(
   route: string,
   method: string,
-  reasoningEffort: string | null,
-  clientMode?: "codex" | "cursor" | null,
-  wireApi?: "responses" | "chat_completions" | null,
+  resolveDefaults: () => {
+    reasoningEffort?: string | null
+    clientMode?: "codex" | "cursor" | null
+    wireApi?: "responses" | "chat_completions" | null
+  },
 ) {
   return (
-    input: Omit<RequestAuditCompatInput, "route" | "method" | "reasoningEffort" | "clientMode" | "wireApi">,
+    input: Omit<RequestAuditCompatInput, "route" | "method">,
     sessionRouteId?: string | null,
-  ) =>
-    writeRequestAuditCompat({
+  ) => {
+    const defaults = resolveDefaults()
+    return writeRequestAuditCompat({
       route,
       method,
-      reasoningEffort,
-      clientMode,
-      wireApi,
       ...input,
+      reasoningEffort: input.reasoningEffort ?? defaults.reasoningEffort ?? null,
+      clientMode: input.clientMode ?? defaults.clientMode ?? null,
+      wireApi: input.wireApi ?? defaults.wireApi ?? null,
       error:
         input.error && getStoredResponsesTurnState(sessionRouteId)
           ? `${input.error} [turn_state=${getStoredResponsesTurnState(sessionRouteId)}]`
           : input.error,
     })
+  }
 }
 
 function getCodexInstallationId() {
@@ -1010,115 +1063,396 @@ function appendSanitizedUpstreamQueryParams(input: {
 
 startServerEventHooks()
 
+const CODEX_RUNTIME_ASSETS = resolveCodexRuntimeAssetStatus()
+
 async function loadCodexInstructions() {
-  const fallback = "You are Codex, a coding agent based on GPT-5."
-  const candidates = [
-    process.env.OAUTH_CODEX_PROMPT_FILE,
-    path.resolve(process.cwd(), "codex-official/codex-rs/core/prompt.md"),
-    path.resolve(process.cwd(), "codex-official/codex-rs/core/prompt_with_apply_patch_instructions.md"),
-    path.resolve(process.cwd(), "../codex-official/codex-rs/core/prompt.md"),
-    path.resolve(process.cwd(), "../codex-official/codex-rs/core/prompt_with_apply_patch_instructions.md"),
-    path.resolve(import.meta.dir, "../../codex-official/codex-rs/core/prompt.md"),
-    path.resolve(import.meta.dir, "../../codex-official/codex-rs/core/prompt_with_apply_patch_instructions.md"),
-  ].filter((item): item is string => Boolean(item))
-
-  for (const candidate of candidates) {
-    if (!existsSync(candidate)) continue
-    try {
-      const content = (await readFile(candidate, "utf8")).trim()
-      if (content.length > 0) return content
-    } catch {
-      // ignore and continue
-    }
-  }
-
-  return fallback
+  return loadCodexInstructionsText()
 }
 
-const CHAT_INSTRUCTIONS = await loadCodexInstructions()
+const CHAT_INSTRUCTIONS_LOADED = await loadCodexInstructions()
+const CHAT_INSTRUCTIONS = CHAT_INSTRUCTIONS_LOADED.content
+const CHAT_INSTRUCTIONS_SOURCE: CodexOfficialAssetSource = CHAT_INSTRUCTIONS_LOADED.source
+
+function toSerializableAssetSource(source: CodexOfficialAssetSource) {
+  return {
+    kind: source.kind,
+    path: source.path,
+  }
+}
+
+function buildOfficialAssetsStatus() {
+  const modelSource =
+    CODEX_RUNTIME_ASSETS.modelsSource.kind === "env_override"
+      ? CODEX_RUNTIME_ASSETS.modelsSource
+      : ({ kind: "fallback", path: null } satisfies CodexOfficialAssetSource)
+  return {
+    clientVersion: CODEX_RUNTIME_ASSETS.clientVersion,
+    clientVersionSource: toSerializableAssetSource(CODEX_RUNTIME_ASSETS.clientVersionSource),
+    promptSource: toSerializableAssetSource(CHAT_INSTRUCTIONS_SOURCE),
+    modelsSource: toSerializableAssetSource(modelSource),
+    modelsFile: modelSource.kind === "env_override" ? CODEX_RUNTIME_ASSETS.modelsFile : null,
+  }
+}
+
+const OFFICIAL_ASSETS_STATUS = buildOfficialAssetsStatus()
+
+console.log(
+  `[oauth-multi-login] codex assets version=${OFFICIAL_ASSETS_STATUS.clientVersion} version_source=${OFFICIAL_ASSETS_STATUS.clientVersionSource.kind} prompt_source=${OFFICIAL_ASSETS_STATUS.promptSource.kind} models_source=${OFFICIAL_ASSETS_STATUS.modelsSource.kind}`,
+)
+if (OFFICIAL_ASSETS_STATUS.clientVersionSource.path) {
+  console.log(`[oauth-multi-login] codex client version source: ${OFFICIAL_ASSETS_STATUS.clientVersionSource.path}`)
+}
+if (OFFICIAL_ASSETS_STATUS.promptSource.path) {
+  console.log(`[oauth-multi-login] codex prompt source: ${OFFICIAL_ASSETS_STATUS.promptSource.path}`)
+}
+if (OFFICIAL_ASSETS_STATUS.modelsFile) {
+  console.log(`[oauth-multi-login] codex models source: ${OFFICIAL_ASSETS_STATUS.modelsFile}`)
+}
+if (OFFICIAL_ASSETS_STATUS.modelsSource.kind === "fallback") {
+  console.log("[oauth-multi-login] codex model catalog source: hardcoded fallback")
+}
+if (
+  OFFICIAL_ASSETS_STATUS.clientVersionSource.kind === "fallback" ||
+  OFFICIAL_ASSETS_STATUS.promptSource.kind === "fallback"
+) {
+  console.warn("[oauth-multi-login] codex official assets are partially unavailable; fallback values are active")
+}
+
 type CodexModelCatalogEntry = {
   id: string
+  displayName: string
+  description: string | null
+  visibility: string
+  supportedInApi: boolean
   defaultReasoningLevel: string
   supportedReasoningLevels: string[]
   supportsParallelToolCalls: boolean
+  supportsReasoningSummaries: boolean
+  supportVerbosity: boolean
+  defaultVerbosity: string | null
+  defaultReasoningSummary: string | null
+  reasoningSummaryFormat: string | null
+  preferWebsockets: boolean
+  minimalClientVersion: string | null
+  contextWindow: number | null
   maxContextWindow: number | null
+  apiMetadata: Record<string, unknown>
 }
 
 type CodexOfficialModelsFile = {
-  models?: Array<{
+  models?: Array<Record<string, unknown> & {
     slug?: string
+    display_name?: string
+    description?: string
+    visibility?: string
     supported_in_api?: boolean
     default_reasoning_level?: string
     supported_reasoning_levels?: Array<{ effort?: string }>
     supports_parallel_tool_calls?: boolean
+    supports_reasoning_summaries?: boolean
+    support_verbosity?: boolean
+    default_verbosity?: string
+    default_reasoning_summary?: string
+    reasoning_summary_format?: string
+    prefer_websockets?: boolean
+    minimal_client_version?: string
+    context_window?: number
     max_context_window?: number
+    effective_context_window_percent?: number
+    experimental_supported_tools?: unknown[]
+    additional_speed_tiers?: string[]
+    input_modalities?: string[]
+    truncation_policy?: Record<string, unknown>
+    supports_image_detail_original?: boolean
+    apply_patch_tool_type?: string
+    web_search_tool_type?: string
+    shell_type?: string
+    supports_search_tool?: boolean
   }>
 }
 
+const OFFICIAL_CODEX_REASONING_LEVELS = [
+  { effort: "low", description: "Fast responses with lighter reasoning" },
+  { effort: "medium", description: "Balances speed and reasoning depth for everyday tasks" },
+  { effort: "high", description: "Greater reasoning depth for complex problems" },
+  { effort: "xhigh", description: "Extra high reasoning depth for complex problems" },
+] as const
+
+const OFFICIAL_CODEX_REASONING_LEVEL_IDS = OFFICIAL_CODEX_REASONING_LEVELS.map((level) => level.effort)
+
+function createFallbackModelCatalogEntry(input: {
+  id: string
+  displayName?: string
+  description?: string
+  visibility?: string
+  supportedInApi?: boolean
+  defaultReasoningLevel?: string
+  supportedReasoningLevels?: string[]
+  supportsParallelToolCalls?: boolean
+  supportsReasoningSummaries?: boolean
+  supportVerbosity?: boolean
+  defaultVerbosity?: string | null
+  defaultReasoningSummary?: string | null
+  reasoningSummaryFormat?: string | null
+  preferWebsockets?: boolean
+  minimalClientVersion?: string | null
+  contextWindow?: number | null
+  maxContextWindow?: number | null
+  apiMetadata?: Record<string, unknown>
+}) {
+  const entry: CodexModelCatalogEntry = {
+    id: input.id,
+    displayName: input.displayName ?? input.id,
+    description: input.description ?? null,
+    visibility: input.visibility ?? "list",
+    supportedInApi: input.supportedInApi !== false,
+    defaultReasoningLevel: input.defaultReasoningLevel ?? "medium",
+    supportedReasoningLevels: [...(input.supportedReasoningLevels ?? ["medium"])],
+    supportsParallelToolCalls: input.supportsParallelToolCalls !== false,
+    supportsReasoningSummaries: input.supportsReasoningSummaries !== false,
+    supportVerbosity: input.supportVerbosity !== false,
+    defaultVerbosity: input.defaultVerbosity ?? null,
+    defaultReasoningSummary: input.defaultReasoningSummary ?? null,
+    reasoningSummaryFormat: input.reasoningSummaryFormat ?? null,
+    preferWebsockets: input.preferWebsockets !== false,
+    minimalClientVersion: input.minimalClientVersion ?? null,
+    contextWindow: Number.isFinite(Number(input.contextWindow)) ? Math.max(0, Math.floor(Number(input.contextWindow))) : null,
+    maxContextWindow: Number.isFinite(Number(input.maxContextWindow))
+      ? Math.max(0, Math.floor(Number(input.maxContextWindow)))
+      : null,
+    apiMetadata: {},
+  }
+
+  entry.apiMetadata = {
+    slug: entry.id,
+    display_name: entry.displayName,
+    description: entry.description,
+    visibility: entry.visibility,
+    supported_in_api: entry.supportedInApi,
+    default_reasoning_level: entry.defaultReasoningLevel,
+    supported_reasoning_levels: entry.supportedReasoningLevels.map((effort) => ({ effort })),
+    supports_parallel_tool_calls: entry.supportsParallelToolCalls,
+    supports_reasoning_summaries: entry.supportsReasoningSummaries,
+    support_verbosity: entry.supportVerbosity,
+    default_verbosity: entry.defaultVerbosity,
+    default_reasoning_summary: entry.defaultReasoningSummary,
+    reasoning_summary_format: entry.reasoningSummaryFormat,
+    prefer_websockets: entry.preferWebsockets,
+    minimal_client_version: entry.minimalClientVersion,
+    context_window: entry.contextWindow,
+    max_context_window: entry.maxContextWindow,
+    ...(input.apiMetadata ?? {}),
+  }
+
+  return entry
+}
+
 const FALLBACK_MODEL_CATALOG: CodexModelCatalogEntry[] = [
-  {
-    id: "gpt-5.1-codex-max",
-    defaultReasoningLevel: "medium",
-    supportedReasoningLevels: ["low", "medium", "high", "xhigh"],
+  createFallbackModelCatalogEntry({
+    id: "gpt-5.5",
+    displayName: "GPT-5.5",
+    description: "Frontier model for complex coding, research, and real-world work.",
+    defaultReasoningLevel: "xhigh",
+    supportedReasoningLevels: [...OFFICIAL_CODEX_REASONING_LEVEL_IDS],
     supportsParallelToolCalls: true,
+    supportsReasoningSummaries: true,
+    supportVerbosity: true,
+    defaultVerbosity: "low",
+    defaultReasoningSummary: "none",
+    preferWebsockets: true,
+    contextWindow: 272000,
     maxContextWindow: 272000,
-  },
-  {
-    id: "gpt-5.1-codex-mini",
-    defaultReasoningLevel: "medium",
-    supportedReasoningLevels: ["medium", "high"],
-    supportsParallelToolCalls: false,
-    maxContextWindow: 272000,
-  },
-  {
-    id: "gpt-5.2",
-    defaultReasoningLevel: "medium",
-    supportedReasoningLevels: ["low", "medium", "high", "xhigh"],
-    supportsParallelToolCalls: true,
-    maxContextWindow: 272000,
-  },
-  {
+    apiMetadata: {
+      supported_reasoning_levels: [...OFFICIAL_CODEX_REASONING_LEVELS],
+      shell_type: "shell_command",
+      priority: 0,
+      additional_speed_tiers: ["fast"],
+      apply_patch_tool_type: "freeform",
+      web_search_tool_type: "text_and_image",
+      truncation_policy: { mode: "tokens", limit: 10000 },
+      supports_image_detail_original: true,
+      effective_context_window_percent: 95,
+      experimental_supported_tools: [],
+      input_modalities: ["text", "image"],
+      supports_search_tool: true,
+    },
+  }),
+  createFallbackModelCatalogEntry({
     id: "gpt-5.4",
+    displayName: "gpt-5.4",
+    description: "Strong model for everyday coding.",
     defaultReasoningLevel: "medium",
-    supportedReasoningLevels: ["low", "medium", "high", "xhigh"],
+    supportedReasoningLevels: [...OFFICIAL_CODEX_REASONING_LEVEL_IDS],
     supportsParallelToolCalls: true,
+    supportsReasoningSummaries: true,
+    supportVerbosity: true,
+    defaultVerbosity: "low",
+    defaultReasoningSummary: "none",
+    reasoningSummaryFormat: "experimental",
+    preferWebsockets: true,
+    minimalClientVersion: "0.98.0",
+    contextWindow: 272000,
     maxContextWindow: 1000000,
-  },
-  {
+    apiMetadata: {
+      supported_reasoning_levels: [...OFFICIAL_CODEX_REASONING_LEVELS],
+      shell_type: "shell_command",
+      priority: -1,
+      additional_speed_tiers: ["fast"],
+      apply_patch_tool_type: "freeform",
+      web_search_tool_type: "text_and_image",
+      truncation_policy: { mode: "tokens", limit: 10000 },
+      supports_image_detail_original: true,
+      effective_context_window_percent: 95,
+      experimental_supported_tools: [],
+      input_modalities: ["text", "image"],
+      supports_search_tool: true,
+    },
+  }),
+  createFallbackModelCatalogEntry({
+    id: "gpt-5.4-mini",
+    displayName: "GPT-5.4-Mini",
+    description: "Smaller frontier agentic coding model.",
+    defaultReasoningLevel: "medium",
+    supportedReasoningLevels: ["low", "medium", "high", "xhigh"],
+    supportsParallelToolCalls: true,
+    supportsReasoningSummaries: true,
+    supportVerbosity: true,
+    defaultVerbosity: "medium",
+    defaultReasoningSummary: "none",
+    reasoningSummaryFormat: "experimental",
+    preferWebsockets: true,
+    minimalClientVersion: "0.98.0",
+    contextWindow: 272000,
+    maxContextWindow: 272000,
+  }),
+  createFallbackModelCatalogEntry({
     id: "gpt-5.3-codex",
+    displayName: "gpt-5.3-codex",
+    description: "Frontier Codex-optimized agentic coding model.",
     defaultReasoningLevel: "medium",
     supportedReasoningLevels: ["low", "medium", "high", "xhigh"],
     supportsParallelToolCalls: true,
+    supportsReasoningSummaries: true,
+    supportVerbosity: true,
+    defaultVerbosity: "low",
+    defaultReasoningSummary: "none",
+    reasoningSummaryFormat: "experimental",
+    preferWebsockets: true,
+    minimalClientVersion: "0.98.0",
+    contextWindow: 272000,
     maxContextWindow: 272000,
-  },
-  {
+  }),
+  createFallbackModelCatalogEntry({
+    id: "gpt-5.2",
+    displayName: "gpt-5.2",
+    description: "Optimized for professional work and long-running agents.",
+    defaultReasoningLevel: "medium",
+    supportedReasoningLevels: ["low", "medium", "high", "xhigh"],
+    supportsParallelToolCalls: true,
+    supportsReasoningSummaries: true,
+    supportVerbosity: true,
+    defaultVerbosity: "low",
+    defaultReasoningSummary: "auto",
+    reasoningSummaryFormat: "none",
+    preferWebsockets: true,
+    minimalClientVersion: "0.0.1",
+    contextWindow: 272000,
+    maxContextWindow: 272000,
+  }),
+  createFallbackModelCatalogEntry({
     id: "gpt-5.2-codex",
+    displayName: "gpt-5.2-codex",
+    description: "Codex-optimized agentic coding model.",
     defaultReasoningLevel: "medium",
     supportedReasoningLevels: ["low", "medium", "high", "xhigh"],
     supportsParallelToolCalls: true,
+    supportsReasoningSummaries: true,
+    supportVerbosity: true,
+    defaultVerbosity: "low",
+    defaultReasoningSummary: "none",
+    reasoningSummaryFormat: "experimental",
+    preferWebsockets: true,
+    minimalClientVersion: "0.98.0",
+    contextWindow: 272000,
     maxContextWindow: 272000,
-  },
-  {
+  }),
+  createFallbackModelCatalogEntry({
+    id: "gpt-5.1-codex-max",
+    displayName: "gpt-5.1-codex-max",
+    description: "Large Codex-optimized agentic coding model.",
+    defaultReasoningLevel: "medium",
+    supportedReasoningLevels: ["low", "medium", "high", "xhigh"],
+    supportsParallelToolCalls: true,
+    supportsReasoningSummaries: true,
+    supportVerbosity: true,
+    defaultVerbosity: "low",
+    defaultReasoningSummary: "none",
+    reasoningSummaryFormat: "experimental",
+    preferWebsockets: true,
+    minimalClientVersion: "0.98.0",
+    contextWindow: 272000,
+    maxContextWindow: 1000000,
+  }),
+  createFallbackModelCatalogEntry({
+    id: "gpt-5.1-codex-mini",
+    displayName: "gpt-5.1-codex-mini",
+    description: "Small Codex-optimized agentic coding model.",
+    defaultReasoningLevel: "medium",
+    supportedReasoningLevels: ["low", "medium", "high", "xhigh"],
+    supportsParallelToolCalls: true,
+    supportsReasoningSummaries: true,
+    supportVerbosity: true,
+    defaultVerbosity: "medium",
+    defaultReasoningSummary: "none",
+    reasoningSummaryFormat: "experimental",
+    preferWebsockets: true,
+    minimalClientVersion: "0.98.0",
+    contextWindow: 272000,
+    maxContextWindow: 272000,
+  }),
+  createFallbackModelCatalogEntry({
     id: "gpt-5.1-codex",
+    displayName: "gpt-5.1-codex",
+    description: "Codex-optimized agentic coding model.",
     defaultReasoningLevel: "medium",
     supportedReasoningLevels: ["low", "medium", "high", "xhigh"],
     supportsParallelToolCalls: true,
+    supportsReasoningSummaries: true,
+    supportVerbosity: true,
+    defaultVerbosity: "low",
+    defaultReasoningSummary: "none",
+    reasoningSummaryFormat: "experimental",
+    preferWebsockets: true,
+    minimalClientVersion: "0.98.0",
+    contextWindow: 272000,
     maxContextWindow: 272000,
-  },
+  }),
+  createFallbackModelCatalogEntry({
+    id: "codex-auto-review",
+    displayName: "Codex Auto Review",
+    description: "Automatic approval review model for Codex.",
+    visibility: "hide",
+    defaultReasoningLevel: "medium",
+    supportedReasoningLevels: ["low", "medium", "high", "xhigh"],
+    supportsParallelToolCalls: true,
+    supportsReasoningSummaries: true,
+    supportVerbosity: true,
+    defaultVerbosity: "low",
+    defaultReasoningSummary: "none",
+    reasoningSummaryFormat: "experimental",
+    preferWebsockets: true,
+    minimalClientVersion: "0.98.0",
+    contextWindow: 272000,
+    maxContextWindow: 1000000,
+  }),
 ]
 
 async function loadCodexModelCatalog(): Promise<CodexModelCatalogEntry[]> {
-  const candidates = [
-    process.env.OAUTH_CODEX_MODELS_FILE,
-    path.resolve(process.cwd(), "codex-official/codex-rs/core/models.json"),
-    path.resolve(process.cwd(), "../codex-official/codex-rs/core/models.json"),
-    path.resolve(import.meta.dir, "../../codex-official/codex-rs/core/models.json"),
-  ].filter((value): value is string => Boolean(value))
-
-  for (const candidate of candidates) {
-    if (!existsSync(candidate)) continue
+  const modelsFilePath =
+    OFFICIAL_ASSETS_STATUS.modelsSource.kind === "env_override" ? OFFICIAL_ASSETS_STATUS.modelsFile : null
+  if (modelsFilePath && existsSync(modelsFilePath)) {
     try {
-      const raw = await readFile(candidate, "utf8")
+      const raw = await readFile(modelsFilePath, "utf8")
       const parsed = JSON.parse(raw) as CodexOfficialModelsFile
       const mapped = (parsed.models ?? [])
         .filter((model) => model && model.supported_in_api !== false)
@@ -1131,15 +1465,81 @@ async function loadCodexModelCatalog(): Promise<CodexModelCatalogEntry[]> {
               .filter((level): level is string => Boolean(level)) || []
           const normalizedSupported = supported.length > 0 ? supported : ["medium"]
           const defaultReasoningLevel = extractModelID(model.default_reasoning_level) ?? "medium"
+          const contextWindow = Number.isFinite(Number(model.context_window))
+            ? Math.max(0, Math.floor(Number(model.context_window)))
+            : null
           const maxContextWindow = Number.isFinite(Number(model.max_context_window))
             ? Math.max(0, Math.floor(Number(model.max_context_window)))
             : null
+          const defaultVerbosity = extractModelID(model.default_verbosity)
+          const defaultReasoningSummary = extractModelID(model.default_reasoning_summary)
+          const reasoningSummaryFormat = extractModelID(model.reasoning_summary_format)
+          const visibility = extractModelID(model.visibility) ?? "list"
+          const supportedInApi = model.supported_in_api !== false
+          const displayName = extractModelID(model.display_name) ?? id
+          const description = extractModelID(model.description)
+          const minimalClientVersion = extractModelID(model.minimal_client_version)
+          const apiMetadata: Record<string, unknown> = {}
+          const metadataKeys = [
+            "slug",
+            "display_name",
+            "description",
+            "visibility",
+            "supported_in_api",
+            "default_reasoning_level",
+            "supported_reasoning_levels",
+            "supports_parallel_tool_calls",
+            "supports_reasoning_summaries",
+            "support_verbosity",
+            "default_verbosity",
+            "default_reasoning_summary",
+            "reasoning_summary_format",
+            "prefer_websockets",
+            "minimal_client_version",
+            "context_window",
+            "max_context_window",
+            "effective_context_window_percent",
+            "experimental_supported_tools",
+            "input_modalities",
+            "truncation_policy",
+            "auto_compact_token_limit",
+            "supports_image_detail_original",
+            "apply_patch_tool_type",
+            "web_search_tool_type",
+            "shell_type",
+            "base_instructions",
+            "model_messages",
+            "availability_nux",
+            "upgrade",
+            "priority",
+            "additional_speed_tiers",
+            "available_in_plans",
+            "supports_search_tool",
+          ] as const
+          for (const key of metadataKeys) {
+            if (hasOwnKey(model, key)) {
+              apiMetadata[key] = model[key]
+            }
+          }
           return {
             id,
+            displayName,
+            description,
+            visibility,
+            supportedInApi,
             defaultReasoningLevel,
             supportedReasoningLevels: normalizedSupported,
             supportsParallelToolCalls: model.supports_parallel_tool_calls !== false,
+            supportsReasoningSummaries: model.supports_reasoning_summaries !== false,
+            supportVerbosity: model.support_verbosity !== false,
+            defaultVerbosity,
+            defaultReasoningSummary,
+            reasoningSummaryFormat,
+            preferWebsockets: model.prefer_websockets !== false,
+            minimalClientVersion,
+            contextWindow,
             maxContextWindow,
+            apiMetadata,
           } satisfies CodexModelCatalogEntry
         })
         .filter((item): item is CodexModelCatalogEntry => Boolean(item))
@@ -1152,15 +1552,64 @@ async function loadCodexModelCatalog(): Promise<CodexModelCatalogEntry[]> {
   return FALLBACK_MODEL_CATALOG
 }
 
+function serializeChatModelCatalogEntry(input: CodexModelCatalogEntry) {
+  return {
+    id: input.id,
+    displayName: input.displayName,
+    description: input.description,
+    visibility: input.visibility,
+    supportedInApi: input.supportedInApi,
+    defaultReasoningLevel: input.defaultReasoningLevel,
+    supportedReasoningLevels: [...input.supportedReasoningLevels],
+    supportsParallelToolCalls: input.supportsParallelToolCalls,
+    supportsReasoningSummaries: input.supportsReasoningSummaries,
+    supportVerbosity: input.supportVerbosity,
+    defaultVerbosity: input.defaultVerbosity,
+    defaultReasoningSummary: input.defaultReasoningSummary,
+    reasoningSummaryFormat: input.reasoningSummaryFormat,
+    preferWebsockets: input.preferWebsockets,
+    minimalClientVersion: input.minimalClientVersion,
+    contextWindow: input.contextWindow,
+    maxContextWindow: input.maxContextWindow,
+    inputModalities: Array.isArray(input.apiMetadata.input_modalities)
+      ? [...(input.apiMetadata.input_modalities as string[])]
+      : [],
+    truncationPolicy:
+      input.apiMetadata.truncation_policy && typeof input.apiMetadata.truncation_policy === "object"
+        ? { ...(input.apiMetadata.truncation_policy as Record<string, unknown>) }
+        : null,
+    autoCompactTokenLimit:
+      input.apiMetadata.auto_compact_token_limit !== undefined ? input.apiMetadata.auto_compact_token_limit : null,
+    supportsImageDetailOriginal: input.apiMetadata.supports_image_detail_original === true,
+    applyPatchToolType: extractModelID(input.apiMetadata.apply_patch_tool_type),
+    webSearchToolType: extractModelID(input.apiMetadata.web_search_tool_type),
+    shellType: extractModelID(input.apiMetadata.shell_type),
+    availabilityNux:
+      input.apiMetadata.availability_nux && typeof input.apiMetadata.availability_nux === "object"
+        ? { ...(input.apiMetadata.availability_nux as Record<string, unknown>) }
+        : null,
+    upgrade:
+      input.apiMetadata.upgrade && typeof input.apiMetadata.upgrade === "object"
+        ? { ...(input.apiMetadata.upgrade as Record<string, unknown>) }
+        : null,
+    priority: Number.isFinite(Number(input.apiMetadata.priority))
+      ? Math.max(0, Math.floor(Number(input.apiMetadata.priority)))
+      : null,
+    additionalSpeedTiers: Array.isArray(input.apiMetadata.additional_speed_tiers)
+      ? [...(input.apiMetadata.additional_speed_tiers as unknown[])]
+      : [],
+    availableInPlans: Array.isArray(input.apiMetadata.available_in_plans)
+      ? [...(input.apiMetadata.available_in_plans as unknown[])]
+      : [],
+    supportsSearchTool: input.apiMetadata.supports_search_tool === true,
+  }
+}
+
 const CODEX_MODEL_CATALOG = await loadCodexModelCatalog()
-const DEFAULT_CHAT_MODELS = CODEX_MODEL_CATALOG.map((item) => item.id)
-const CURSOR_STABLE_MODEL_IDS = [
-  "gpt-5.4",
-  "gpt-5.3-codex",
-  "gpt-5.2",
-  "gpt-5.1-codex-max",
-  "gpt-5.1-codex-mini",
-] as const
+const DEFAULT_CHAT_MODELS = CODEX_MODEL_CATALOG.filter(
+  (item) => item.supportedInApi && item.visibility.toLowerCase() !== "hide",
+).map((item) => item.id)
+const CURSOR_STABLE_MODEL_IDS = [...DEFAULT_CHAT_MODELS]
 const MODEL_REASONING_LEVELS: Record<string, string[]> = Object.fromEntries(
   CODEX_MODEL_CATALOG.map((item) => [item.id, item.supportedReasoningLevels]),
 )
@@ -1173,6 +1622,218 @@ const MODEL_SUPPORTS_PARALLEL_TOOL_CALLS: Record<string, boolean> = Object.fromE
 const MODEL_MAX_CONTEXT_WINDOWS: Record<string, number | null> = Object.fromEntries(
   CODEX_MODEL_CATALOG.map((item) => [item.id, item.maxContextWindow]),
 )
+const MODEL_CONTEXT_WINDOWS: Record<string, number | null> = Object.fromEntries(
+  CODEX_MODEL_CATALOG.map((item) => [item.id, item.contextWindow]),
+)
+const MODEL_SUPPORTS_REASONING_SUMMARIES: Record<string, boolean> = Object.fromEntries(
+  CODEX_MODEL_CATALOG.map((item) => [item.id, item.supportsReasoningSummaries]),
+)
+const MODEL_SUPPORTS_VERBOSITY: Record<string, boolean> = Object.fromEntries(
+  CODEX_MODEL_CATALOG.map((item) => [item.id, item.supportVerbosity]),
+)
+const MODEL_DEFAULT_VERBOSITIES: Record<string, string | null> = Object.fromEntries(
+  CODEX_MODEL_CATALOG.map((item) => [item.id, item.defaultVerbosity]),
+)
+const MODEL_DEFAULT_REASONING_SUMMARIES: Record<string, string | null> = Object.fromEntries(
+  CODEX_MODEL_CATALOG.map((item) => [item.id, item.defaultReasoningSummary]),
+)
+const MODEL_VISIBILITIES: Record<string, string> = Object.fromEntries(CODEX_MODEL_CATALOG.map((item) => [item.id, item.visibility]))
+
+function resolveChatModelCatalog() {
+  return CODEX_MODEL_CATALOG.filter((item) => item.supportedInApi && item.visibility.toLowerCase() !== "hide").map((item) =>
+    serializeChatModelCatalogEntry(item),
+  )
+}
+
+function resolveChatModelList() {
+  return resolveChatModelCatalog()
+}
+
+function resolveDefaultChatModelId() {
+  return DEFAULT_CHAT_MODELS[0] ?? CODEX_MODEL_CATALOG[0]?.id ?? "gpt-5.5"
+}
+
+function buildChatModelsResponsePayload() {
+  return {
+    models: resolveChatModelCatalog(),
+    defaultModelId: resolveDefaultChatModelId(),
+  }
+}
+
+function getModelCatalogEntry(model: string) {
+  const normalized = extractModelID(model)
+  if (!normalized) return null
+  return CODEX_MODEL_CATALOG.find((item) => item.id === normalized) ?? null
+}
+
+function resolveModelContextWindow(model: string) {
+  const normalized = extractModelID(model)
+  if (!normalized) return null
+  return MODEL_MAX_CONTEXT_WINDOWS[normalized] ?? null
+}
+
+function resolveModelBaseContextWindow(model: string) {
+  const normalized = extractModelID(model)
+  if (!normalized) return null
+  return MODEL_CONTEXT_WINDOWS[normalized] ?? null
+}
+
+function resolveSupportedReasoningLevelsForModel(model: string) {
+  const normalized = extractModelID(model)
+  if (!normalized) return []
+  return [...(MODEL_REASONING_LEVELS[normalized] ?? [])]
+}
+
+function resolveDefaultReasoningEffortForModel(model: string) {
+  const normalized = extractModelID(model)
+  if (!normalized) return "medium"
+  const explicit = MODEL_DEFAULT_REASONING_LEVELS[normalized]
+  if (explicit) return explicit
+  const supported = resolveSupportedReasoningLevelsForModel(normalized)
+  if (supported.includes("medium")) return "medium"
+  return supported[0] ?? "medium"
+}
+
+function normalizeReasoningEffortForModel(model: string, effort?: string | null) {
+  const normalizedEffort = normalizeReasoningEffort(effort)
+  const normalizedModel = extractModelID(model)
+  if (!normalizedModel) return normalizedEffort ?? "medium"
+  const supported = resolveSupportedReasoningLevelsForModel(normalizedModel)
+  if (!normalizedEffort) return resolveDefaultReasoningEffortForModel(normalizedModel)
+  if (supported.length === 0 || supported.includes(normalizedEffort)) return normalizedEffort
+  return normalizedEffort
+}
+
+function isModelIdOnlyHardcodedOverride(model: string) {
+  const normalized = extractModelID(model)
+  return Boolean(normalized && (normalized === "gpt-5.5" || normalized.startsWith("gpt-5.5-")))
+}
+
+function isUnknownGpt55ModelVariant(model: string) {
+  const normalized = extractModelID(model)
+  return Boolean(normalized && normalized !== "gpt-5.5" && normalized.startsWith("gpt-5.5-"))
+}
+
+function modelSupportsReasoningSummaries(model: string) {
+  const normalized = extractModelID(model)
+  if (!normalized) return false
+  if (isUnknownGpt55ModelVariant(normalized)) return false
+  if (hasOwnKey(MODEL_SUPPORTS_REASONING_SUMMARIES, normalized)) {
+    return MODEL_SUPPORTS_REASONING_SUMMARIES[normalized] !== false
+  }
+  return normalized.startsWith("gpt-5") || normalized.startsWith("o") || normalized.startsWith("codex-")
+}
+
+function resolveDefaultReasoningSummaryForModel(model: string) {
+  const normalized = extractModelID(model)
+  if (!normalized) return null
+  if (hasOwnKey(MODEL_DEFAULT_REASONING_SUMMARIES, normalized)) {
+    return MODEL_DEFAULT_REASONING_SUMMARIES[normalized] ?? null
+  }
+  return modelSupportsReasoningSummaries(normalized) ? "auto" : null
+}
+
+function modelSupportsVerbosity(model: string) {
+  const normalized = extractModelID(model)
+  if (!normalized) return false
+  if (isUnknownGpt55ModelVariant(normalized)) return false
+  if (hasOwnKey(MODEL_SUPPORTS_VERBOSITY, normalized)) {
+    return MODEL_SUPPORTS_VERBOSITY[normalized] !== false
+  }
+  return normalized.startsWith("gpt-5") || normalized.startsWith("codex-")
+}
+
+function resolveDefaultVerbosityForModel(model: string) {
+  const normalized = extractModelID(model)
+  if (!normalized) return null
+  if (hasOwnKey(MODEL_DEFAULT_VERBOSITIES, normalized)) {
+    return MODEL_DEFAULT_VERBOSITIES[normalized] ?? null
+  }
+  return modelSupportsVerbosity(normalized) ? "low" : null
+}
+
+function buildReasoningPayloadForModel(model: string, effort?: string | null) {
+  if (!modelSupportsReasoningSummaries(model)) return null
+  const reasoning: Record<string, unknown> = {
+    effort: normalizeReasoningEffortForModel(model, effort ?? null),
+  }
+  const summary = resolveDefaultReasoningSummaryForModel(model)
+  if (summary && summary !== "none") {
+    reasoning.summary = summary
+  }
+  return reasoning
+}
+
+function buildForcedReasoningPayloadForModel(model: string, effort?: string | null) {
+  const normalizedEffort = normalizeReasoningEffortForModel(model, effort ?? null)
+  if (!normalizedEffort) return null
+  return {
+    effort: normalizedEffort,
+  }
+}
+
+function resolveVirtualKeyRequestOverrides(key: {
+  fixedModel?: unknown
+  fixedReasoningEffort?: unknown
+}) {
+  return {
+    fixedModel: extractModelID(key.fixedModel),
+    fixedReasoningEffort: normalizeReasoningEffort(key.fixedReasoningEffort),
+  }
+}
+
+function applyVirtualKeyOverridesToResponsesBody(
+  parsedRoot: Record<string, unknown> | null,
+  overrides: {
+    fixedModel?: string | null
+    fixedReasoningEffort?: string | null
+  },
+) {
+  if (!overrides.fixedModel && !overrides.fixedReasoningEffort) return parsedRoot
+  const next: Record<string, unknown> = { ...(parsedRoot ?? {}) }
+  if (overrides.fixedModel) {
+    next.model = overrides.fixedModel
+  }
+  if (overrides.fixedReasoningEffort) {
+    next.reasoning_effort = overrides.fixedReasoningEffort
+    next.model_reasoning_effort = overrides.fixedReasoningEffort
+    const reasoning = buildForcedReasoningPayloadForModel(
+      overrides.fixedModel ?? extractModelID(next.model) ?? "gpt-5.4",
+      overrides.fixedReasoningEffort,
+    )
+    if (reasoning) {
+      next.reasoning = reasoning
+    }
+  }
+  return next
+}
+
+function buildTextConfigForModel(model: string) {
+  if (!modelSupportsVerbosity(model)) return null
+  const verbosity = resolveDefaultVerbosityForModel(model)
+  if (!verbosity) return null
+  return {
+    verbosity,
+  }
+}
+
+function shouldAutoTruncateModel(model: string) {
+  const maxContextWindow = resolveModelContextWindow(model)
+  if (maxContextWindow && maxContextWindow > 0 && maxContextWindow <= 272000) return true
+  const contextWindow = resolveModelBaseContextWindow(model)
+  return Boolean(contextWindow && contextWindow > 0 && contextWindow <= 272000)
+}
+
+function modelSupportsTruncationParameter(model: string) {
+  const normalized = extractModelID(model)
+  if (!normalized) return true
+  return !isModelIdOnlyHardcodedOverride(normalized)
+}
+
+function shouldSendAutoTruncation(model: string, modelConfig: ResponsesModelConfig) {
+  if (!modelSupportsTruncationParameter(model)) return false
+  return modelConfig.requiredAutoTruncation || shouldAutoTruncateModel(model)
+}
 
 const StartLoginSchema = z.object({
   providerId: z.string().min(1),
@@ -1205,6 +1866,8 @@ const IssueVirtualKeySchema = z.object({
   clientMode: z.enum(["codex", "cursor"]).optional().default("codex"),
   wireApi: z.enum(["responses", "chat_completions"]).optional(),
   name: z.string().trim().max(120).optional(),
+  fixedModel: z.string().trim().max(120).nullable().optional(),
+  fixedReasoningEffort: z.string().trim().max(64).nullable().optional(),
   validityDays: z.number().int().min(1).max(3650).nullable().optional().default(30),
 })
 
@@ -1294,6 +1957,8 @@ const SyncOAuthSchema = z.object({
   accountId: z.string().trim().min(1).max(160).optional(),
   accessToken: z.string().min(1),
   refreshToken: z.string().optional(),
+  idToken: z.string().optional(),
+  id_token: z.string().optional(),
   expiresAt: z.number().int().positive().optional(),
   organizationId: z.string().trim().min(1).max(200).optional(),
   projectId: z.string().trim().min(1).max(200).optional(),
@@ -1609,8 +2274,20 @@ function normalizeUsage(payload: unknown): UsageMetrics {
   )
   const reasoningEffort = normalizeReasoningEffort(
     pickFirstDefinedValue(
-      readFirstValue(usageRecord, ["reasoning_effort", "reasoningEffort"]),
-      readFirstValue(payloadRecord, ["reasoning_effort", "reasoningEffort"]),
+      readFirstValue(usageRecord, [
+        "reasoning_effort",
+        "reasoningEffort",
+        "model_reasoning_effort",
+        "modelReasoningEffort",
+        "effort",
+      ]),
+      readFirstValue(payloadRecord, [
+        "reasoning_effort",
+        "reasoningEffort",
+        "model_reasoning_effort",
+        "modelReasoningEffort",
+        "effort",
+      ]),
       payloadRecord?.reasoning,
     ),
   )
@@ -2101,6 +2778,18 @@ function resolveAccountAbnormalStateLegacy(input: {
       deleteEligible: false,
     }
   }
+  if (reason === "upstream_certificate_verification_error") {
+    return {
+      category: "transient",
+      label: "证书异常",
+      reason,
+      source: health.source ?? null,
+      detectedAt: health.updatedAt ?? null,
+      expiresAt: health.expiresAt,
+      confidence: "high",
+      deleteEligible: false,
+    }
+  }
   return {
     category: "unknown",
     label: "异常",
@@ -2273,6 +2962,18 @@ function resolveAccountAbnormalState(input: {
       detectedAt: health.updatedAt ?? null,
       expiresAt: health.expiresAt,
       confidence: "medium",
+      deleteEligible: false,
+    })
+  }
+  if (reason === "upstream_certificate_verification_error") {
+    return buildAccountAbnormalState({
+      classification: "transient",
+      label: "证书异常",
+      reason,
+      source: health.source ?? null,
+      detectedAt: health.updatedAt ?? null,
+      expiresAt: health.expiresAt,
+      confidence: "high",
       deleteEligible: false,
     })
   }
@@ -2578,6 +3279,169 @@ function asObjectRecord(value: unknown) {
   return value as Record<string, unknown>
 }
 
+const OAUTH_BRIDGE_VIRTUAL_KEY_ID_PREFIX = "codex-oauth-bridge:"
+
+function normalizeLowerIdentity(value?: string | null) {
+  return normalizeIdentity(value)?.toLowerCase()
+}
+
+function resolveChatgptBearerIdentity(token: string) {
+  const payload = parseJwtPayload(token)
+  const auth = asObjectRecord(payload?.["https://api.openai.com/auth"])
+  const profile = asObjectRecord(payload?.["https://api.openai.com/profile"])
+  return {
+    accountId:
+      normalizeIdentity(String(auth?.chatgpt_account_id ?? "")) ||
+      normalizeIdentity(String(auth?.account_id ?? "")) ||
+      normalizeIdentity(String(auth?.organization_id ?? "")),
+    userId:
+      normalizeIdentity(String(auth?.chatgpt_user_id ?? "")) ||
+      normalizeIdentity(String(auth?.user_id ?? "")) ||
+      normalizeIdentity(String(payload?.sub ?? "")),
+    email:
+      normalizeLowerIdentity(String(profile?.email ?? "")) ||
+      normalizeLowerIdentity(String(payload?.email ?? "")),
+  }
+}
+
+function accountMetadataRecord(account: StoredAccount) {
+  return account.metadata && typeof account.metadata === "object" ? (account.metadata as Record<string, unknown>) : {}
+}
+
+function storedAccountMatchesChatgptBearer(input: {
+  account: StoredAccount
+  token: string
+  accountId?: string
+  userId?: string
+  email?: string
+  requestedModel?: string | null
+}) {
+  const { account, token, accountId, userId, email, requestedModel } = input
+  if (!account.accessToken) return null
+  if (!accountCanUseRequestedModel(account, requestedModel)) return null
+
+  const metadata = accountMetadataRecord(account)
+  let score = 0
+  if (normalizeIdentity(account.accessToken) === token) score += 10000
+  if (normalizeIdentity(account.idToken) === token) score += 9000
+
+  const accountIds = [
+    account.accountId,
+    metadata.chatgptAccountId,
+    metadata.chatgpt_account_id,
+    metadata.organizationId,
+    metadata.organization_id,
+  ]
+    .map((value) => normalizeIdentity(String(value ?? "")))
+    .filter(Boolean)
+  if (accountId && accountIds.includes(accountId)) score += 1000
+
+  const userIds = [metadata.chatgptUserId, metadata.chatgpt_user_id, metadata.userId, metadata.user_id]
+    .map((value) => normalizeIdentity(String(value ?? "")))
+    .filter(Boolean)
+  if (userId && userIds.includes(userId)) score += 500
+
+  const emails = [account.email, metadata.email]
+    .map((value) => normalizeLowerIdentity(String(value ?? "")))
+    .filter(Boolean)
+  if (email && emails.includes(email)) score += 250
+
+  if (score <= 0) return null
+  if (resolveAccountPlanCohort(account) === "paid") score += 50
+  if (account.isActive !== false) score += 10
+  return score
+}
+
+function resolveStoredAccountFromChatgptBearer(token: string, requestedModel?: string | null) {
+  const normalizedToken = normalizeIdentity(token)
+  if (!normalizedToken || normalizedToken.startsWith("ocsk_")) return null
+
+  const identity = resolveChatgptBearerIdentity(normalizedToken)
+  const candidates = accountStore
+    .list()
+    .map((account) => {
+      const score = storedAccountMatchesChatgptBearer({
+        account,
+        token: normalizedToken,
+        accountId: identity.accountId,
+        userId: identity.userId,
+        email: identity.email,
+        requestedModel,
+      })
+      return score === null ? null : { account, score }
+    })
+    .filter(Boolean) as Array<{ account: StoredAccount; score: number }>
+
+  candidates.sort((left, right) => {
+    if (right.score !== left.score) return right.score - left.score
+    return Number(right.account.updatedAt ?? 0) - Number(left.account.updatedAt ?? 0)
+  })
+  return candidates[0]?.account ?? null
+}
+
+function resolveVirtualApiKeyFromCodexOAuthBridge(
+  token: string,
+  sessionId?: string | null,
+  requestedModel?: string | null,
+) {
+  const normalizedToken = normalizeIdentity(token)
+  if (!normalizedToken || normalizedToken.startsWith("ocsk_")) return null
+  const keys = buildCodexOAuthBridgeBindingKeys({ accessToken: normalizedToken })
+  for (const key of keys) {
+    const binding = runtimeSettings.codexOAuthBridgeBindings?.[key]
+    if (!binding?.virtualKeyId) continue
+    const resolved = accountStore.resolveVirtualApiKeyByID(binding.virtualKeyId, {
+      sessionId,
+      routeOptionsFactory: (virtualKey) =>
+        virtualKey.routingMode === "pool"
+          ? buildProviderRoutingHintsForRequestedModel(virtualKey.providerId, requestedModel)
+          : undefined,
+    })
+    if (resolved) return resolved
+    const relaxed = accountStore.resolveVirtualApiKeyByID(binding.virtualKeyId, {
+      sessionId,
+      routeOptionsFactory: (virtualKey) =>
+        virtualKey.routingMode === "pool"
+          ? buildRelaxedProviderRoutingHintsForRequestedModel(virtualKey.providerId, requestedModel)
+          : undefined,
+    })
+    if (relaxed) return relaxed
+    if (resolveRequestedModelPlanCohort(requestedModel)) {
+      const fallback = accountStore.resolveVirtualApiKeyByID(binding.virtualKeyId, {
+        sessionId,
+        routeOptionsFactory: (virtualKey) =>
+          virtualKey.routingMode === "pool" ? buildRelaxedProviderRoutingHints(virtualKey.providerId) : undefined,
+      })
+      if (fallback) return fallback
+    }
+  }
+  return null
+}
+
+function buildOAuthBridgeVirtualKey(account: StoredAccount): VirtualApiKeyRecord {
+  const now = Date.now()
+  return {
+    id: `${OAUTH_BRIDGE_VIRTUAL_KEY_ID_PREFIX}${account.id}`,
+    accountId: account.id,
+    providerId: account.providerId,
+    routingMode: "single",
+    clientMode: "codex",
+    wireApi: "responses",
+    name: "Codex OAuth Bridge",
+    fixedModel: null,
+    fixedReasoningEffort: null,
+    keyPrefix: "oauth",
+    isRevoked: false,
+    promptTokens: 0,
+    completionTokens: 0,
+    totalTokens: 0,
+    expiresAt: null,
+    lastUsedAt: now,
+    createdAt: now,
+    updatedAt: now,
+  }
+}
+
 function resolveDefaultOrganizationIdFromAuthRecord(value: unknown) {
   const auth = asObjectRecord(value)
   if (!auth) return undefined
@@ -2647,7 +3511,7 @@ function buildProviderQuotaRoutingHints(providerId: string, now = Date.now()) {
       continue
     }
     if (Number(headroom) <= ACCOUNT_SOFT_DRAIN_REMAINING_PERCENT_THRESHOLD) {
-      excludeAccountIds.push(account.id)
+      deprioritizedAccountIds.push(account.id)
     }
   }
 
@@ -2748,6 +3612,52 @@ function buildRelaxedProviderRoutingHints(
     deprioritizedAccountIds: quotaHints.deprioritizedAccountIds,
     preferredPlanCohort: options?.preferredPlanCohort ?? null,
   })
+}
+
+function modelRequiresPaidChatgptAccount(model?: string | null) {
+  const normalized = extractModelID(model)?.toLowerCase()
+  return Boolean(normalized && (normalized === "gpt-5.5" || normalized.startsWith("gpt-5.5-")))
+}
+
+function resolveRequestedModelPlanCohort(model?: string | null): AccountPlanCohort | null {
+  return modelRequiresPaidChatgptAccount(model) ? "paid" : null
+}
+
+function accountCanUseRequestedModel(account: StoredAccount, model?: string | null) {
+  if (!modelRequiresPaidChatgptAccount(model)) return true
+  if (String(account.providerId ?? "").trim().toLowerCase() !== "chatgpt") return true
+  return resolveAccountPlanCohort(account) === "paid"
+}
+
+function buildProviderRoutingHintsForRequestedModel(
+  providerId: string,
+  model?: string | null,
+  now = Date.now(),
+  options?: ProviderRoutingHintsOptions,
+) {
+  const requiredPlanCohort = resolveRequestedModelPlanCohort(model)
+  return buildProviderRoutingHints(providerId, now, {
+    ...options,
+    preferredPlanCohort: requiredPlanCohort ?? options?.preferredPlanCohort ?? null,
+    cohortMode: requiredPlanCohort ? "strict" : options?.cohortMode,
+  })
+}
+
+function buildRelaxedProviderRoutingHintsForRequestedModel(
+  providerId: string,
+  model?: string | null,
+  now = Date.now(),
+  options?: ProviderRoutingHintsOptions,
+) {
+  const requiredPlanCohort = resolveRequestedModelPlanCohort(model)
+  if (requiredPlanCohort) {
+    return buildProviderRoutingHints(providerId, now, {
+      ...options,
+      preferredPlanCohort: requiredPlanCohort,
+      cohortMode: "strict",
+    })
+  }
+  return buildRelaxedProviderRoutingHints(providerId, now, options)
 }
 
 function resolveAccountRoutingState(accountId: string, quota?: AccountQuotaSnapshot | null, now = Date.now()): AccountRoutingState {
@@ -2900,6 +3810,11 @@ async function fetchAccountQuotaSnapshot(account: StoredAccount): Promise<Accoun
     })
     if (blocked.matched) {
       markAccountUnhealthy(account.id, blocked.reason, "quota")
+    } else {
+      const transient = detectTransientUpstreamError(error)
+      if (transient.matched) {
+        markAccountUnhealthy(account.id, transient.reason ?? "upstream_transport_error", "quota")
+      }
     }
     return makeQuotaError(error)
   }
@@ -2935,8 +3850,10 @@ function toPublicAccount(account: StoredAccount, quota?: AccountQuotaSnapshot | 
     chatgptUserId: normalizeIdentity(String((metadata as Record<string, unknown>).chatgptUserId ?? "")),
     accessToken: account.accessToken ? "***" : "",
     refreshToken: null,
+    idToken: null,
     hasAccessToken: Boolean(account.accessToken),
     hasRefreshToken: Boolean(account.refreshToken),
+    hasIdToken: Boolean(account.idToken),
     health: derived.health,
     routing: derived.routing,
     abnormalState: derived.abnormalState,
@@ -3083,6 +4000,7 @@ function exportStoredOAuthAccount(account: StoredAccount) {
     account_id: account.accountId ?? undefined,
     access_token: account.accessToken || undefined,
     refresh_token: account.refreshToken ?? undefined,
+    id_token: account.idToken ?? undefined,
     expires_at: account.expiresAt ?? undefined,
     organization_id: normalizeIdentity(String(metadata.organizationId ?? "")) || undefined,
     project_id: normalizeIdentity(String(metadata.projectId ?? "")) || undefined,
@@ -3128,6 +4046,7 @@ function resolveImportedJsonOAuthAccount(input: z.infer<typeof ImportJsonAccount
     lastRefresh,
     accessToken,
     refreshToken: refreshToken ?? undefined,
+    idToken: resolvedTokens.idToken,
     email: resolvedTokens.email,
     accountId: resolvedTokens.accountId,
     expiresAt: expiresAt ?? undefined,
@@ -3170,6 +4089,7 @@ function importJsonOAuthAccount(input: z.infer<typeof ImportJsonAccountSchema>) 
     accountId: resolved.accountId,
     accessToken: resolved.accessToken,
     refreshToken: resolved.refreshToken,
+    idToken: resolved.idToken,
     expiresAt: resolved.expiresAt,
     metadata: resolved.metadata,
   })
@@ -3242,6 +4162,7 @@ async function importRefreshTokenOAuthAccount(input: z.infer<typeof ImportRtAcco
 
   let accessToken = initialResolved.accessToken
   let finalRefreshToken = refreshToken
+  let finalIdToken = initialResolved.idToken
   let finalExpiresAt = initialResolved.expiresAt ?? providedExpiresAt ?? undefined
   let finalResolved = initialResolved
   let refreshed = false
@@ -3267,6 +4188,7 @@ async function importRefreshTokenOAuthAccount(input: z.infer<typeof ImportRtAcco
       enterpriseUrl: null,
       accessToken: "",
       refreshToken,
+      idToken: finalIdToken ?? null,
       expiresAt: finalExpiresAt ?? null,
       isActive: false,
       metadata: {},
@@ -3283,10 +4205,11 @@ async function importRefreshTokenOAuthAccount(input: z.infer<typeof ImportRtAcco
     refreshed = true
     accessToken = refreshResult.accessToken
     finalRefreshToken = refreshResult.refreshToken ?? refreshToken
+    finalIdToken = refreshResult.idToken ?? finalIdToken
     finalExpiresAt = refreshResult.expiresAt ?? finalExpiresAt
     finalResolved = resolvePortableOAuthTokenProfile({
       accessToken,
-      idToken,
+      idToken: finalIdToken,
       email: initialResolved.email ?? input.email,
       accountId: refreshResult.accountId ?? initialResolved.accountId ?? importedAccountId,
       fallbackAccountIds: [importedWorkspaceId],
@@ -3323,13 +4246,14 @@ async function importRefreshTokenOAuthAccount(input: z.infer<typeof ImportRtAcco
     accountId: finalResolved.accountId,
     accessToken,
     refreshToken: finalRefreshToken,
+    idToken: finalIdToken,
     expiresAt: finalExpiresAt,
     metadata: {
       source: "codex-refresh-token-import",
       importMode: accessTokenCandidate ? "refresh-token-with-access-token" : "refresh-token-refresh-first",
       importedAccountId,
       importedWorkspaceId,
-      idTokenPresent: Boolean(idToken),
+      idTokenPresent: Boolean(finalIdToken),
       organizationId: finalResolved.organizationId,
       projectId: finalResolved.projectId,
       chatgptPlanType: finalResolved.chatgptPlanType,
@@ -3539,6 +4463,7 @@ function resolveVirtualKeyContext(
     expectedClientMode?: "codex" | "cursor"
     expectedWireApi?: "responses" | "chat_completions"
     bodySessionId?: string | null
+    requestedModel?: string | null
   },
 ) {
   const bearer = extractBearerToken(c.req.header("authorization"))
@@ -3549,7 +4474,9 @@ function resolveVirtualKeyContext(
     requestUrl: c.req.url,
     bodySessionId: options?.bodySessionId,
   })
-  const resolved = resolveVirtualApiKeyWithPoolFallback(bearer, sessionId)
+  const resolved = resolveVirtualApiKeyWithPoolFallback(bearer, sessionId, {
+    requestedModel: options?.requestedModel ?? null,
+  })
   if (!resolved) return { error: "Invalid, revoked, or expired virtual API key" as const, status: 401 as const }
 
   const expectedClientMode = options?.expectedClientMode
@@ -3566,6 +4493,7 @@ function resolveVirtualKeyContext(
   const routed = ensureResolvedPoolAccountEligible({
     resolved,
     sessionId,
+    requestedModel: options?.requestedModel ?? null,
   })
   if (!routed) {
     const unavailable = resolveAutomaticAccountAvailability({ account: resolved.account })
@@ -3581,16 +4509,44 @@ function resolveVirtualKeyContext(
   return { resolved: routed, sessionId }
 }
 
-function resolveVirtualApiKeyWithPoolFallback(secret: string, sessionId?: string | null) {
+function resolveVirtualApiKeyWithPoolFallback(
+  secret: string,
+  sessionId?: string | null,
+  options?: { requestedModel?: string | null },
+) {
+  const requestedModel = options?.requestedModel ?? null
   const primary = accountStore.resolveVirtualApiKey(secret, {
     sessionId,
-    routeOptionsFactory: (key) => (key.routingMode === "pool" ? buildProviderRoutingHints(key.providerId) : undefined),
+    routeOptionsFactory: (key) =>
+      key.routingMode === "pool" ? buildProviderRoutingHintsForRequestedModel(key.providerId, requestedModel) : undefined,
   })
   if (primary) return primary
-  return accountStore.resolveVirtualApiKey(secret, {
+  const relaxed = accountStore.resolveVirtualApiKey(secret, {
     sessionId,
-    routeOptionsFactory: (key) => (key.routingMode === "pool" ? buildRelaxedProviderRoutingHints(key.providerId) : undefined),
+    routeOptionsFactory: (key) =>
+      key.routingMode === "pool"
+        ? buildRelaxedProviderRoutingHintsForRequestedModel(key.providerId, requestedModel)
+        : undefined,
   })
+  if (relaxed) return relaxed
+  if (resolveRequestedModelPlanCohort(requestedModel)) {
+    const fallback = accountStore.resolveVirtualApiKey(secret, {
+      sessionId,
+      routeOptionsFactory: (key) =>
+        key.routingMode === "pool" ? buildRelaxedProviderRoutingHints(key.providerId) : undefined,
+    })
+    if (fallback) return fallback
+  }
+  const bridgeVirtualKey = resolveVirtualApiKeyFromCodexOAuthBridge(secret, sessionId, requestedModel)
+  if (bridgeVirtualKey) return bridgeVirtualKey
+  const oauthBridgeAccount = resolveStoredAccountFromChatgptBearer(secret, requestedModel)
+  if (oauthBridgeAccount) {
+    return {
+      key: buildOAuthBridgeVirtualKey(oauthBridgeAccount),
+      account: oauthBridgeAccount,
+    }
+  }
+  return null
 }
 
 function rerouteResolvedPoolAccount(input: {
@@ -3639,20 +4595,23 @@ function ensureResolvedPoolAccountEligible(input: {
   }
   sessionId?: string | null
   routingHints?: ProviderRoutingHints
+  requestedModel?: string | null
 }) {
   const availability = resolveAutomaticAccountAvailability({ account: input.resolved.account })
+  const modelEligible = accountCanUseRequestedModel(input.resolved.account, input.requestedModel)
   if (input.resolved.key.routingMode !== "pool") {
-    return availability.ok ? input.resolved : null
+    return availability.ok && modelEligible ? input.resolved : null
   }
 
-  const preferredPlanCohort = resolveAccountPlanCohort(input.resolved.account)
+  const requiredPlanCohort = resolveRequestedModelPlanCohort(input.requestedModel)
+  const preferredPlanCohort = requiredPlanCohort ?? resolveAccountPlanCohort(input.resolved.account)
   const routingHints =
     input.routingHints ??
-    buildProviderRoutingHints(input.resolved.key.providerId, Date.now(), {
+    buildProviderRoutingHintsForRequestedModel(input.resolved.key.providerId, input.requestedModel, Date.now(), {
       preferredPlanCohort,
     })
   const excluded = new Set<string>(routingHints.excludeAccountIds)
-  if (!availability.ok) {
+  if (!availability.ok || !modelEligible) {
     excluded.add(input.resolved.account.id)
   }
   if (!excluded.has(input.resolved.account.id)) {
@@ -3672,11 +4631,11 @@ function ensureResolvedPoolAccountEligible(input: {
     },
   })
   if (!reroutedAccount) {
-    const relaxedHints = buildRelaxedProviderRoutingHints(input.resolved.key.providerId, Date.now(), {
+    const relaxedHints = buildRelaxedProviderRoutingHintsForRequestedModel(input.resolved.key.providerId, input.requestedModel, Date.now(), {
       preferredPlanCohort,
     })
     const relaxedExcluded = new Set(relaxedHints.excludeAccountIds)
-    if (!availability.ok) {
+    if (!availability.ok || !modelEligible) {
       relaxedExcluded.add(input.resolved.account.id)
     }
     if (!relaxedExcluded.has(input.resolved.account.id)) {
@@ -3715,14 +4674,22 @@ async function ensureResolvedPoolAccountConsistent(input: {
     account: StoredAccount
   }
   sessionId?: string | null
+  requestedModel?: string | null
 }) {
   if (input.resolved.key.routingMode !== "pool") {
-    return { ok: true as const, resolved: input.resolved }
+    return accountCanUseRequestedModel(input.resolved.account, input.requestedModel)
+      ? { ok: true as const, resolved: input.resolved }
+      : { ok: false as const, type: "noHealthy" as const }
   }
   const stickySessionId = normalizeSessionRouteID(input.sessionId)
-  const currentRoutingHints = buildProviderRoutingHints(input.resolved.key.providerId, Date.now())
+  const currentRoutingHints = buildProviderRoutingHintsForRequestedModel(
+    input.resolved.key.providerId,
+    input.requestedModel,
+    Date.now(),
+  )
   const resolvedPlanCohort = resolveAccountPlanCohort(input.resolved.account)
-  const preferredPlanCohort = currentRoutingHints.preferredPlanCohort ?? resolvedPlanCohort
+  const preferredPlanCohort =
+    resolveRequestedModelPlanCohort(input.requestedModel) ?? currentRoutingHints.preferredPlanCohort ?? resolvedPlanCohort
   if (
     stickySessionId &&
     accountStore.hasEstablishedVirtualKeySessionRoute({
@@ -3743,9 +4710,10 @@ async function ensureResolvedPoolAccountConsistent(input: {
     const rerouted = ensureResolvedPoolAccountEligible({
       resolved: input.resolved,
       sessionId: input.sessionId,
+      requestedModel: input.requestedModel,
       routingHints: currentRoutingHints.preferredPlanCohort === preferredPlanCohort
         ? currentRoutingHints
-        : buildProviderRoutingHints(input.resolved.key.providerId, Date.now(), {
+        : buildProviderRoutingHintsForRequestedModel(input.resolved.key.providerId, input.requestedModel, Date.now(), {
             preferredPlanCohort,
           }),
     })
@@ -3758,9 +4726,10 @@ async function ensureResolvedPoolAccountConsistent(input: {
   const rerouted = ensureResolvedPoolAccountEligible({
     resolved: input.resolved,
     sessionId: input.sessionId,
+    requestedModel: input.requestedModel,
     routingHints: currentRoutingHints.preferredPlanCohort === preferredPlanCohort
       ? currentRoutingHints
-      : buildProviderRoutingHints(input.resolved.key.providerId, Date.now(), {
+      : buildProviderRoutingHintsForRequestedModel(input.resolved.key.providerId, input.requestedModel, Date.now(), {
           preferredPlanCohort,
         }),
   })
@@ -3775,37 +4744,161 @@ type JsonRequestBodyAnalysis = {
   model: string | null
   sessionId: string | null
   reasoningEffort: string | null
+  decodedBody: Uint8Array | null
+  contentEncoding: string | null
+  decodeError: string | null
 }
 
-function tryParseJsonObjectBody(body?: Uint8Array) {
-  if (!body || body.byteLength === 0) return null
+function normalizeContentEncodings(value?: string | null) {
+  return String(value ?? "")
+    .split(",")
+    .map((item) => item.trim().toLowerCase())
+    .filter((item) => item.length > 0 && item !== "identity")
+}
+
+function toUint8Array(value: Uint8Array) {
+  return new Uint8Array(value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength))
+}
+
+function decodeRequestBodyByContentEncoding(body: Uint8Array, contentEncoding?: string | null) {
+  const encodings = normalizeContentEncodings(contentEncoding)
+  if (encodings.length === 0) {
+    return {
+      body,
+      contentEncoding: null,
+      error: null,
+    }
+  }
 
   try {
-    const text = new TextDecoder().decode(body)
-    const parsed = JSON.parse(text) as unknown
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      return null
+    let current = body
+    for (const encoding of [...encodings].reverse()) {
+      if (encoding === "gzip" || encoding === "x-gzip") {
+        current = toUint8Array(zlib.gunzipSync(current))
+        continue
+      }
+      if (encoding === "deflate") {
+        current = toUint8Array(zlib.inflateSync(current))
+        continue
+      }
+      if (encoding === "br") {
+        current = toUint8Array(zlib.brotliDecompressSync(current))
+        continue
+      }
+      if (encoding === "zstd") {
+        const zstdDecompressSync = (zlib as typeof zlib & { zstdDecompressSync?: (input: Uint8Array) => Uint8Array })
+          .zstdDecompressSync
+        if (!zstdDecompressSync) {
+          return {
+            body,
+            contentEncoding: encodings.join(","),
+            error: "unsupported_content_encoding_zstd",
+          }
+        }
+        current = toUint8Array(zstdDecompressSync(current))
+        continue
+      }
+      return {
+        body,
+        contentEncoding: encodings.join(","),
+        error: `unsupported_content_encoding_${encoding}`,
+      }
     }
-    return parsed as Record<string, unknown>
-  } catch {
-    return null
+    return {
+      body: current,
+      contentEncoding: encodings.join(","),
+      error: null,
+    }
+  } catch (error) {
+    return {
+      body,
+      contentEncoding: encodings.join(","),
+      error: `content_encoding_decode_failed:${errorMessage(error)}`,
+    }
   }
 }
 
-function analyzeJsonRequestBody(input: { body?: Uint8Array; contentType?: string | null }): JsonRequestBodyAnalysis {
-  const parsedRoot = tryParseJsonObjectBody(input.body)
+function tryParseJsonObjectBody(input: { body?: Uint8Array; contentEncoding?: string | null }) {
+  if (!input.body || input.body.byteLength === 0) {
+    return {
+      parsedRoot: null,
+      decodedBody: null,
+      contentEncoding: null,
+      decodeError: null,
+    }
+  }
+
+  const decoded = decodeRequestBodyByContentEncoding(input.body, input.contentEncoding)
+
+  try {
+    const text = new TextDecoder().decode(decoded.body)
+    const parsed = JSON.parse(text) as unknown
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return {
+        parsedRoot: null,
+        decodedBody: decoded.body,
+        contentEncoding: decoded.contentEncoding,
+        decodeError: decoded.error,
+      }
+    }
+    return {
+      parsedRoot: parsed as Record<string, unknown>,
+      decodedBody: decoded.body,
+      contentEncoding: decoded.contentEncoding,
+      decodeError: decoded.error,
+    }
+  } catch {
+    return {
+      parsedRoot: null,
+      decodedBody: decoded.body,
+      contentEncoding: decoded.contentEncoding,
+      decodeError: decoded.error,
+    }
+  }
+}
+
+function extractRequestModelFromRoot(root: Record<string, unknown>) {
+  const configRecord = asRecord(root.config)
+  const modelConfigRecord = asRecord(root.model_config ?? root.modelConfig)
+  return (
+    extractModelID(
+      pickFirstDefinedValue(
+        root.model,
+        root.model_slug,
+        root.modelSlug,
+        root.model_id,
+        root.modelId,
+        readFirstValue(configRecord, ["model", "model_slug", "modelSlug", "model_id", "modelId"]),
+        readFirstValue(modelConfigRecord, ["model", "model_slug", "modelSlug", "model_id", "modelId"]),
+      ),
+    ) ?? null
+  )
+}
+
+function analyzeJsonRequestBody(input: {
+  body?: Uint8Array
+  contentType?: string | null
+  contentEncoding?: string | null
+}): JsonRequestBodyAnalysis {
+  const parsed = tryParseJsonObjectBody({
+    body: input.body,
+    contentEncoding: input.contentEncoding,
+  })
+  const parsedRoot = parsed.parsedRoot
   if (!parsedRoot) {
     return {
       parsedRoot: null,
       model: null,
       sessionId: null,
       reasoningEffort: null,
+      decodedBody: parsed.decodedBody,
+      contentEncoding: parsed.contentEncoding,
+      decodeError: parsed.decodeError,
     }
   }
 
   const root = parsedRoot
-  const modelRaw = root.model
-  const model = typeof modelRaw === "string" && modelRaw.trim().length > 0 ? modelRaw.trim() : null
+  const model = extractRequestModelFromRoot(root)
   const sessionCandidates = [
     root.session_id,
     root.sessionId,
@@ -3821,18 +4914,36 @@ function analyzeJsonRequestBody(input: { body?: Uint8Array; contentType?: string
   ]
   const sessionId =
     sessionCandidates.find((value) => typeof value === "string" && String(value).trim().length > 0)?.toString() ?? null
+  const configRecord = asRecord(root.config)
   const reasoningEffort = normalizeReasoningEffort(
-    pickFirstDefinedValue(root.reasoning_effort, root.reasoningEffort, root.reasoning),
+    pickFirstDefinedValue(
+      root.reasoning_effort,
+      root.reasoningEffort,
+      root.model_reasoning_effort,
+      root.modelReasoningEffort,
+      root.effort,
+      readFirstValue(configRecord, [
+        "reasoning_effort",
+        "reasoningEffort",
+        "model_reasoning_effort",
+        "modelReasoningEffort",
+        "effort",
+      ]),
+      root.reasoning,
+    ),
   )
   return {
     parsedRoot: root,
     model,
     sessionId,
     reasoningEffort,
+    decodedBody: parsed.decodedBody,
+    contentEncoding: parsed.contentEncoding,
+    decodeError: parsed.decodeError,
   }
 }
 
-function parseAuditRequestFields(input: { body: Uint8Array; contentType?: string | null }) {
+function parseAuditRequestFields(input: { body: Uint8Array; contentType?: string | null; contentEncoding?: string | null }) {
   const analysis = analyzeJsonRequestBody(input)
   return {
     model: analysis.model,
@@ -4020,6 +5131,8 @@ function rememberRequestAuditOverlay(auditId: string, overlay: Partial<RequestAu
 function buildRequestTokenStatPayload(auditId: string, input: RequestAuditCompatInput) {
   const usage = normalizeUsageFromAuditInput(input)
   if (!usageHasTokenOrCostMetrics(usage)) return null
+  const normalizedReasoningEffort = normalizeReasoningEffort(input.reasoningEffort ?? usage.reasoningEffort)
+  const billableTokens = Math.max(0, usage.promptTokens - usage.cachedInputTokens) + Math.max(0, usage.completionTokens)
   return {
     requestAuditId: auditId,
     requestLogId: auditId,
@@ -4037,8 +5150,10 @@ function buildRequestTokenStatPayload(auditId: string, input: RequestAuditCompat
     outputTokens: usage.completionTokens,
     completionTokens: usage.completionTokens,
     totalTokens: usage.totalTokens,
+    billableTokens,
     reasoningOutputTokens: usage.reasoningOutputTokens,
     estimatedCostUsd: usage.estimatedCostUsd,
+    reasoningEffort: normalizedReasoningEffort,
     createdAt: Date.now(),
   }
 }
@@ -4503,6 +5618,7 @@ function buildServiceStatusSummary(now = Date.now()) {
     encryptionKeyConfigured: Boolean(getEffectiveEncryptionKey()),
     upstreamPrivacyStrict: isStrictUpstreamPrivacyEnabled(),
     officialStrictPassthrough: isOfficialStrictPassthroughEnabled(),
+    officialAssets: OFFICIAL_ASSETS_STATUS,
     restartRequired: true,
     checkedAt: now,
   }
@@ -4607,11 +5723,237 @@ function hasSensitiveActionConfirmation(c: any) {
 type ModelCatalogPayload = {
   object: "list"
   data: Array<Record<string, unknown>>
+  models?: Array<Record<string, unknown>>
 }
 
 type ModelsUpstreamPayload = {
   models?: Array<Record<string, unknown>>
   data?: Array<Record<string, unknown>>
+}
+
+function getReasoningEffortDescription(effort: string, fallback?: unknown) {
+  const explicit = extractModelID(fallback)
+  if (explicit) return explicit
+  const official = OFFICIAL_CODEX_REASONING_LEVELS.find((item) => item.effort === effort)
+  return official?.description ?? effort
+}
+
+function normalizeCodexAppReasoningEfforts(source: unknown, fallbackLevels: string[]) {
+  const entries = Array.isArray(source) ? source : []
+  const result: Array<{ reasoningEffort: string; description: string }> = []
+  const seen = new Set<string>()
+
+  const add = (effort: unknown, description?: unknown) => {
+    const normalized = extractModelID(effort)
+    if (!normalized || seen.has(normalized)) return
+    seen.add(normalized)
+    result.push({
+      reasoningEffort: normalized,
+      description: getReasoningEffortDescription(normalized, description),
+    })
+  }
+
+  for (const item of entries) {
+    if (typeof item === "string") {
+      add(item)
+      continue
+    }
+    if (item && typeof item === "object") {
+      const record = item as Record<string, unknown>
+      add(record.reasoningEffort ?? record.effort, record.description)
+    }
+  }
+
+  for (const level of fallbackLevels) {
+    add(level)
+  }
+
+  if (result.length === 0) add("medium")
+  return result
+}
+
+function normalizeCodexAppInputModalities(...sources: unknown[]) {
+  const values: string[] = []
+  const seen = new Set<string>()
+  for (const source of sources) {
+    if (!Array.isArray(source)) continue
+    for (const item of source) {
+      const normalized = extractModelID(item)
+      if ((normalized === "text" || normalized === "image") && !seen.has(normalized)) {
+        seen.add(normalized)
+        values.push(normalized)
+      }
+    }
+  }
+  return values.length > 0 ? values : ["text"]
+}
+
+function normalizeCodexAppAdditionalSpeedTiers(...sources: unknown[]) {
+  const values: string[] = []
+  const seen = new Set<string>()
+  for (const source of sources) {
+    if (!Array.isArray(source)) continue
+    for (const item of source) {
+      const normalized = extractModelID(item)
+      if (!normalized || seen.has(normalized)) continue
+      seen.add(normalized)
+      values.push(normalized)
+    }
+  }
+  return values
+}
+
+function normalizeStringArray(...sources: unknown[]) {
+  const values: string[] = []
+  const seen = new Set<string>()
+  for (const source of sources) {
+    if (!Array.isArray(source)) continue
+    for (const item of source) {
+      const normalized = extractModelID(item)
+      if (!normalized || seen.has(normalized)) continue
+      seen.add(normalized)
+      values.push(normalized)
+    }
+  }
+  return values
+}
+
+function normalizeRecord(value: unknown) {
+  return value && typeof value === "object" && !Array.isArray(value) ? { ...(value as Record<string, unknown>) } : null
+}
+
+function normalizeInteger(value: unknown, fallback: number) {
+  return Number.isFinite(Number(value)) ? Math.floor(Number(value)) : fallback
+}
+
+function normalizeCodexAppAvailabilityNux(...sources: unknown[]) {
+  for (const source of sources) {
+    if (!source || typeof source !== "object") continue
+    const message = extractModelID((source as Record<string, unknown>).message)
+    if (message) return { message }
+  }
+  return null
+}
+
+function normalizeCodexModelInfoUpgrade(...sources: unknown[]) {
+  for (const source of sources) {
+    const record = normalizeRecord(source)
+    if (!record) continue
+    const model = extractModelID(record.model)
+    if (!model) continue
+    return {
+      ...record,
+      model,
+      migration_markdown: extractModelID(record.migration_markdown ?? record.migrationMarkdown) ?? "",
+    }
+  }
+  return null
+}
+
+function normalizeCodexAppUpgradeInfo(...sources: unknown[]) {
+  for (const source of sources) {
+    if (!source || typeof source !== "object") continue
+    const record = source as Record<string, unknown>
+    const model = extractModelID(record.model)
+    if (!model) continue
+    return {
+      model,
+      upgradeCopy: extractModelID(record.upgradeCopy ?? record.upgrade_copy),
+      modelLink: extractModelID(record.modelLink ?? record.model_link),
+      migrationMarkdown: extractModelID(record.migrationMarkdown ?? record.migration_markdown),
+    }
+  }
+  return null
+}
+
+function buildCodexModelInfoCompatFields(input: {
+  model?: Record<string, unknown>
+  apiMetadata?: Record<string, unknown>
+}) {
+  const model = input.model ?? {}
+  const apiMetadata = input.apiMetadata ?? {}
+  return {
+    shell_type: extractModelID(model.shell_type ?? apiMetadata.shell_type) ?? "shell_command",
+    priority: normalizeInteger(model.priority ?? apiMetadata.priority, 0),
+    additional_speed_tiers: normalizeCodexAppAdditionalSpeedTiers(
+      model.additional_speed_tiers,
+      apiMetadata.additional_speed_tiers,
+      model.additionalSpeedTiers,
+      apiMetadata.additionalSpeedTiers,
+    ),
+    availability_nux: normalizeCodexAppAvailabilityNux(
+      model.availability_nux,
+      apiMetadata.availability_nux,
+      model.availabilityNux,
+      apiMetadata.availabilityNux,
+    ),
+    upgrade: normalizeCodexModelInfoUpgrade(model.upgrade, apiMetadata.upgrade),
+    base_instructions: extractModelID(model.base_instructions ?? apiMetadata.base_instructions) ?? CHAT_INSTRUCTIONS,
+    truncation_policy:
+      normalizeRecord(model.truncation_policy ?? apiMetadata.truncation_policy) ?? { mode: "tokens", limit: 10000 },
+    experimental_supported_tools: normalizeStringArray(
+      model.experimental_supported_tools,
+      apiMetadata.experimental_supported_tools,
+    ),
+    input_modalities: normalizeCodexAppInputModalities(
+      model.input_modalities,
+      apiMetadata.input_modalities,
+      model.inputModalities,
+      apiMetadata.inputModalities,
+    ),
+    supports_image_detail_original:
+      model.supports_image_detail_original === true || apiMetadata.supports_image_detail_original === true,
+    apply_patch_tool_type: extractModelID(model.apply_patch_tool_type ?? apiMetadata.apply_patch_tool_type),
+    web_search_tool_type: extractModelID(model.web_search_tool_type ?? apiMetadata.web_search_tool_type) ?? "text",
+    supports_search_tool: model.supports_search_tool === true || apiMetadata.supports_search_tool === true,
+  }
+}
+
+function buildCodexAppModelCompatFields(input: {
+  id: string
+  model?: Record<string, unknown>
+  apiMetadata?: Record<string, unknown>
+  displayName: string
+  description: string | null
+  visibility: string
+  defaultReasoningLevel: string
+  reasoningLevelsPayload: unknown
+  fallbackReasoningLevels: string[]
+}) {
+  const model = input.model ?? {}
+  const apiMetadata = input.apiMetadata ?? {}
+  const defaultReasoningEffort =
+    extractModelID(model.defaultReasoningEffort ?? apiMetadata.defaultReasoningEffort) ?? input.defaultReasoningLevel
+  const upgrade = extractModelID(model.upgrade ?? apiMetadata.upgrade)
+  return {
+    model: input.id,
+    displayName: extractModelID(model.displayName ?? apiMetadata.displayName) ?? input.displayName,
+    hidden: (extractModelID(model.visibility ?? apiMetadata.visibility) ?? input.visibility).toLowerCase() === "hide",
+    supportedReasoningEfforts: normalizeCodexAppReasoningEfforts(
+      model.supportedReasoningEfforts ?? apiMetadata.supportedReasoningEfforts ?? input.reasoningLevelsPayload,
+      input.fallbackReasoningLevels,
+    ),
+    defaultReasoningEffort,
+    inputModalities: normalizeCodexAppInputModalities(
+      model.inputModalities,
+      apiMetadata.inputModalities,
+      apiMetadata.input_modalities,
+    ),
+    supportsPersonality: model.supportsPersonality !== false && apiMetadata.supportsPersonality !== false,
+    additionalSpeedTiers: normalizeCodexAppAdditionalSpeedTiers(
+      model.additionalSpeedTiers,
+      apiMetadata.additionalSpeedTiers,
+      apiMetadata.additional_speed_tiers,
+    ),
+    isDefault: model.isDefault === true || input.id === resolveDefaultChatModelId(),
+    upgrade,
+    upgradeInfo: normalizeCodexAppUpgradeInfo(model.upgradeInfo, apiMetadata.upgradeInfo, apiMetadata.upgrade_info),
+    availabilityNux: normalizeCodexAppAvailabilityNux(
+      model.availabilityNux,
+      apiMetadata.availabilityNux,
+      apiMetadata.availability_nux,
+    ),
+  }
 }
 
 type AccountModelsSnapshot = {
@@ -4732,22 +6074,60 @@ function buildModelCatalogPayload(input: { ids?: string[] } = {}): ModelCatalogP
     }
   }
 
-  return {
-    object: "list",
-    data: orderedIDs.map((id) => {
+  const data = orderedIDs.map((id) => {
+      const entry = getModelCatalogEntry(id)
       const levels = MODEL_REASONING_LEVELS[id] ?? ["medium"]
       const defaultReasoningLevel = MODEL_DEFAULT_REASONING_LEVELS[id] ?? (levels.includes("medium") ? "medium" : levels[0])
+      const apiMetadata = entry?.apiMetadata ?? {}
+      const reasoningLevelsPayload = Array.isArray(apiMetadata.supported_reasoning_levels)
+        ? apiMetadata.supported_reasoning_levels
+        : levels.map((effort) => ({ effort }))
+      const displayName = entry?.displayName ?? id
+      const description = entry?.description ?? null
+      const visibility = MODEL_VISIBILITIES[id] ?? "list"
       return {
+        ...apiMetadata,
         id,
         object: "model",
         created,
         owned_by: "openai",
+        slug: id,
+        display_name: displayName,
+        description: description ?? "",
+        visibility,
+        supported_in_api: entry?.supportedInApi !== false,
         default_reasoning_level: defaultReasoningLevel,
-        supported_reasoning_levels: levels.map((effort) => ({ effort })),
+        supported_reasoning_levels: reasoningLevelsPayload,
         supports_parallel_tool_calls: MODEL_SUPPORTS_PARALLEL_TOOL_CALLS[id] ?? false,
+        supports_reasoning_summaries: entry?.supportsReasoningSummaries !== false,
+        support_verbosity: entry?.supportVerbosity !== false,
+        default_verbosity: entry?.defaultVerbosity ?? null,
+        default_reasoning_summary: entry?.defaultReasoningSummary ?? null,
+        reasoning_summary_format: entry?.reasoningSummaryFormat ?? null,
+        prefer_websockets: entry?.preferWebsockets !== false,
+        minimal_client_version: entry?.minimalClientVersion ?? null,
+        context_window: entry?.contextWindow ?? null,
         max_context_window: MODEL_MAX_CONTEXT_WINDOWS[id] ?? null,
+        ...buildCodexModelInfoCompatFields({
+          apiMetadata,
+        }),
+        ...buildCodexAppModelCompatFields({
+          id,
+          apiMetadata,
+          displayName,
+          description,
+          visibility,
+          defaultReasoningLevel,
+          reasoningLevelsPayload,
+          fallbackReasoningLevels: levels,
+        }),
       }
-    }),
+    })
+
+  return {
+    object: "list",
+    data,
+    models: data,
   }
 }
 
@@ -4807,10 +6187,6 @@ async function resolveModelCatalogForCursorAccount(input: {
   return resolveModelCatalogForCursorMode()
 }
 
-function resolveChatModelList() {
-  return [...DEFAULT_CHAT_MODELS]
-}
-
 function normalizeReasoningLevelsFromModelPayload(model: Record<string, unknown>) {
   const source = model.supported_reasoning_levels
   if (!Array.isArray(source)) return []
@@ -4839,24 +6215,147 @@ function toOpenAIModelListPayloadFromUpstream(payload: unknown): ModelCatalogPay
   for (const model of entries) {
     const id = extractModelID(model.id ?? model.slug)
     if (!id) continue
-    const levels = normalizeReasoningLevelsFromModelPayload(model)
+    const catalogEntry = getModelCatalogEntry(id)
+    const payloadLevels = normalizeReasoningLevelsFromModelPayload(model)
+    const catalogLevels = catalogEntry?.supportedReasoningLevels ?? []
+    const levels =
+      isModelIdOnlyHardcodedOverride(id) && catalogLevels.length > 0
+        ? [...new Set([...payloadLevels, ...catalogLevels])]
+        : payloadLevels
     const defaultReasoningLevel =
       extractModelID(model.default_reasoning_level ?? model.defaultReasoningLevel) ??
+      catalogEntry?.defaultReasoningLevel ??
       (levels.includes("medium") ? "medium" : levels[0] ?? "medium")
-    const supportsParallelToolCalls = Boolean(model.supports_parallel_tool_calls)
+    const supportsParallelToolCalls =
+      model.supports_parallel_tool_calls !== undefined
+        ? model.supports_parallel_tool_calls !== false
+        : catalogEntry?.supportsParallelToolCalls !== false
+    const supportsReasoningSummaries =
+      model.supports_reasoning_summaries !== undefined
+        ? model.supports_reasoning_summaries !== false
+        : catalogEntry?.supportsReasoningSummaries !== false
+    const supportVerbosity =
+      model.support_verbosity !== undefined ? model.support_verbosity !== false : catalogEntry?.supportVerbosity !== false
+    const defaultVerbosity =
+      extractModelID(model.default_verbosity ?? model.defaultVerbosity) ?? catalogEntry?.defaultVerbosity ?? null
+    const defaultReasoningSummary =
+      extractModelID(model.default_reasoning_summary ?? model.defaultReasoningSummary) ??
+      catalogEntry?.defaultReasoningSummary ??
+      null
+    const reasoningSummaryFormat =
+      extractModelID(model.reasoning_summary_format ?? model.reasoningSummaryFormat) ??
+      catalogEntry?.reasoningSummaryFormat ??
+      null
+    const preferWebsockets =
+      model.prefer_websockets !== undefined ? model.prefer_websockets !== false : catalogEntry?.preferWebsockets !== false
+    const minimalClientVersion =
+      extractModelID(model.minimal_client_version ?? model.minimalClientVersion) ?? catalogEntry?.minimalClientVersion ?? null
+    const contextWindow = Number.isFinite(Number(model.context_window))
+      ? Math.max(0, Math.floor(Number(model.context_window)))
+      : (catalogEntry?.contextWindow ?? null)
     const maxContextWindow = Number.isFinite(Number(model.max_context_window))
       ? Math.max(0, Math.floor(Number(model.max_context_window)))
+      : (catalogEntry?.maxContextWindow ?? null)
+    const displayName = extractModelID(model.display_name ?? model.displayName) ?? catalogEntry?.displayName ?? id
+    const description = extractModelID(model.description) ?? catalogEntry?.description ?? null
+    const visibility = extractModelID(model.visibility) ?? catalogEntry?.visibility ?? "list"
+    const catalogReasoningLevelsPayload = Array.isArray(catalogEntry?.apiMetadata.supported_reasoning_levels)
+      ? catalogEntry.apiMetadata.supported_reasoning_levels
       : null
+    const reasoningLevelsPayload =
+      isModelIdOnlyHardcodedOverride(id) && catalogReasoningLevelsPayload
+        ? catalogReasoningLevelsPayload
+        : levels.length > 0
+          ? levels.map((effort) => ({ effort }))
+          : [{ effort: "medium" }]
     data.push({
+      ...model,
+      id,
+      object: extractModelID(model.object) ?? "model",
+      created,
+      owned_by: extractModelID(model.owned_by ?? model.ownedBy) ?? "openai",
+      slug: extractModelID(model.slug) ?? id,
+      display_name: displayName,
+      description: description ?? "",
+      visibility,
+      default_reasoning_level: defaultReasoningLevel,
+      supported_reasoning_levels: reasoningLevelsPayload,
+      supports_parallel_tool_calls: supportsParallelToolCalls,
+      supports_reasoning_summaries: supportsReasoningSummaries,
+      support_verbosity: supportVerbosity,
+      default_verbosity: defaultVerbosity,
+      default_reasoning_summary: defaultReasoningSummary,
+      reasoning_summary_format: reasoningSummaryFormat,
+      prefer_websockets: preferWebsockets,
+      minimal_client_version: minimalClientVersion,
+      context_window: contextWindow,
+      max_context_window: maxContextWindow,
+      ...buildCodexModelInfoCompatFields({
+        model,
+        apiMetadata: catalogEntry?.apiMetadata ?? {},
+      }),
+      ...buildCodexAppModelCompatFields({
+        id,
+        model,
+        apiMetadata: catalogEntry?.apiMetadata ?? {},
+        displayName,
+        description,
+        visibility,
+        defaultReasoningLevel,
+        reasoningLevelsPayload,
+        fallbackReasoningLevels: levels,
+      }),
+    })
+  }
+
+  const listedIds = new Set(data.map((item) => extractModelID(item.id ?? item.slug)).filter(Boolean))
+  for (const id of DEFAULT_CHAT_MODELS) {
+    if (!isModelIdOnlyHardcodedOverride(id) || listedIds.has(id)) continue
+    const entry = getModelCatalogEntry(id)
+    if (!entry || entry.supportedInApi === false || entry.visibility.toLowerCase() === "hide") continue
+    const levels = MODEL_REASONING_LEVELS[id] ?? ["medium"]
+    const defaultReasoningLevel = MODEL_DEFAULT_REASONING_LEVELS[id] ?? (levels.includes("medium") ? "medium" : levels[0])
+    const reasoningLevelsPayload = Array.isArray(entry.apiMetadata.supported_reasoning_levels)
+      ? entry.apiMetadata.supported_reasoning_levels
+      : levels.map((effort) => ({ effort }))
+    data.unshift({
+      ...(entry.apiMetadata ?? {}),
       id,
       object: "model",
       created,
       owned_by: "openai",
+      slug: id,
+      display_name: entry.displayName,
+      description: entry.description ?? "",
+      visibility: entry.visibility,
+      supported_in_api: true,
       default_reasoning_level: defaultReasoningLevel,
-      supported_reasoning_levels: levels.length > 0 ? levels.map((effort) => ({ effort })) : [{ effort: "medium" }],
-      supports_parallel_tool_calls: supportsParallelToolCalls,
-      max_context_window: maxContextWindow,
+      supported_reasoning_levels: reasoningLevelsPayload,
+      supports_parallel_tool_calls: entry.supportsParallelToolCalls,
+      supports_reasoning_summaries: entry.supportsReasoningSummaries,
+      support_verbosity: entry.supportVerbosity,
+      default_verbosity: entry.defaultVerbosity ?? null,
+      default_reasoning_summary: entry.defaultReasoningSummary ?? null,
+      reasoning_summary_format: entry.reasoningSummaryFormat ?? null,
+      prefer_websockets: entry.preferWebsockets,
+      minimal_client_version: entry.minimalClientVersion ?? null,
+      context_window: entry.contextWindow ?? null,
+      max_context_window: entry.maxContextWindow ?? null,
+      ...buildCodexModelInfoCompatFields({
+        apiMetadata: entry.apiMetadata ?? {},
+      }),
+      ...buildCodexAppModelCompatFields({
+        id,
+        apiMetadata: entry.apiMetadata ?? {},
+        displayName: entry.displayName,
+        description: entry.description ?? null,
+        visibility: entry.visibility,
+        defaultReasoningLevel,
+        reasoningLevelsPayload,
+        fallbackReasoningLevels: levels,
+      }),
     })
+    listedIds.add(id)
   }
 
   if (data.length === 0) {
@@ -4866,6 +6365,7 @@ function toOpenAIModelListPayloadFromUpstream(payload: unknown): ModelCatalogPay
   return {
     object: "list",
     data,
+    models: data,
   }
 }
 
@@ -5207,6 +6707,11 @@ async function evaluateProviderPoolConsistency(
         if (blocked.matched) {
           markAccountUnhealthy(account.id, blocked.reason, "models")
           evictAccountModelsCache(account.id)
+        } else {
+          const transient = detectTransientUpstreamError(error)
+          if (transient.matched) {
+            markAccountUnhealthy(account.id, transient.reason ?? "upstream_transport_error", "models")
+          }
         }
         return {
           accountId: account.id,
@@ -6052,12 +7557,38 @@ async function fetchModelsSnapshotFromUpstream(input: {
     return result.response
   }
 
+  const markModelsRequestFailure = (error: unknown) => {
+    const blocked = detectRoutingBlockedAccount({
+      error,
+    })
+    if (blocked.matched) {
+      markAccountUnhealthy(input.account.id, blocked.reason, "models")
+      evictAccountModelsCache(input.account.id)
+      return
+    }
+    const transient = detectTransientUpstreamError(error)
+    if (transient.matched) {
+      markAccountUnhealthy(input.account.id, transient.reason ?? "upstream_transport_error", "models")
+    }
+  }
+
   let auth = await resolveUpstreamAccountAuth(input.account)
-  let response = await requestWithAuth(auth)
+  let response: Response
+  try {
+    response = await requestWithAuth(auth)
+  } catch (error) {
+    markModelsRequestFailure(error)
+    throw error
+  }
   if (response.status === 401 && profile.canRefreshOn401) {
     const latest = accountStore.get(input.account.id) ?? input.account
     auth = await resolveUpstreamAccountAuth(latest, { forceRefresh: true })
-    response = await requestWithAuth(auth)
+    try {
+      response = await requestWithAuth(auth)
+    } catch (error) {
+      markModelsRequestFailure(error)
+      throw error
+    }
   }
 
   if (response.status === 304 && input.cached) {
@@ -6090,7 +7621,9 @@ async function fetchModelsSnapshotFromUpstream(input: {
       throw new Error("models payload is not valid json")
     }
   }
-  const entries = extractModelsEntries(payload)
+  const normalizedPayload = toOpenAIModelListPayloadFromUpstream(payload)
+  const entries = extractModelsEntries(normalizedPayload)
+  const normalizedBody = new TextEncoder().encode(JSON.stringify(normalizedPayload))
   const contentType = normalizeHeaderIdentityValue(response.headers.get("content-type")) ?? "application/json"
   const etag = normalizeHeaderIdentityValue(response.headers.get("etag")) ?? null
   markAccountHealthy(input.account.id, "models")
@@ -6100,9 +7633,9 @@ async function fetchModelsSnapshotFromUpstream(input: {
     fetchedAt: Date.now(),
     etag,
     contentType,
-    payload: payload as ModelsUpstreamPayload,
+    payload: normalizedPayload as ModelsUpstreamPayload,
     entries,
-    body,
+    body: normalizedBody,
   } satisfies AccountModelsSnapshot
 }
 
@@ -6396,6 +7929,7 @@ function buildCodexRequestBody(input: {
   accountId?: string | null
   payloadInput: Array<Record<string, unknown>>
   codexClientMetadata?: Record<string, string> | null
+  reasoningEffort?: string | null
 }) {
   const modelConfig = getResponsesModelConfig(input.model)
   const promptCacheKey = rewriteClientIdentifierForUpstream({
@@ -6418,16 +7952,22 @@ function buildCodexRequestBody(input: {
     requestBody.client_metadata = clientMetadata
   }
 
-  if (modelConfig.requiredAutoTruncation) {
+  if (shouldSendAutoTruncation(input.model, modelConfig)) {
     requestBody.truncation = "auto"
   }
 
-  if (modelConfig.isReasoningModel && !input.model.includes("gpt-5-pro")) {
-    requestBody.reasoning = { effort: "medium", summary: "auto" }
+  if (modelConfig.isReasoningModel) {
+    const reasoning = input.reasoningEffort
+      ? buildForcedReasoningPayloadForModel(input.model, input.reasoningEffort)
+      : buildReasoningPayloadForModel(input.model, null)
+    if (reasoning) {
+      requestBody.reasoning = reasoning
+    }
   }
 
-  if (input.model.includes("gpt-5.") && !input.model.includes("codex") && !input.model.includes("-chat")) {
-    requestBody.text = { verbosity: "low" }
+  const textConfig = buildTextConfigForModel(input.model)
+  if (textConfig) {
+    requestBody.text = textConfig
   }
 
   return requestBody
@@ -6600,7 +8140,7 @@ function buildCursorResponsesRequestBody(input: {
   if (promptCacheKey) {
     requestBody.prompt_cache_key = promptCacheKey
   }
-  if (modelConfig.requiredAutoTruncation) {
+  if (shouldSendAutoTruncation(input.model, modelConfig)) {
     requestBody.truncation = "auto"
   }
   if (Number.isFinite(Number(input.temperature))) {
@@ -6627,15 +8167,18 @@ function buildCursorResponsesRequestBody(input: {
     requestBody.tool_choice = "none"
   }
 
-  if (modelConfig.isReasoningModel && !input.model.includes("gpt-5-pro")) {
-    requestBody.reasoning = {
-      effort: input.reasoningEffort ?? "medium",
-      summary: "auto",
+  if (modelConfig.isReasoningModel) {
+    const reasoning = input.reasoningEffort
+      ? buildForcedReasoningPayloadForModel(input.model, input.reasoningEffort)
+      : buildReasoningPayloadForModel(input.model, null)
+    if (reasoning) {
+      requestBody.reasoning = reasoning
     }
   }
 
-  if (input.model.includes("gpt-5.") && !input.model.includes("codex") && !input.model.includes("-chat")) {
-    requestBody.text = { verbosity: "low" }
+  const textConfig = buildTextConfigForModel(input.model)
+  if (textConfig) {
+    requestBody.text = textConfig
   }
 
   return requestBody
@@ -7053,6 +8596,7 @@ async function ensureChatgptAccountAccess(account: StoredAccount) {
   return {
     accessToken,
     refreshToken: account.refreshToken ?? undefined,
+    idToken: account.idToken ?? undefined,
     accountId,
     expiresAt,
   }
@@ -7153,6 +8697,7 @@ async function refreshChatgptAccountAccess(account: StoredAccount) {
   const next = {
     accessToken: refreshed.accessToken,
     refreshToken: refreshed.refreshToken ?? refreshToken,
+    idToken: refreshed.idToken ?? account.idToken ?? undefined,
     expiresAt: refreshed.expiresAt ?? Date.now() + 3600 * 1000,
     accountId: refreshed.accountId ?? account.accountId ?? undefined,
   }
@@ -7160,11 +8705,106 @@ async function refreshChatgptAccountAccess(account: StoredAccount) {
     id: account.id,
     accessToken: next.accessToken,
     refreshToken: next.refreshToken,
+    idToken: next.idToken,
     expiresAt: next.expiresAt,
     accountId: next.accountId,
   })
   markAccountHealthy(account.id, "refresh")
   return next
+}
+
+async function refreshChatgptAccountAccessForLocalCodex(account: StoredAccount) {
+  if (account.providerId !== "chatgpt") {
+    throw new Error("Only ChatGPT OAuth accounts are supported in this flow")
+  }
+  const provider = providers.getProvider(account.providerId)
+  const refreshToken = account.refreshToken ?? undefined
+  if (!refreshToken) {
+    throw new Error("Account refresh token is not available")
+  }
+  if (!provider?.refresh) {
+    throw new Error(`Provider ${account.providerId} does not support refresh in this flow`)
+  }
+
+  const refreshed = await provider.refresh(account)
+  if (!refreshed) {
+    throw new Error("No refresh token available for this account")
+  }
+
+  return {
+    accessToken: refreshed.accessToken,
+    refreshToken: refreshed.refreshToken ?? refreshToken,
+    idToken: refreshed.idToken ?? account.idToken ?? undefined,
+    expiresAt: refreshed.expiresAt ?? Date.now() + 3600 * 1000,
+    accountId: refreshed.accountId ?? account.accountId ?? undefined,
+    refreshed: true,
+  }
+}
+
+async function resolveCodexLocalAuthTokens(account: StoredAccount) {
+  const storedAccessToken = account.accessToken ?? undefined
+  const storedRefreshToken = account.refreshToken ?? undefined
+  const storedIdToken = account.idToken ?? undefined
+  const storedExpiresAt = account.expiresAt ?? 0
+  const storedAccountId = account.accountId ?? undefined
+
+  if (storedAccessToken && storedRefreshToken && storedIdToken && !isTokenExpired(account)) {
+    if (storedAccountId) ensureForcedWorkspaceAllowed(storedAccountId)
+    return {
+      accessToken: storedAccessToken,
+      refreshToken: storedRefreshToken,
+      idToken: storedIdToken,
+      expiresAt: storedExpiresAt,
+      accountId: storedAccountId,
+      refreshed: false,
+    }
+  }
+
+  return refreshChatgptAccountAccessForLocalCodex(account)
+}
+
+async function loginCodexLocalAuth(account: StoredAccount, input: { restartCodexApp?: boolean }) {
+  if (account.providerId !== "chatgpt") {
+    throw new Error("Only ChatGPT OAuth accounts can be written to Codex local login")
+  }
+  if (!account.refreshToken) {
+    throw new Error("Account refresh token is not available")
+  }
+
+  const latest = accountStore.get(account.id) ?? account
+  const localTokens = await resolveCodexLocalAuthTokens(latest)
+  const idToken = localTokens.idToken ?? latest.idToken ?? account.idToken ?? undefined
+  const refreshToken = localTokens.refreshToken ?? latest.refreshToken ?? account.refreshToken ?? undefined
+  const accountId = localTokens.accountId ?? latest.accountId ?? account.accountId ?? undefined
+
+  if (!idToken) {
+    throw new Error("Codex local login requires id_token; refresh this account with the latest OAuth flow first")
+  }
+  if (!refreshToken) {
+    throw new Error("Codex local login requires refresh_token")
+  }
+
+  const result = await writeCodexLocalAuth({
+    account: latest,
+    tokens: {
+      accessToken: localTokens.accessToken,
+      refreshToken,
+      idToken,
+      accountId,
+    },
+    restartCodexApp: input.restartCodexApp !== false,
+  })
+  return {
+    codexLocalAuth: {
+      accountId: latest.id,
+      email: latest.email,
+      displayName: latest.displayName,
+      providerId: latest.providerId,
+      refreshedForLocalAuth: localTokens.refreshed,
+      writtenAt: Date.now(),
+      ...result,
+    },
+  }
 }
 
 async function runChatWithAccount(input: {
@@ -7175,6 +8815,7 @@ async function runChatWithAccount(input: {
   historyNamespace: string
   keyId?: string
   behaviorSignal?: ReturnType<typeof resolveBehaviorSignal>
+  reasoningEffort?: string | null
 }) {
   if (input.account.providerId !== "chatgpt") {
     throw new Error("Only ChatGPT OAuth accounts support this chat endpoint")
@@ -7219,6 +8860,7 @@ async function runChatWithAccount(input: {
     sessionId,
     accountId: input.account.id,
     payloadInput,
+    reasoningEffort: input.reasoningEffort ?? null,
     codexClientMetadata: buildResponsesClientMetadata({
       sessionRouteId: sessionId,
     }),
@@ -7395,6 +9037,13 @@ app.get("/api/health", () =>
     ok: true,
     name: AppConfig.name,
     timestamp: Date.now(),
+    pid: process.pid,
+    runtime: {
+      instanceId: process.env.OAUTH_APP_INSTANCE_ID ?? null,
+      serverExecutable: process.env.OAUTH_APP_SERVER_EXE ?? process.execPath,
+      dataDir: process.env.OAUTH_APP_DATA_DIR ?? null,
+      webDir: process.env.OAUTH_APP_WEB_DIR ?? null,
+    },
     managementAuthEnabled: Boolean(getEffectiveManagementToken()),
     forwardProxyEnabled: Boolean(forwardProxy),
     forwardProxyPort: forwardProxy ? FORWARD_PROXY_PORT : null,
@@ -7589,6 +9238,7 @@ app.get("/api/providers", () =>
 
 registerModelsRoutes(app, {
   resolveChatModelList,
+  resolveDefaultChatModelId,
   resolveVirtualKeyContext,
   ensureResolvedPoolAccountConsistent,
   behaviorController,
@@ -7623,6 +9273,7 @@ registerAccountRoutes(app, {
   exportStoredOAuthAccount,
   importJsonOAuthAccount,
   importRefreshTokenOAuthAccount,
+  loginCodexLocalAuth,
   invalidatePoolConsistency,
   evictAccountModelsCache,
   handleBackgroundPromise,
@@ -7646,6 +9297,7 @@ registerVirtualKeysRoutes(app, {
   getCachedPoolConsistencyResult,
   hasSensitiveActionConfirmation,
   errorMessage,
+  setCodexOAuthBridgeBinding,
 })
 
 registerBridgeRoutes(app, {
@@ -7662,6 +9314,7 @@ registerBridgeRoutes(app, {
   invalidatePoolConsistency,
   handleBackgroundPromise,
   refreshAndEmitAccountQuota,
+  toPublicAccount,
   errorMessage,
 })
 
@@ -7689,7 +9342,11 @@ async function proxyVirtualKeyCodexRequest(c: any, upstreamPath = "/responses") 
   let auditWireApi: "responses" | "chat_completions" | null = null
   let outgoingBody: Uint8Array | undefined = undefined
   let auditRoutingMode = "single"
-  const writeAudit = buildResponsesAuditWriter(route, method, auditReasoningEffort, auditClientMode, auditWireApi)
+  const writeAudit = buildResponsesAuditWriter(route, method, () => ({
+    reasoningEffort: auditReasoningEffort,
+    clientMode: auditClientMode,
+    wireApi: auditWireApi,
+  }))
 
   try {
     const bearer = extractBearerToken(c.req.header("authorization"))
@@ -7704,12 +9361,14 @@ async function proxyVirtualKeyCodexRequest(c: any, upstreamPath = "/responses") 
     }
 
     const contentType = c.req.header("content-type")
+    const contentEncoding = c.req.header("content-encoding")
     const strictUpstreamPrivacy = isStrictUpstreamPrivacyEnabled()
     const outgoingBytes = await c.req.arrayBuffer()
     outgoingBody = outgoingBytes.byteLength > 0 ? new Uint8Array(outgoingBytes) : undefined
     const requestBodyAnalysis = analyzeJsonRequestBody({
       body: outgoingBody,
       contentType,
+      contentEncoding,
     })
     const sessionRouteId = resolveSessionRouteID({
       headers: c.req.raw.headers,
@@ -7727,11 +9386,11 @@ async function proxyVirtualKeyCodexRequest(c: any, upstreamPath = "/responses") 
             incoming: c.req.raw.headers,
             sessionRouteId,
           })
-    auditModel = requestBodyAnalysis.model
-    auditReasoningEffort = requestBodyAnalysis.reasoningEffort
     auditSessionId = sessionRouteId ?? null
 
-    const resolved = resolveVirtualApiKeyWithPoolFallback(bearer, sessionRouteId)
+    const resolved = resolveVirtualApiKeyWithPoolFallback(bearer, sessionRouteId, {
+      requestedModel: requestBodyAnalysis.model,
+    })
     if (!resolved) {
       writeAudit({
         statusCode: 401,
@@ -7741,6 +9400,12 @@ async function proxyVirtualKeyCodexRequest(c: any, upstreamPath = "/responses") 
       })
       return c.json({ error: "Invalid, revoked, or expired virtual API key" }, 401)
     }
+
+    const keyOverrides = resolveVirtualKeyRequestOverrides(resolved.key)
+    const effectiveRequestedModel = keyOverrides.fixedModel ?? requestBodyAnalysis.model
+    const effectiveRequestBodyBaseRoot = applyVirtualKeyOverridesToResponsesBody(requestBodyBaseRoot, keyOverrides)
+    auditModel = effectiveRequestedModel
+    auditReasoningEffort = keyOverrides.fixedReasoningEffort ?? requestBodyAnalysis.reasoningEffort
 
     const modeError = buildVirtualKeyModeError({
       key: resolved.key,
@@ -7762,6 +9427,7 @@ async function proxyVirtualKeyCodexRequest(c: any, upstreamPath = "/responses") 
     const eligibleResolved = ensureResolvedPoolAccountEligible({
       resolved,
       sessionId: sessionRouteId,
+      requestedModel: effectiveRequestedModel,
     })
     if (!eligibleResolved) {
       writeAudit({
@@ -7778,6 +9444,7 @@ async function proxyVirtualKeyCodexRequest(c: any, upstreamPath = "/responses") 
     const consistentResolved = await ensureResolvedPoolAccountConsistent({
       resolved: eligibleResolved,
       sessionId: sessionRouteId,
+      requestedModel: effectiveRequestedModel,
     })
     if (!consistentResolved.ok) {
       writeAudit({
@@ -7829,7 +9496,7 @@ async function proxyVirtualKeyCodexRequest(c: any, upstreamPath = "/responses") 
 
     const buildHeadersForCurrentAccount = (auth: { accessToken: string; accountId?: string }) => {
       const openAIHeaders = buildAccountOpenAIHeadersForProfile(account, profile.providerMode)
-      return appendResponsesProtocolHeaders(
+      const headers = appendResponsesProtocolHeaders(
         buildUpstreamForwardHeadersForAccount({
           incoming: c.req.raw.headers,
           accessToken: auth.accessToken,
@@ -7846,6 +9513,12 @@ async function proxyVirtualKeyCodexRequest(c: any, upstreamPath = "/responses") 
           sessionRouteId,
         },
       )
+      if (requestBodyAnalysis.parsedRoot) {
+        headers.delete("content-encoding")
+        headers.delete("content-md5")
+        headers.set("content-type", "application/json")
+      }
+      return headers
     }
 
     const rerouteTriedAccounts = new Set<string>()
@@ -7877,8 +9550,8 @@ async function proxyVirtualKeyCodexRequest(c: any, upstreamPath = "/responses") 
         return null
       }
       const failedAccount = accountStore.get(failedAccountId)
-      const preferredPlanCohort = failedAccount ? resolveAccountPlanCohort(failedAccount) : null
-      const routingHints = buildProviderRoutingHints(key.providerId, Date.now(), {
+      const preferredPlanCohort = resolveRequestedModelPlanCohort(auditModel) ?? (failedAccount ? resolveAccountPlanCohort(failedAccount) : null)
+      const routingHints = buildProviderRoutingHintsForRequestedModel(key.providerId, auditModel, Date.now(), {
         preferredPlanCohort,
       })
       const excluded = new Set<string>([...routingHints.excludeAccountIds, ...rerouteTriedAccounts])
@@ -7905,7 +9578,7 @@ async function proxyVirtualKeyCodexRequest(c: any, upstreamPath = "/responses") 
         })
 
       if (!reRoutedAccount) {
-        const relaxedHints = buildRelaxedProviderRoutingHints(key.providerId, Date.now(), {
+        const relaxedHints = buildRelaxedProviderRoutingHintsForRequestedModel(key.providerId, auditModel, Date.now(), {
           preferredPlanCohort,
         })
         const relaxedExcluded = new Set<string>([...relaxedHints.excludeAccountIds, ...rerouteTriedAccounts])
@@ -7948,7 +9621,7 @@ async function proxyVirtualKeyCodexRequest(c: any, upstreamPath = "/responses") 
       }
       const requestBodyBytes = mergeParsedJsonBodyWithCodexMetadata({
         body: outgoingBody,
-        parsedRoot: requestBodyBaseRoot,
+        parsedRoot: effectiveRequestBodyBaseRoot,
         codexClientMetadata: upstreamPath === "/responses/compact" ? null : codexClientMetadata,
       })
       const bodySanitized = sanitizeUpstreamJsonBody({
@@ -7956,7 +9629,7 @@ async function proxyVirtualKeyCodexRequest(c: any, upstreamPath = "/responses") 
         contentType,
         strictPrivacy: strictUpstreamPrivacy,
         accountId: account.id,
-        parsedRoot: requestBodyBaseRoot,
+        parsedRoot: effectiveRequestBodyBaseRoot,
       })
       if (bodySanitized.strippedFields.length > 0) {
         console.log(
@@ -8062,8 +9735,10 @@ async function proxyVirtualKeyCodexRequest(c: any, upstreamPath = "/responses") 
         if (blocked.matched) {
           markAccountUnhealthy(failedAccountId, blocked.reason, "responses")
           evictAccountModelsCache(failedAccountId)
-        } else if (!behaviorFailure) {
-          markAccountUnhealthy(failedAccountId, transient.reason ?? "upstream_transport_error", "responses")
+        } else if (!behaviorFailure && transient.matched) {
+          if (transient.reason === "upstream_certificate_verification_error") {
+            markAccountUnhealthy(failedAccountId, transient.reason, "responses")
+          }
         }
 
         const reRoutedAccount = selectReroutedPoolAccount(failedAccountId)
@@ -8112,8 +9787,8 @@ async function proxyVirtualKeyCodexRequest(c: any, upstreamPath = "/responses") 
             "refreshAndEmitAccountQuota:proxy-usage-limit-reached",
             refreshAndEmitAccountQuota(failedAccountId, "proxy-usage-limit-reached"),
           )
-        } else {
-          markAccountUnhealthy(failedAccountId, transientSignal.reason ?? "upstream_http_502", "responses")
+        } else if (transientSignal.reason === "upstream_certificate_verification_error") {
+          markAccountUnhealthy(failedAccountId, transientSignal.reason, "responses")
         }
 
         const reRoutedAccount = selectReroutedPoolAccount(failedAccountId)
@@ -8160,7 +9835,9 @@ async function proxyVirtualKeyCodexRequest(c: any, upstreamPath = "/responses") 
           }
           if (reroutedTransient.matched) {
             rerouteTriedAccounts.add(reRoutedAccount.id)
-            markAccountUnhealthy(reRoutedAccount.id, reroutedTransient.reason, "responses")
+            if (reroutedTransient.reason === "upstream_certificate_verification_error") {
+              markAccountUnhealthy(reRoutedAccount.id, reroutedTransient.reason, "responses")
+            }
             continue
           }
           if (behaviorFailure) {
@@ -8203,6 +9880,7 @@ async function proxyVirtualKeyCodexRequest(c: any, upstreamPath = "/responses") 
         statusCode: normalizedFailure.status,
         latencyMs: Date.now() - startedAt,
         upstreamRequestId,
+        error: normalizedFailure.bodyText || `Upstream request failed (${normalizedFailure.status})`,
         clientTag,
       })
       return new Response(normalizedFailure.bodyText, {
@@ -8365,7 +10043,11 @@ async function proxyVirtualKeyCursorChatCompletions(c: any) {
   let auditRoutingMode = "single"
   const auditClientMode: "cursor" = "cursor"
   const auditWireApi: "chat_completions" = "chat_completions"
-  const writeAudit = buildResponsesAuditWriter(route, method, auditReasoningEffort, auditClientMode, auditWireApi)
+  const writeAudit = buildResponsesAuditWriter(route, method, () => ({
+    reasoningEffort: auditReasoningEffort,
+    clientMode: auditClientMode,
+    wireApi: auditWireApi,
+  }))
 
   try {
     const outgoingBytes = await c.req.arrayBuffer()
@@ -8397,6 +10079,7 @@ async function proxyVirtualKeyCursorChatCompletions(c: any) {
       expectedClientMode: "cursor",
       expectedWireApi: "chat_completions",
       bodySessionId: auditFields.sessionId ?? null,
+      requestedModel: modelId,
     })
     if ("error" in context) {
       const status = typeof context.status === "number" ? context.status : 401
@@ -8413,10 +10096,17 @@ async function proxyVirtualKeyCursorChatCompletions(c: any) {
       return toOpenAICompatibleErrorResponse(message, status, status === 401 ? "authentication_error" : "invalid_request_error")
     }
 
+    const keyOverrides = resolveVirtualKeyRequestOverrides(context.resolved.key as { fixedModel?: unknown; fixedReasoningEffort?: unknown })
+    const effectiveModelId = keyOverrides.fixedModel ?? modelId
+    const effectiveReasoningEffort = keyOverrides.fixedReasoningEffort ?? auditFields.reasoningEffort
+    auditModel = effectiveModelId
+    auditReasoningEffort = effectiveReasoningEffort
+
     const sessionRouteId = context.sessionId ?? null
     const consistentContext = await ensureResolvedPoolAccountConsistent({
       resolved: context.resolved,
       sessionId: sessionRouteId,
+      requestedModel: effectiveModelId,
     })
     const codexClientMetadata = buildResponsesClientMetadata({
       incoming: c.req.raw.headers,
@@ -8427,10 +10117,10 @@ async function proxyVirtualKeyCursorChatCompletions(c: any) {
       asRecord(parsedBodyRecord.client_metadata) ?? asRecord(parsedBodyRecord.clientMetadata),
       codexClientMetadata,
     )
-    const cursorRequestBody =
-      encodedCursorClientMetadata && !hasOwnKey(parsedBodyRecord, "client_metadata")
-        ? ({ ...parsedBody, client_metadata: encodedCursorClientMetadata } as typeof parsedBody)
-        : parsedBody
+    const cursorRequestBody = { ...parsedBody, model: effectiveModelId } as typeof parsedBody
+    if (encodedCursorClientMetadata && !hasOwnKey(parsedBodyRecord, "client_metadata")) {
+      ;(cursorRequestBody as Record<string, unknown>).client_metadata = encodedCursorClientMetadata as Record<string, unknown>
+    }
     if (encodedCursorClientMetadata && hasOwnKey(parsedBodyRecord, "client_metadata")) {
       ;(cursorRequestBody as Record<string, unknown>).client_metadata = encodedCursorClientMetadata as Record<string, unknown>
     }
@@ -8444,7 +10134,7 @@ async function proxyVirtualKeyCursorChatCompletions(c: any) {
     const normalizedCursorMaxTokens = cursorRequestBody.max_tokens
     const normalizedCursorParallelToolCalls = cursorRequestBody.parallel_tool_calls
     const normalizedCursorStream = cursorRequestBody.stream === true
-    const normalizedCursorReasoningEffort = auditReasoningEffort
+    const normalizedCursorReasoningEffort = effectiveReasoningEffort
     const normalizedCursorRawBody = new TextEncoder().encode(JSON.stringify(cursorRequestBody))
     outgoingBody = normalizedCursorRawBody
 
@@ -8541,8 +10231,9 @@ async function proxyVirtualKeyCursorChatCompletions(c: any) {
         return null
       }
       const failedAccount = accountStore.get(failedAccountId)
-      const preferredPlanCohort = failedAccount ? resolveAccountPlanCohort(failedAccount) : null
-      const routingHints = buildProviderRoutingHints(key.providerId, Date.now(), {
+      const preferredPlanCohort =
+        resolveRequestedModelPlanCohort(effectiveModelId) ?? (failedAccount ? resolveAccountPlanCohort(failedAccount) : null)
+      const routingHints = buildProviderRoutingHintsForRequestedModel(key.providerId, effectiveModelId, Date.now(), {
         preferredPlanCohort,
       })
       const excluded = new Set<string>([...routingHints.excludeAccountIds, ...rerouteTriedAccounts])
@@ -8569,7 +10260,7 @@ async function proxyVirtualKeyCursorChatCompletions(c: any) {
           })
 
       if (!reroutedAccount) {
-        const relaxedHints = buildRelaxedProviderRoutingHints(key.providerId, Date.now(), {
+        const relaxedHints = buildRelaxedProviderRoutingHintsForRequestedModel(key.providerId, effectiveModelId, Date.now(), {
           preferredPlanCohort,
         })
         const relaxedExcluded = new Set<string>([...relaxedHints.excludeAccountIds, ...rerouteTriedAccounts])
@@ -8603,12 +10294,15 @@ async function proxyVirtualKeyCursorChatCompletions(c: any) {
 
     const ensureCurrentAccountSupportsRequestedModel = async () => {
       while (true) {
+        if (getModelCatalogEntry(effectiveModelId) && accountCanUseRequestedModel(account, effectiveModelId)) {
+          return null
+        }
         const catalog = await resolveModelCatalogForCursorAccount({
           account,
           requestUrl: c.req.url,
           requestHeaders: c.req.raw.headers,
         })
-        const supported = catalog.data.some((item) => String(item.id || "") === modelId)
+        const supported = catalog.data.some((item) => String(item.id || "") === effectiveModelId)
         if (supported) return null
         if (key.routingMode !== "pool") {
           writeAudit({
@@ -8655,7 +10349,7 @@ async function proxyVirtualKeyCursorChatCompletions(c: any) {
       }
     }
 
-    const resolvedModelId = modelId
+    const resolvedModelId = effectiveModelId
     const unsupportedModelResponse = await ensureCurrentAccountSupportsRequestedModel()
     if (unsupportedModelResponse) {
       return unsupportedModelResponse
@@ -8771,8 +10465,10 @@ async function proxyVirtualKeyCursorChatCompletions(c: any) {
         if (blocked.matched) {
           markAccountUnhealthy(failedAccountId, blocked.reason, "cursor-chat")
           evictAccountModelsCache(failedAccountId)
-        } else if (!behaviorFailure) {
-          markAccountUnhealthy(failedAccountId, transient.reason ?? "upstream_transport_error", "cursor-chat")
+        } else if (!behaviorFailure && transient.matched) {
+          if (transient.reason === "upstream_certificate_verification_error") {
+            markAccountUnhealthy(failedAccountId, transient.reason, "cursor-chat")
+          }
         }
 
         const reroutedAccount = selectReroutedPoolAccount(failedAccountId)
@@ -8811,8 +10507,8 @@ async function proxyVirtualKeyCursorChatCompletions(c: any) {
             "refreshAndEmitAccountQuota:cursor-chat-usage-limit-reached",
             refreshAndEmitAccountQuota(failedAccountId, "cursor-chat-usage-limit-reached"),
           )
-        } else {
-          markAccountUnhealthy(failedAccountId, transientSignal.reason ?? "upstream_http_502", "cursor-chat")
+        } else if (transientSignal.reason === "upstream_certificate_verification_error") {
+          markAccountUnhealthy(failedAccountId, transientSignal.reason, "cursor-chat")
         }
 
         const reroutedAccount = selectReroutedPoolAccount(failedAccountId)
@@ -8847,7 +10543,9 @@ async function proxyVirtualKeyCursorChatCompletions(c: any) {
           }
           if (reroutedTransient.matched) {
             rerouteTriedAccounts.add(reroutedAccount.id)
-            markAccountUnhealthy(reroutedAccount.id, reroutedTransient.reason, "cursor-chat")
+            if (reroutedTransient.reason === "upstream_certificate_verification_error") {
+              markAccountUnhealthy(reroutedAccount.id, reroutedTransient.reason, "cursor-chat")
+            }
             continue
           }
           if (behaviorFailure) {
@@ -9354,6 +11052,9 @@ app.post("/api/chat/virtual-key", async (c) => {
       return c.json({ error: "Virtual API key not found" }, 404)
     }
     auditRoutingMode = keyRecord.routingMode
+    const keyOverrides = resolveVirtualKeyRequestOverrides(keyRecord)
+    const effectiveModel = keyOverrides.fixedModel ?? input.model
+    const effectiveReasoningEffort = keyOverrides.fixedReasoningEffort ?? null
 
     const keySecret = accountStore.revealVirtualApiKey(input.keyId)
     if (!keySecret) {
@@ -9379,7 +11080,7 @@ app.post("/api/chat/virtual-key", async (c) => {
         method: "POST",
         headers: cursorHeaders,
         body: JSON.stringify({
-          model: input.model,
+          model: effectiveModel,
           messages: [{ role: "user", content: input.message }],
           stream: false,
         }),
@@ -9402,7 +11103,7 @@ app.post("/api/chat/virtual-key", async (c) => {
       return c.json({
         reply: extractCursorChatCompletionText(payload),
         usage: normalizeUsage(payload),
-        model: input.model,
+        model: effectiveModel,
         raw: payload,
         sessionId: sessionRouteId ?? null,
         key: accountStore.getVirtualApiKeyByID(input.keyId),
@@ -9418,13 +11119,16 @@ app.post("/api/chat/virtual-key", async (c) => {
       return c.json({ error: modeError.error }, modeError.status)
     }
 
-    const resolved = resolveVirtualApiKeyWithPoolFallback(keySecret, input.sessionId)
+    const resolved = resolveVirtualApiKeyWithPoolFallback(keySecret, input.sessionId, {
+      requestedModel: effectiveModel,
+    })
     if (!resolved) {
       return c.json({ error: "Invalid, revoked, or expired virtual API key" }, 401)
     }
     const eligibleResolved = ensureResolvedPoolAccountEligible({
       resolved,
       sessionId: input.sessionId,
+      requestedModel: effectiveModel,
     })
     if (!eligibleResolved) {
       const unavailable = resolveAutomaticAccountAvailability({ account: resolved.account })
@@ -9443,6 +11147,7 @@ app.post("/api/chat/virtual-key", async (c) => {
     const consistentResolved = await ensureResolvedPoolAccountConsistent({
       resolved: eligibleResolved,
       sessionId: input.sessionId,
+      requestedModel: effectiveModel,
     })
     if (!consistentResolved.ok) {
       return c.json({ error: "No healthy accounts available for pool routing", code: "no_healthy_accounts" }, 503)
@@ -9454,12 +11159,13 @@ app.post("/api/chat/virtual-key", async (c) => {
       try {
         const output = await runChatWithAccount({
           account: activeAccount,
-          model: input.model,
+          model: effectiveModel,
           message: input.message,
           sessionId: input.sessionId,
           historyNamespace: `key:${input.keyId}`,
           keyId: input.keyId,
           behaviorSignal: resolveBehaviorSignal(c.req.raw.headers),
+          reasoningEffort: effectiveReasoningEffort,
         })
 
         return c.json({
@@ -9495,8 +11201,8 @@ app.post("/api/chat/virtual-key", async (c) => {
             "refreshAndEmitAccountQuota:chat-usage-limit-reached",
             refreshAndEmitAccountQuota(failedAccountId, "chat-usage-limit-reached"),
           )
-        } else if (!behaviorFailure) {
-          markAccountUnhealthy(failedAccountId, transientSignal.reason ?? "upstream_http_502", "chat")
+        } else if (!behaviorFailure && transientSignal.reason === "upstream_certificate_verification_error") {
+          markAccountUnhealthy(failedAccountId, transientSignal.reason, "chat")
         }
         if (rerouteTriedAccounts.size >= POOL_REROUTE_MAX_ATTEMPTS) {
           const normalizedFailure = buildUpstreamAccountUnavailableFailure({
@@ -9508,8 +11214,8 @@ app.post("/api/chat/virtual-key", async (c) => {
           })
         }
 
-        const preferredPlanCohort = resolveAccountPlanCohort(activeAccount)
-        const routingHints = buildProviderRoutingHints(eligibleResolved.key.providerId, Date.now(), {
+        const preferredPlanCohort = resolveRequestedModelPlanCohort(input.model) ?? resolveAccountPlanCohort(activeAccount)
+        const routingHints = buildProviderRoutingHintsForRequestedModel(eligibleResolved.key.providerId, input.model, Date.now(), {
           preferredPlanCohort,
         })
         const excluded = new Set<string>([...routingHints.excludeAccountIds, ...rerouteTriedAccounts])
@@ -9536,7 +11242,7 @@ app.post("/api/chat/virtual-key", async (c) => {
           })
 
         if (!reRoutedAccount) {
-          const relaxedHints = buildRelaxedProviderRoutingHints(eligibleResolved.key.providerId, Date.now(), {
+          const relaxedHints = buildRelaxedProviderRoutingHintsForRequestedModel(eligibleResolved.key.providerId, input.model, Date.now(), {
             preferredPlanCohort,
           })
           const relaxedExcluded = new Set<string>([...relaxedHints.excludeAccountIds, ...rerouteTriedAccounts])

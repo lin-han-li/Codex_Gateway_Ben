@@ -14,15 +14,23 @@ type SyncResponse = {
 
 type IssueKeyResponse = {
   key: string
+  record?: {
+    id: string
+  } | null
 }
 
 type ResponsePayload = {
   output_text?: string
 }
 
+type ModelListPayload = {
+  data?: Array<Record<string, unknown>>
+}
+
 type CapturedRequest = {
   token: string
   text: string
+  body: Record<string, unknown>
   at: number
 }
 
@@ -104,10 +112,25 @@ async function requestJSON<T>(url: string, init?: RequestInit): Promise<T> {
   return data as T
 }
 
+async function stopBridgeProcess(child: ReturnType<typeof spawn>) {
+  if (child.exitCode !== null) return
+  const exited = new Promise<void>((resolve) => {
+    child.once("exit", () => resolve())
+  })
+  child.kill("SIGTERM")
+  const exitedGracefully = await Promise.race([exited.then(() => true), Bun.sleep(1500).then(() => false)])
+  if (exitedGracefully) return
+  child.kill("SIGKILL")
+  await Promise.race([exited, Bun.sleep(1500)])
+}
+
 async function main() {
   const tempDataDir = await mkdtemp(path.join(os.tmpdir(), "oauth-mixed-plan-pool-"))
   const bridgePort = await reserveFreePort()
-  const upstreamPort = await reserveFreePort()
+  let upstreamPort = await reserveFreePort()
+  while (upstreamPort === bridgePort) {
+    upstreamPort = await reserveFreePort()
+  }
   const origin = `http://127.0.0.1:${bridgePort}`
   const upstreamOrigin = `http://127.0.0.1:${upstreamPort}`
   const paidGate = createManualGate()
@@ -128,6 +151,7 @@ async function main() {
       capturedRequests.push({
         token,
         text,
+        body: parsedBody,
         at: Date.now(),
       })
 
@@ -160,6 +184,7 @@ async function main() {
     OAUTH_APP_PORT: String(bridgePort),
     OAUTH_APP_DATA_DIR: tempDataDir,
     OAUTH_APP_FORWARD_PROXY_ENABLED: "0",
+    OAUTH_CODEX_API_BASE: `${upstreamOrigin}/backend-api/codex`,
     OAUTH_CODEX_API_ENDPOINT: `${upstreamOrigin}/backend-api/codex/responses`,
     OAUTH_CODEX_CLIENT_VERSION: CODEX_CLIENT_VERSION,
     OAUTH_BEHAVIOR_ENABLED: "true",
@@ -209,21 +234,21 @@ async function main() {
       accountId: "org-mixed-free",
       accessToken: freeToken,
       refreshToken: "mixed-plan-free-refresh",
-      planType: "free",
+      planType: "Free",
     })
     const paidA = await syncAccount({
       email: "mixed-plan-business@example.com",
       accountId: "org-mixed-paid",
       accessToken: paidTokenA,
       refreshToken: "mixed-plan-business-refresh",
-      planType: "business",
+      planType: "Business",
     })
     const paidB = await syncAccount({
       email: "mixed-plan-team@example.com",
       accountId: "org-mixed-paid",
       accessToken: paidTokenB,
       refreshToken: "mixed-plan-team-refresh",
-      planType: "team",
+      planType: "Team",
     })
 
     assertCondition(free.account.id && paidA.account.id && paidB.account.id, "Failed to prepare mixed-plan accounts")
@@ -234,8 +259,7 @@ async function main() {
       paidB.account.id,
     )
     db.close()
-    child.kill("SIGTERM")
-    await Bun.sleep(500)
+    await stopBridgeProcess(child)
     child = startBridge()
     await waitForHealth(origin, 20_000)
 
@@ -249,6 +273,16 @@ async function main() {
         name: "Mixed Plan Paid A Key",
       }),
     })
+    const freeSingleKey = await requestJSON<IssueKeyResponse>(`${origin}/api/virtual-keys/issue`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        providerId: "chatgpt",
+        accountId: free.account.id,
+        routingMode: "single",
+        name: "Mixed Plan Free Key",
+      }),
+    })
     const poolKey = await requestJSON<IssueKeyResponse>(`${origin}/api/virtual-keys/issue`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -258,9 +292,41 @@ async function main() {
         name: "Mixed Plan Pool Key",
       }),
     })
+    const fixedGpt55Key = await requestJSON<IssueKeyResponse>(`${origin}/api/virtual-keys/issue`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        providerId: "chatgpt",
+        routingMode: "pool",
+        name: "Fixed GPT-5.5 XHigh Key",
+        fixedModel: "gpt-5.5",
+        fixedReasoningEffort: "xhigh",
+      }),
+    })
 
-    const sendResponses = async (secret: string, message: string, promptCacheKey: string) =>
-      await requestJSON<ResponsePayload>(`${origin}/v1/responses`, {
+    const modelCatalog = await requestJSON<ModelListPayload>(`${origin}/v1/models`, {
+      headers: { Authorization: `Bearer ${poolKey.key}` },
+    })
+    const gpt55CatalogEntry = (modelCatalog.data || []).find((entry) => entry.id === "gpt-5.5" || entry.slug === "gpt-5.5")
+    const gpt55ReasoningLevels = Array.isArray(gpt55CatalogEntry?.supported_reasoning_levels)
+      ? gpt55CatalogEntry.supported_reasoning_levels.map((item) =>
+          typeof item === "string" ? item : String((item as Record<string, unknown>)?.effort || ""),
+        )
+      : []
+    assertCondition(gpt55CatalogEntry, "Expected /v1/models to expose hardcoded gpt-5.5")
+    assertCondition(gpt55ReasoningLevels.includes("xhigh"), "Expected /v1/models gpt-5.5 to expose xhigh reasoning")
+    const fixedModelCatalog = await requestJSON<ModelListPayload>(`${origin}/v1/models`, {
+      headers: { Authorization: `Bearer ${fixedGpt55Key.key}` },
+    })
+    const fixedModelIds = (fixedModelCatalog.data || [])
+      .map((entry) => String(entry.id || entry.slug || ""))
+      .filter(Boolean)
+    assertCondition(
+      fixedModelIds.length === 1 && fixedModelIds[0] === "gpt-5.5",
+      `Expected fixed gpt-5.5 key to expose only gpt-5.5, got ${fixedModelIds.join(", ") || "<empty>"}`,
+    )
+
+    const buildResponsesRequest = (secret: string, message: string, promptCacheKey: string, model = "gpt-5.4") => ({
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -269,7 +335,7 @@ async function main() {
           "openai-beta": "responses=v1",
         },
         body: JSON.stringify({
-          model: "gpt-5.4",
+          model,
           input: [{ role: "user", content: [{ type: "input_text", text: message }] }],
           instructions: "mixed-plan-pool-audit",
           prompt_cache_key: promptCacheKey,
@@ -277,26 +343,117 @@ async function main() {
           stream: false,
         }),
       })
+    const sendResponses = async (secret: string, message: string, promptCacheKey: string, model = "gpt-5.4") =>
+      await requestJSON<ResponsePayload>(`${origin}/v1/responses`, buildResponsesRequest(secret, message, promptCacheKey, model))
 
-    const heldPaidRequest = sendResponses(paidASingleKey.key, "hold-paid-a", "mixed-plan-hold-paid-a")
+    let heldPaidError: unknown = null
+    const heldPaidRequest = sendResponses(paidASingleKey.key, "hold-paid-a", "mixed-plan-hold-paid-a").catch((error) => {
+      heldPaidError = error
+      return {} as ResponsePayload
+    })
     await waitForCondition(
       () => capturedRequests.some((entry) => entry.token === paidTokenA && entry.text === "hold-paid-a"),
       10_000,
       "Timed out waiting for paid cohort pressure request",
     )
 
-    const firstPoolResponse = await sendResponses(poolKey.key, "prefer-paid-cohort", "mixed-plan-session-1")
+    const firstPoolResponse = await sendResponses(poolKey.key, "prefer-free-cohort", "mixed-plan-session-1")
     assertCondition(
-      firstPoolResponse.output_text === `token=${paidTokenB}`,
-      `Expected pool to stay inside paid cohort under pressure and choose ${paidTokenB}, got ${firstPoolResponse.output_text ?? "<missing>"}`,
+      firstPoolResponse.output_text === `token=${freeToken}`,
+      `Expected non-gpt-5.5 pool request to prefer Free cohort, got ${firstPoolResponse.output_text ?? "<missing>"}`,
     )
+
+    const freeGpt55Response = await fetch(
+      `${origin}/v1/responses`,
+      buildResponsesRequest(freeSingleKey.key, "free-gpt55-denied", "mixed-plan-free-gpt55", "gpt-5.5"),
+    )
+    assertCondition(
+      freeGpt55Response.status >= 400,
+      `Expected gpt-5.5 to reject a Free single-account key, got ${freeGpt55Response.status}`,
+    )
+
+    const poolGpt55Response = await sendResponses(poolKey.key, "gpt55-paid-only", "mixed-plan-gpt55", "gpt-5.5")
+    assertCondition(
+      poolGpt55Response.output_text !== `token=${freeToken}`,
+      `Expected gpt-5.5 pool request to avoid Free account, got ${poolGpt55Response.output_text ?? "<missing>"}`,
+    )
+    const poolUpperGpt55Response = await sendResponses(poolKey.key, "upper-gpt55-paid-only", "mixed-plan-upper-gpt55", "GPT-5.5")
+    assertCondition(
+      poolUpperGpt55Response.output_text !== `token=${freeToken}`,
+      `Expected uppercase GPT-5.5 pool request to avoid Free account, got ${poolUpperGpt55Response.output_text ?? "<missing>"}`,
+    )
+    const fixedKeyResponse = await sendResponses(fixedGpt55Key.key, "fixed-gpt55-key-override", "mixed-plan-fixed-gpt55", "gpt-5.4")
+    assertCondition(
+      fixedKeyResponse.output_text !== `token=${freeToken}`,
+      `Expected fixed gpt-5.5 key to avoid Free account, got ${fixedKeyResponse.output_text ?? "<missing>"}`,
+    )
+    const capturedFixedKeyRequest = capturedRequests.find((entry) => entry.text === "fixed-gpt55-key-override")
+    assertCondition(capturedFixedKeyRequest, "Missing captured fixed gpt-5.5 key request")
+    assertCondition(
+      String(capturedFixedKeyRequest.body.model || "") === "gpt-5.5",
+      `Expected fixed key to rewrite model to gpt-5.5, got ${String(capturedFixedKeyRequest.body.model || "<missing>")}`,
+    )
+    assertCondition(
+      String(((capturedFixedKeyRequest.body.reasoning as Record<string, unknown> | null)?.effort as string | undefined) || "") === "xhigh",
+      "Expected fixed key to inject reasoning.effort=xhigh",
+    )
+    assertCondition(fixedGpt55Key.record?.id, "Missing fixed gpt-5.5 key record id")
+    const fixedKeyChatResponse = await requestJSON<{ reply?: string }>(`${origin}/api/chat/virtual-key`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        keyId: fixedGpt55Key.record.id,
+        model: "gpt-5.4",
+        message: "fixed-gpt55-chat-override",
+        sessionId: "mixed-plan-fixed-gpt55-chat",
+      }),
+    })
+    assertCondition(
+      String(fixedKeyChatResponse.reply || "") !== `token=${freeToken}`,
+      `Expected fixed gpt-5.5 chat test to avoid Free account, got ${fixedKeyChatResponse.reply ?? "<missing>"}`,
+    )
+    const capturedFixedKeyChat = capturedRequests.find((entry) => entry.text === "fixed-gpt55-chat-override")
+    assertCondition(capturedFixedKeyChat, "Missing captured fixed gpt-5.5 chat request")
+    assertCondition(
+      String(capturedFixedKeyChat.body.model || "") === "gpt-5.5",
+      `Expected fixed chat test to rewrite model to gpt-5.5, got ${String(capturedFixedKeyChat.body.model || "<missing>")}`,
+    )
+    assertCondition(
+      String(((capturedFixedKeyChat.body.reasoning as Record<string, unknown> | null)?.effort as string | undefined) || "") === "xhigh",
+      "Expected fixed chat test to inject reasoning.effort=xhigh",
+    )
+
+    assertCondition(poolKey.record?.id, "Missing pool key record id")
+    const chatGpt55Response = await requestJSON<{ reply?: string }>(`${origin}/api/chat/virtual-key`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        keyId: poolKey.record.id,
+        model: "gpt-5.5",
+        message: "gpt55-chat-minimal-params",
+        sessionId: "mixed-plan-gpt55-chat",
+      }),
+    })
+    assertCondition(
+      String(chatGpt55Response.reply || "") !== `token=${freeToken}`,
+      `Expected gpt-5.5 chat test to avoid Free account, got ${chatGpt55Response.reply ?? "<missing>"}`,
+    )
+    const capturedGpt55Chat = capturedRequests.find((entry) => entry.text === "gpt55-chat-minimal-params")
+    assertCondition(capturedGpt55Chat, "Missing captured gpt-5.5 chat request")
+    for (const field of ["truncation"]) {
+      assertCondition(
+        !Object.prototype.hasOwnProperty.call(capturedGpt55Chat.body, field),
+        `Expected gpt-5.5 chat test request to omit ${field}`,
+      )
+    }
 
     paidGate.release()
     await heldPaidRequest
+    if (heldPaidError) throw heldPaidError
 
     const sessionOutputs: string[] = []
     for (let index = 0; index < 4; index += 1) {
-      const response = await sendResponses(poolKey.key, `paid-only-${index}`, `mixed-plan-session-${index + 2}`)
+      const response = await sendResponses(poolKey.key, `free-preferred-${index}`, `mixed-plan-session-${index + 2}`)
       sessionOutputs.push(String(response.output_text || ""))
     }
 
@@ -305,18 +462,17 @@ async function main() {
         .map((value) => value.replace(/^token=/, ""))
         .filter(Boolean),
     )
-    assertCondition(!usedTokens.has(freeToken), "Free cohort account was selected while paid cohort was available")
+    assertCondition(usedTokens.size === 1 && usedTokens.has(freeToken), "Non-gpt-5.5 pool requests did not stay on the Free cohort")
     assertCondition(
-      [...usedTokens].every((token) => token === paidTokenA || token === paidTokenB),
-      `Pool selected token outside paid cohort: ${[...usedTokens].join(", ")}`,
+      ![...usedTokens].some((token) => token === paidTokenA || token === paidTokenB),
+      `Non-gpt-5.5 pool selected paid token before Free: ${[...usedTokens].join(", ")}`,
     )
 
     console.log(
-      `Mixed-plan pool audit passed: paid cohort stayed isolated from free cohort and used tokens ${[...usedTokens].join(", ")}.`,
+      `Mixed-plan pool audit passed: gpt-5.5 stayed paid-only and non-gpt-5.5 preferred Free (${[...usedTokens].join(", ")}).`,
     )
   } finally {
-    child.kill("SIGTERM")
-    await Bun.sleep(250)
+    await stopBridgeProcess(child)
     upstreamServer.stop()
     await rm(tempDataDir, { recursive: true, force: true })
   }

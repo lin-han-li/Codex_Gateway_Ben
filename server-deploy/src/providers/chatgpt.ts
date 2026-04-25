@@ -276,6 +276,7 @@ export function createChatGPTProvider(callbackServer: LocalCallbackServer): OAut
                 accountId: details.accountId,
                 accessToken: tokens.access_token,
                 refreshToken: tokens.refresh_token,
+                idToken: tokens.id_token,
                 expiresAt: Date.now() + (tokens.expires_in ?? 3600) * 1000,
                 metadata: buildAuthMetadata("pkce-browser", details),
               }
@@ -316,6 +317,7 @@ export function createChatGPTProvider(callbackServer: LocalCallbackServer): OAut
                 accountId: details.accountId,
                 accessToken: tokens.access_token,
                 refreshToken: tokens.refresh_token,
+                idToken: tokens.id_token,
                 expiresAt: Date.now() + (tokens.expires_in ?? 3600) * 1000,
                 metadata: buildAuthMetadata("pkce-manual-code", details),
               }
@@ -382,6 +384,7 @@ export function createChatGPTProvider(callbackServer: LocalCallbackServer): OAut
                     accountId: details.accountId,
                     accessToken: tokens.access_token,
                     refreshToken: tokens.refresh_token,
+                    idToken: tokens.id_token,
                     expiresAt: Date.now() + (tokens.expires_in ?? 3600) * 1000,
                     metadata: buildAuthMetadata("device-headless", details),
                   }
@@ -409,6 +412,7 @@ export function createChatGPTProvider(callbackServer: LocalCallbackServer): OAut
       return {
         accessToken: tokens.access_token,
         refreshToken: tokens.refresh_token ?? account.refreshToken,
+        idToken: tokens.id_token,
         expiresAt: Date.now() + (tokens.expires_in ?? 3600) * 1000,
         accountId: nextAccountId,
       }

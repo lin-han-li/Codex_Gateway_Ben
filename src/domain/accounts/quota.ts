@@ -190,7 +190,7 @@ export function resolveQuotaSnapshotHeadroomPercent(
 }
 
 export function normalizeChatgptPlanType(value: unknown) {
-  return normalizeIdentityText(String(value ?? ""))
+  return normalizeIdentityText(value)?.toLowerCase() ?? null
 }
 
 export function resolveAccountPlanCohort(account: StoredAccount): AccountPlanCohort {
@@ -198,11 +198,15 @@ export function resolveAccountPlanCohort(account: StoredAccount): AccountPlanCoh
     return "unknown"
   }
   const metadata = account.metadata && typeof account.metadata === "object" ? account.metadata : {}
-  const raw = normalizeChatgptPlanType(
-    (metadata as Record<string, unknown>).chatgptPlanType ??
-      (metadata as Record<string, unknown>).chatgpt_plan_type ??
-      "",
-  )
+  const metadataRecord = metadata as Record<string, unknown>
+  const raw =
+    normalizeChatgptPlanType(metadataRecord.chatgptPlanType) ??
+    normalizeChatgptPlanType(metadataRecord.chatgpt_plan_type) ??
+    normalizeChatgptPlanType(metadataRecord.planType) ??
+    normalizeChatgptPlanType(metadataRecord.plan_type) ??
+    normalizeChatgptPlanType(metadataRecord.plan) ??
+    normalizeChatgptPlanType(metadataRecord.subscriptionPlan) ??
+    normalizeChatgptPlanType(metadataRecord.accountPlan)
   if (!raw) return "unknown"
   if (raw.includes("free")) return "free"
   if (
@@ -220,7 +224,7 @@ export function resolveAccountPlanCohort(account: StoredAccount): AccountPlanCoh
 
 export function resolvePlanCohortPriority(cohort: AccountPlanCohort) {
   switch (cohort) {
-    case "paid":
+    case "free":
       return 0
     case "unknown":
       return 1

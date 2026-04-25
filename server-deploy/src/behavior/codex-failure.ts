@@ -26,6 +26,19 @@ export function isTransientUpstreamStatus(status: number) {
   return Number.isFinite(status) && status >= 500 && status <= 599
 }
 
+function isCertificateVerificationTransportError(text: string) {
+  return (
+    text.includes("unknown certificate verification error") ||
+    text.includes("certificate verification") ||
+    text.includes("certificate verify failed") ||
+    text.includes("invalid peer certificate") ||
+    text.includes("peer certificate") ||
+    text.includes("self signed certificate") ||
+    text.includes("unable to get local issuer certificate") ||
+    text.includes("certificate has expired")
+  )
+}
+
 export function detectTransientUpstreamError(error: unknown) {
   const status = Number(getStatusErrorCode(error) ?? NaN)
   if (isTransientUpstreamStatus(status)) {
@@ -36,6 +49,12 @@ export function detectTransientUpstreamError(error: unknown) {
   }
 
   const text = errorMessage(error).toLowerCase()
+  if (isCertificateVerificationTransportError(text)) {
+    return {
+      matched: true as const,
+      reason: "upstream_certificate_verification_error",
+    }
+  }
   if (
     [
       "unable to connect",

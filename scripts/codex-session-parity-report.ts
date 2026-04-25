@@ -107,7 +107,6 @@ function buildExpectedOutgoingRequest(input: {
   codexEndpoint: string
   shouldRewrite: boolean
 }) {
-  // Mirrors Codex bridge forwarding behavior for v1 proxy routes.
   const headers = copyHeaders(input.requestHeaders)
   headers.delete("authorization")
   headers.delete("Authorization")
@@ -126,11 +125,107 @@ function buildExpectedOutgoingRequest(input: {
   if (new URL(url).pathname.includes("/backend-api/codex/")) {
     headers.delete("version")
   }
+
+  const bodySessionValue = (() => {
+    try {
+      const parsedBody = JSON.parse(input.requestBody) as Record<string, unknown>
+      const candidates = [
+        parsedBody.prompt_cache_key,
+        parsedBody.promptCacheKey,
+        parsedBody.session_id,
+        parsedBody.sessionId,
+        parsedBody.thread_id,
+        parsedBody.threadId,
+        parsedBody.conversation_id,
+        parsedBody.conversationId,
+        parsedBody.previous_response_id,
+        parsedBody.previousResponseId,
+      ]
+      const match = candidates.find((value) => typeof value === "string" && String(value).trim().length > 0)
+      return typeof match === "string" ? match.trim() : ""
+    } catch {
+      return ""
+    }
+  })()
+  const sessionValue = String(input.requestHeaders.session_id ?? bodySessionValue).trim()
+  if (sessionValue) {
+    headers.set("x-codex-window-id", `${sessionValue}:0`)
+    headers.set("x-codex-turn-metadata", JSON.stringify({ turn_id: sessionValue }))
+    headers.set("x-codex-installation-id", "<stable-id>")
+  }
+
+  let body = rewriteExpectedSessionBody(input.requestBody, input.sessionBindingAccountId)
+  if (sessionValue && !input.requestUrl.includes("/v1/responses/compact")) {
+    try {
+      const parsedBody = JSON.parse(body) as Record<string, unknown>
+      const clientMetadata = parsedBody.client_metadata && typeof parsedBody.client_metadata === "object" && !Array.isArray(parsedBody.client_metadata)
+        ? { ...(parsedBody.client_metadata as Record<string, unknown>) }
+        : {}
+      clientMetadata["x-codex-installation-id"] = "<stable-id>"
+      clientMetadata["x-codex-window-id"] = `${sessionValue}:0`
+      parsedBody.client_metadata = clientMetadata
+      body = JSON.stringify(parsedBody)
+    } catch {
+      // ignore body normalization failures
+    }
+  }
   return {
     method: input.requestMethod,
     url,
     headers: normalizeTransportHeaders(headersToObject(headers)),
-    body: rewriteExpectedSessionBody(input.requestBody, input.sessionBindingAccountId),
+    body,
+  }
+}
+
+function normalizeCapturedForComparison(input: { method: string; url: string; headers: Record<string, string>; body: string }) {
+  const headers = { ...input.headers }
+  if (typeof headers["x-codex-installation-id"] === "string" && headers["x-codex-installation-id"].length > 0) {
+    headers["x-codex-installation-id"] = "<stable-id>"
+  }
+  let body = input.body
+  try {
+    const parsedBody = JSON.parse(body) as Record<string, unknown>
+    if (parsedBody.client_metadata && typeof parsedBody.client_metadata === "object" && !Array.isArray(parsedBody.client_metadata)) {
+      const clientMetadata = { ...(parsedBody.client_metadata as Record<string, unknown>) }
+      if (typeof clientMetadata["x-codex-installation-id"] === "string" && String(clientMetadata["x-codex-installation-id"]).length > 0) {
+        clientMetadata["x-codex-installation-id"] = "<stable-id>"
+      }
+      parsedBody.client_metadata = clientMetadata
+      body = JSON.stringify(parsedBody)
+    }
+  } catch {
+    // keep raw body
+  }
+  return {
+    ...input,
+    headers: normalizeTransportHeaders(headers),
+    body,
+  }
+}
+
+function normalizeExpectedForComparison(input: ReturnType<typeof buildExpectedOutgoingRequest>) {
+  const headers = { ...input.headers }
+  if (typeof headers["x-codex-installation-id"] === "string" && headers["x-codex-installation-id"].length > 0) {
+    headers["x-codex-installation-id"] = "<stable-id>"
+  }
+  let body = input.body
+  try {
+    const parsedBody = JSON.parse(body) as Record<string, unknown>
+    if (parsedBody.client_metadata && typeof parsedBody.client_metadata === "object" && !Array.isArray(parsedBody.client_metadata)) {
+      const clientMetadata = { ...(parsedBody.client_metadata as Record<string, unknown>) }
+      if (typeof clientMetadata["x-codex-installation-id"] === "string" && String(clientMetadata["x-codex-installation-id"]).length > 0) {
+        clientMetadata["x-codex-installation-id"] = "<stable-id>"
+      }
+      parsedBody.client_metadata = clientMetadata
+      body = JSON.stringify(parsedBody)
+    }
+  } catch {
+    // keep raw body
+  }
+  return {
+    ...input,
+    headers: normalizeTransportHeaders(headers),
+    body,
   }
 }
 
@@ -366,23 +461,26 @@ async function runAudit() {
           shouldRewrite: testCase.expectedRewriteToCodex,
         })
 
-        const actualNormalized = {
+        const actualNormalized = normalizeCapturedForComparison({
           method: captured.method,
           url: captured.url,
-          headers: normalizeTransportHeaders(captured.headers),
+          headers: captured.headers,
           body: captured.body,
-        }
+        })
 
-        if (expected.method !== actualNormalized.method) {
-          failures.push(`method mismatch: expected=${expected.method} actual=${actualNormalized.method}`)
+        const expectedNormalized = normalizeExpectedForComparison(expected)
+
+        if (expectedNormalized.method !== actualNormalized.method) {
+          failures.push(`method mismatch: expected=${expectedNormalized.method} actual=${actualNormalized.method}`)
         }
-        if (expected.url !== actualNormalized.url) {
-          failures.push(`url mismatch: expected=${expected.url} actual=${actualNormalized.url}`)
+        if (expectedNormalized.url !== actualNormalized.url) {
+          failures.push(`url mismatch: expected=${expectedNormalized.url} actual=${actualNormalized.url}`)
         }
-        if (expected.body !== actualNormalized.body) {
+        if (expectedNormalized.body !== actualNormalized.body) {
+          console.error("session parity body mismatch", testCase.id, "expected=", expectedNormalized.body, "actual=", actualNormalized.body)
           failures.push("request body mismatch")
         }
-        failures.push(...diffHeaders(expected.headers, actualNormalized.headers))
+        failures.push(...diffHeaders(expectedNormalized.headers, actualNormalized.headers))
       }
 
       if (response.status !== testCase.upstreamStatus) {

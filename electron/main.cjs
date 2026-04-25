@@ -240,6 +240,41 @@ function persistResolvedLocalBinding(dataDir, host, port) {
   return true
 }
 
+function quotePowerShellLiteral(value) {
+  return `'${String(value ?? "").replace(/'/g, "''")}'`
+}
+
+function writeDesktopServerLauncher({ exePath, dataDir, webDir, bindHost, port }) {
+  if (process.platform !== "win32" || !app.isPackaged) return
+  try {
+    const launcherPath = path.join(app.getPath("userData"), "run-oauth-server.ps1")
+    const settingsPath = resolveSettingsFilePath(dataDir)
+    const bootstrapLogPath = resolveBootstrapLogPath()
+    const script = [
+      "$ErrorActionPreference = 'Stop'",
+      `$settingsPath = ${quotePowerShellLiteral(settingsPath)}`,
+      "$settings = if (Test-Path -LiteralPath $settingsPath) { Get-Content -LiteralPath $settingsPath -Raw | ConvertFrom-Json } else { [pscustomobject]@{} }",
+      `$env:OAUTH_APP_HOST = ${quotePowerShellLiteral(bindHost)}`,
+      `$env:OAUTH_APP_PORT = ${quotePowerShellLiteral(String(port))}`,
+      `$env:OAUTH_APP_DATA_DIR = ${quotePowerShellLiteral(dataDir)}`,
+      `$env:OAUTH_APP_WEB_DIR = ${quotePowerShellLiteral(webDir)}`,
+      `$env:OAUTH_BOOT_LOG_FILE = ${quotePowerShellLiteral(bootstrapLogPath)}`,
+      "$env:OAUTH_APP_ADMIN_TOKEN = ''",
+      "if ($settings.PSObject.Properties['adminToken']) { $env:OAUTH_APP_ADMIN_TOKEN = [string]$settings.adminToken }",
+      "$env:OAUTH_APP_ENCRYPTION_KEY = ''",
+      "if ($settings.PSObject.Properties['encryptionKey']) { $env:OAUTH_APP_ENCRYPTION_KEY = [string]$settings.encryptionKey }",
+      `$env:OAUTH_APP_SERVER_EXE = ${quotePowerShellLiteral(exePath)}`,
+      `$env:OAUTH_APP_INSTANCE_ID = ${quotePowerShellLiteral(`launcher-${Date.now()}`)}`,
+      `& ${quotePowerShellLiteral(exePath)}`,
+      "",
+    ].join("\r\n")
+    fs.writeFileSync(launcherPath, script, "utf8")
+    appendBootstrapLog("info", `Updated desktop server launcher: ${launcherPath}`)
+  } catch (error) {
+    appendBootstrapLog("warn", `Failed to update desktop server launcher: ${error instanceof Error ? error.message : String(error)}`)
+  }
+}
+
 function formatLocalAddress(host, port) {
   return `http://${host}:${port}`
 }
@@ -282,6 +317,58 @@ function runPowerShell(command, extraEnv = {}) {
   if (result.status !== 0) {
     const detail = `${decodeProcessText(result.stderr) || decodeProcessText(result.stdout) || `exit ${result.status}`}`.trim()
     throw new Error(detail || `exit ${result.status}`)
+  }
+}
+
+function stopExistingOAuthServerProcesses() {
+  if (process.platform !== "win32" || !app.isPackaged) return null
+  const command = `
+$ErrorActionPreference = 'Continue'
+$stopped = @()
+$failed = @()
+$remaining = @()
+$processes = @(Get-CimInstance Win32_Process -Filter "Name='oauth-server.exe'" -ErrorAction SilentlyContinue)
+foreach ($p in $processes) {
+  try {
+    Stop-Process -Id $p.ProcessId -Force -ErrorAction Stop
+    $stopped += [pscustomobject]@{
+      pid = [int]$p.ProcessId
+      path = [string]$p.ExecutablePath
+      commandLine = [string]$p.CommandLine
+    }
+  } catch {
+    $failed += [pscustomobject]@{
+      pid = [int]$p.ProcessId
+      path = [string]$p.ExecutablePath
+      commandLine = [string]$p.CommandLine
+      error = [string]$_.Exception.Message
+    }
+  }
+}
+Start-Sleep -Milliseconds 500
+$after = @(Get-CimInstance Win32_Process -Filter "Name='oauth-server.exe'" -ErrorAction SilentlyContinue)
+foreach ($p in $after) {
+  $ports = @()
+  try {
+    $ports = @(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object { $_.OwningProcess -eq $p.ProcessId } | Select-Object -ExpandProperty LocalPort)
+  } catch {}
+  $remaining += [pscustomobject]@{
+    pid = [int]$p.ProcessId
+    path = [string]$p.ExecutablePath
+    commandLine = [string]$p.CommandLine
+    ports = @($ports)
+  }
+}
+[pscustomobject]@{
+  stopped = @($stopped)
+  failed = @($failed)
+  remaining = @($remaining)
+} | ConvertTo-Json -Compress -Depth 6
+`
+  try {
+    return runPowerShellJson(command)
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : String(error) }
   }
 }
 
@@ -638,6 +725,98 @@ function requestHealth(url) {
   })
 }
 
+function requestJson(url, timeoutMs = 1500) {
+  return new Promise((resolve, reject) => {
+    const chunks = []
+    const req = http.get(url, (res) => {
+      const status = res.statusCode ?? 0
+      res.on("data", (chunk) => chunks.push(Buffer.from(chunk)))
+      res.on("end", () => {
+        const body = Buffer.concat(chunks).toString("utf8")
+        if (status < 200 || status >= 300) {
+          reject(new Error(`HTTP ${status}: ${body.slice(0, 200)}`))
+          return
+        }
+        try {
+          resolve(body ? JSON.parse(body) : null)
+        } catch (error) {
+          reject(error)
+        }
+      })
+    })
+    req.on("error", reject)
+    req.setTimeout(timeoutMs, () => {
+      req.destroy(new Error("JSON request timeout"))
+    })
+  })
+}
+
+function normalizeComparablePath(value) {
+  const raw = String(value ?? "").trim()
+  if (!raw) return ""
+  try {
+    return path.resolve(raw).replace(/\//g, "\\").toLowerCase()
+  } catch {
+    return raw.replace(/\//g, "\\").toLowerCase()
+  }
+}
+
+function areSamePath(left, right) {
+  const normalizedLeft = normalizeComparablePath(left)
+  const normalizedRight = normalizeComparablePath(right)
+  return Boolean(normalizedLeft && normalizedRight && normalizedLeft === normalizedRight)
+}
+
+function collectRemainingGatewayPorts(cleanupReport) {
+  const ports = new Set()
+  if (!cleanupReport || !Array.isArray(cleanupReport.remaining)) return []
+  for (const item of cleanupReport.remaining) {
+    if (!Array.isArray(item?.ports)) continue
+    for (const port of item.ports) {
+      const numericPort = Number(port)
+      if (Number.isInteger(numericPort) && numericPort > 0 && numericPort <= 65535) {
+        ports.add(numericPort)
+      }
+    }
+  }
+  return Array.from(ports).sort((left, right) => left - right)
+}
+
+async function attachToExistingGatewayService({ cleanupReport, dataDir, webDir, exePath, managementToken }) {
+  if (!app.isPackaged) return null
+  const ports = collectRemainingGatewayPorts(cleanupReport)
+  for (const port of ports) {
+    const baseUrl = `http://127.0.0.1:${port}`
+    try {
+      const health = await requestJson(`${baseUrl}/api/health`)
+      const runtime = health?.runtime ?? {}
+      const isGateway = health?.ok === true && health?.name === "Codex Gateway"
+      const dataMatches = areSamePath(runtime.dataDir, dataDir)
+      const exeMatches = areSamePath(runtime.serverExecutable, exePath)
+      const webMatches = areSamePath(runtime.webDir, webDir)
+      if (isGateway && dataMatches && (exeMatches || webMatches)) {
+        serverBaseUrl = baseUrl
+        serverManagementToken = managementToken
+        appendBootstrapLog(
+          "info",
+          `Attached to existing Codex Gateway service at ${baseUrl} pid=${health?.pid ?? "unknown"}`,
+        )
+        return baseUrl
+      }
+      appendBootstrapLog(
+        "warn",
+        `Existing service at ${baseUrl} is not attachable: gateway=${isGateway}, dataMatches=${dataMatches}, exeMatches=${exeMatches}, webMatches=${webMatches}`,
+      )
+    } catch (error) {
+      appendBootstrapLog(
+        "warn",
+        `Existing service probe failed at ${baseUrl}: ${error instanceof Error ? error.message : String(error)}`,
+      )
+    }
+  }
+  return null
+}
+
 const HEALTH_CHECK_ATTEMPTS = 160
 const HEALTH_CHECK_DELAY_MS = 250
 
@@ -711,6 +890,44 @@ async function startServer() {
   const savedEncryptionKey = loadSavedEncryptionKey(dataDir)
   const effectiveAdminToken = String(process.env.OAUTH_APP_ADMIN_TOKEN ?? "").trim() || savedAdminToken
   const effectiveEncryptionKey = String(process.env.OAUTH_APP_ENCRYPTION_KEY ?? "").trim() || savedEncryptionKey
+  const cleanupReport = stopExistingOAuthServerProcesses()
+  if (cleanupReport) {
+    const stoppedCount = Array.isArray(cleanupReport.stopped) ? cleanupReport.stopped.length : 0
+    const failedCount = Array.isArray(cleanupReport.failed) ? cleanupReport.failed.length : 0
+    const remainingCount = Array.isArray(cleanupReport.remaining) ? cleanupReport.remaining.length : 0
+    appendBootstrapLog(
+      failedCount > 0 || remainingCount > 0 || cleanupReport.error ? "warn" : "info",
+      `Existing oauth-server cleanup: stopped=${stoppedCount}, failed=${failedCount}, remaining=${remainingCount}${
+        cleanupReport.error ? `, error=${cleanupReport.error}` : ""
+      }`,
+    )
+    if (remainingCount > 0) {
+      const attachedBaseUrl = await attachToExistingGatewayService({
+        cleanupReport,
+        dataDir,
+        webDir,
+        exePath,
+        managementToken: effectiveAdminToken,
+      })
+      if (attachedBaseUrl) {
+        const attachedPort = Number(new URL(attachedBaseUrl).port)
+        if (Number.isInteger(attachedPort) && attachedPort > 0) {
+          writeDesktopServerLauncher({ exePath, dataDir, webDir, bindHost: "127.0.0.1", port: attachedPort })
+        }
+        ensureUserLoopbackNoProxyCompatibility(dataDir, "127.0.0.1")
+        return attachedBaseUrl
+      }
+      const remainingDetail = cleanupReport.remaining
+        .map((item) => {
+          const ports = Array.isArray(item?.ports) && item.ports.length > 0 ? ` ports=${item.ports.join(",")}` : ""
+          return `pid=${item?.pid ?? "unknown"}${ports}`
+        })
+        .join("; ")
+      throw new Error(
+        `Existing oauth-server process could not be stopped, refusing to start a second gateway service. Close it or kill it as administrator first: ${remainingDetail}`,
+      )
+    }
+  }
   let bindHost = localBinding?.host ?? "127.0.0.1"
   let shouldPersistResolvedBinding = false
   if (bindHost === "localhost") {
@@ -812,8 +1029,11 @@ async function startServer() {
     OAUTH_BOOT_LOG_FILE: resolveBootstrapLogPath(),
     OAUTH_APP_ADMIN_TOKEN: effectiveAdminToken,
     OAUTH_APP_ENCRYPTION_KEY: effectiveEncryptionKey,
+    OAUTH_APP_SERVER_EXE: exePath,
+    OAUTH_APP_INSTANCE_ID: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
   }
   serverManagementToken = effectiveAdminToken
+  writeDesktopServerLauncher({ exePath, dataDir, webDir, bindHost, port })
 
   serverProcess = spawn(exePath, [], {
     env,

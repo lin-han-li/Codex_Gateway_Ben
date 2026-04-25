@@ -65,6 +65,19 @@ export function createSettingsView(deps) {
     const statCatalogVersion = document.getElementById("settingsStatCatalogVersion")
     if (statCatalogVersion) statCatalogVersion.textContent = S.settings.pricingCatalogVersion || metrics.pricingCatalogVersion || "-"
 
+    const officialAssetsState = document.getElementById("settingsOfficialAssetsState")
+    if (officialAssetsState) {
+      const assets = serviceSummary?.officialAssets || null
+      const compact = assets
+        ? [
+            `Version:${assets.clientVersionSource?.kind || "-"}`,
+            `Prompt:${assets.promptSource?.kind || "-"}`,
+            `Models:${assets.modelsSource?.kind || "-"}`,
+          ].join(" · ")
+        : "-"
+      officialAssetsState.textContent = compact
+    }
+
     const statTodayTokens = document.getElementById("settingsStatTodayTokens")
     if (statTodayTokens) statTodayTokens.textContent = formatCompactNumber(metrics.todayTokens)
 
@@ -92,6 +105,17 @@ export function createSettingsView(deps) {
     const realtimeState = document.getElementById("settingsRealtimeState")
     if (realtimeState) {
       realtimeState.textContent = S.usageEventReady ? "SSE 已连接" : S.usageFallbackActive ? "轮询刷新中" : S.service ? "未连接" : "离线"
+    }
+
+    const failoverState = document.getElementById("settingsFailoverState")
+    if (failoverState) {
+      const failovers = Array.isArray(S.recentFailovers) ? S.recentFailovers : []
+      failoverState.textContent = failovers.length > 0 ? `最近 5 次均流切换：${failovers.length} · 最近原因 ${failovers[0]?.reason || "-"}` : "最近 5 次均流切换：0"
+    }
+
+    const routingState = document.getElementById("settingsRoutingState")
+    if (routingState) {
+      routingState.textContent = `可路由 ${formatCompactNumber(metrics.accountsEligible || 0)} · 软排水 ${formatCompactNumber(metrics.accountsSoftDrained || 0)} · 已排除 ${formatCompactNumber(metrics.accountsExcluded || 0)}`
     }
 
     const requestLogState = document.getElementById("settingsRequestLogState")

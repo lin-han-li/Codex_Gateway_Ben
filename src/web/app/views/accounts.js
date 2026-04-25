@@ -103,15 +103,10 @@ function resolvePlanMeta(account) {
   const normalized = rawLabel.toLowerCase()
 
   if (normalized.includes("team") || normalized.includes("business") || normalized.includes("enterprise")) {
-    const label = normalized.includes("enterprise")
-      ? "Enterprise"
-      : normalized.includes("business")
-        ? "Business"
-        : "Team"
     return {
-      kind: "team",
-      label,
-      rawLabel: rawLabel || label,
+      kind: "business",
+      label: "Business账号",
+      rawLabel: "Business账号",
     }
   }
 
@@ -203,7 +198,7 @@ export function createAccountsView(deps) {
           String(account.totalTokens || 0),
           quota.text,
           quota.detail,
-          resolvePlanLabel(account),
+          resolvePlanMeta(account).label,
           ...quotaRows.map((row) => `${row.label} ${row.remainingPercent ?? "--"} ${row.resetText}`),
         ]
         return fields.some((field) => String(field ?? "").toLowerCase().includes(query))
@@ -265,6 +260,11 @@ export function createAccountsView(deps) {
           ? `<button class="mini-btn" data-account-action="refresh-quota" data-id="${esc(account.id)}" title="刷新额度">额度</button>`
           : ""
 
+        const codexLocalLoginBtn =
+          account.providerId === "chatgpt" && account.hasRefreshToken
+            ? `<button class="mini-btn codex-local" data-account-action="codex-local-login" data-id="${esc(account.id)}" title="Login this account to local Codex CLI/App">Codex</button>`
+            : ""
+
         const activateBtn = account.isActive
           ? '<button class="mini-btn activate" disabled>当前</button>'
           : `<button class="mini-btn activate" data-account-action="activate" data-id="${esc(account.id)}">设为默认</button>`
@@ -293,6 +293,7 @@ export function createAccountsView(deps) {
                 <button class="mini-btn test" data-account-action="test" data-id="${esc(account.id)}">测试</button>
                 <button class="mini-btn bridge" data-account-action="refresh-token" data-id="${esc(account.id)}">Token</button>
                 ${refreshQuotaBtn}
+                ${codexLocalLoginBtn}
                 ${activateBtn}
                 <button class="mini-btn delete" data-account-action="delete" data-id="${esc(account.id)}">删除</button>
               </div>
@@ -325,6 +326,42 @@ export function createAccountsView(deps) {
         }
         if (action === "refresh-quota") {
           await refreshSingleAccountQuota(id, button)
+          return
+        }
+        if (action === "codex-local-login") {
+          const account = (S.accounts || []).find((item) => item?.id === id)
+          const label = account?.email || account?.accountId || account?.displayName || id
+          const confirmed = window.confirm(
+            `Switch local Codex CLI/App login to ${label}? This overwrites ~/.codex/auth.json and restarts the official Codex App if it is installed.`,
+          )
+          if (!confirmed) return
+          await runBusyAction(
+            `account:codex-local-login:${id}`,
+            async () => {
+              const output = await api(`/api/accounts/${encodeURIComponent(id)}/codex-local-login`, {
+                method: "POST",
+                headers: { "x-sensitive-action": "confirm" },
+                body: JSON.stringify({ restartCodexApp: true }),
+              })
+              const info = output?.codexLocalAuth || {}
+              const restart = info?.appRestart || {}
+              const restartText =
+                restart.status === "restarted"
+                  ? "Codex App restarted"
+                  : restart.status === "failed"
+                    ? `Codex App restart failed: ${restart.message || "unknown error"}`
+                    : restart.message || "Codex App restart skipped"
+              log(`Codex local login switched: ${label}. auth=${info.authPath || "~/.codex/auth.json"}. ${restartText}`)
+              showToast(`Codex local login switched: ${label}`, "success")
+              await loadAccounts({ loadVirtualKeys: false, silent: true })
+            },
+            {
+              button,
+              busyLabel: "Codex...",
+              errorToast: "Codex local login failed",
+              rethrow: false,
+            },
+          )
           return
         }
         if (action === "delete") {

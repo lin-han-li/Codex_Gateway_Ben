@@ -10,6 +10,7 @@ type AccountStoreLike = {
     id: string
     accessToken: string
     refreshToken?: string
+    idToken?: string | null
     expiresAt?: number
     accountId?: string | null
   }) => void
@@ -23,6 +24,7 @@ type AccountStoreLike = {
     accountId?: string | null
     accessToken: string
     refreshToken?: string
+    idToken?: string | null
     expiresAt?: number
     metadata?: Record<string, unknown>
   }) => string
@@ -113,6 +115,10 @@ export type AccountRouteDeps = {
   }
   parseImportJsonAccount: (raw: unknown) => unknown
   parseImportRtAccount: (raw: unknown) => unknown
+  loginCodexLocalAuth: (
+    account: StoredAccount,
+    input: { restartCodexApp?: boolean },
+  ) => Promise<Record<string, unknown>>
 }
 
 export function registerAccountRoutes(app: Hono, deps: AccountRouteDeps) {
@@ -174,6 +180,29 @@ export function registerAccountRoutes(app: Hono, deps: AccountRouteDeps) {
       refreshToken: account.refreshToken ?? "",
       hasRefreshToken: Boolean(account.refreshToken),
     })
+  })
+
+  app.post("/api/accounts/:id/codex-local-login", async (c) => {
+    if (!deps.hasSensitiveActionConfirmation(c)) {
+      return c.json({ error: "Sensitive action confirmation required" }, 400)
+    }
+    const accountID = c.req.param("id")
+    const account = deps.accountStore.get(accountID)
+    if (!account) return c.json({ error: "Account not found" }, 404)
+
+    try {
+      const raw = await c.req.json().catch(() => ({}))
+      const restartCodexApp = raw && typeof raw === "object" && "restartCodexApp" in raw ? raw.restartCodexApp !== false : true
+      const result = await deps.loginCodexLocalAuth(account, { restartCodexApp })
+      const refreshedAccount = deps.accountStore.get(accountID) ?? account
+      return c.json({
+        success: true,
+        ...result,
+        account: deps.toPublicAccount(refreshedAccount, deps.accountQuotaCache.get(accountID) ?? null),
+      })
+    } catch (error) {
+      return c.json({ error: deps.errorMessage(error) }, 400)
+    }
   })
 
   app.post("/api/accounts/bulk-delete", async (c) => {
@@ -427,6 +456,7 @@ export function registerAccountRoutes(app: Hono, deps: AccountRouteDeps) {
         id: accountID,
         accessToken: result.accessToken,
         refreshToken: result.refreshToken,
+        idToken: result.idToken,
         expiresAt: result.expiresAt,
         accountId: result.accountId ?? account.accountId,
       })
@@ -440,7 +470,10 @@ export function registerAccountRoutes(app: Hono, deps: AccountRouteDeps) {
 
       return c.json({
         success: true,
-        account: deps.accountStore.get(accountID),
+        account: (() => {
+          const latest = deps.accountStore.get(accountID)
+          return latest ? deps.toPublicAccount(latest, deps.accountQuotaCache.get(accountID) ?? null) : null
+        })(),
       })
     } catch (error) {
       const blocked = deps.detectRoutingBlockedAccount({

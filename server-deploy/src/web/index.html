@@ -2421,7 +2421,8 @@
         animation: accountPlanShine 0.9s ease-out 1;
       }
 
-      .account-plan-badge.plan-team {
+      .account-plan-badge.plan-team,
+      .account-plan-badge.plan-business {
         border-color: rgba(255, 214, 102, 0.42);
         background: linear-gradient(135deg, rgba(255, 215, 120, 0.22), rgba(230, 170, 50, 0.16));
         color: #fff3c4;
@@ -2432,14 +2433,16 @@
           0 0 18px rgba(255, 204, 86, 0.16);
       }
 
-      .account-plan-badge.plan-team:hover {
+      .account-plan-badge.plan-team:hover,
+      .account-plan-badge.plan-business:hover {
         box-shadow:
           inset 0 1px 0 rgba(255, 245, 204, 0.24),
           0 10px 26px rgba(185, 132, 25, 0.26),
           0 0 24px rgba(255, 204, 86, 0.2);
       }
 
-      .account-plan-badge.plan-team:hover::after {
+      .account-plan-badge.plan-team:hover::after,
+      .account-plan-badge.plan-business:hover::after {
         opacity: 0.8;
         animation: accountPlanShine 0.75s ease-out 1;
       }
@@ -2476,9 +2479,13 @@
       }
 
       :root[data-theme="pearl"] .account-plan-badge.plan-team,
+      :root[data-theme="pearl"] .account-plan-badge.plan-business,
       :root[data-theme="mist"] .account-plan-badge.plan-team,
+      :root[data-theme="mist"] .account-plan-badge.plan-business,
       :root[data-theme="mint"] .account-plan-badge.plan-team,
-      :root[data-theme="sand"] .account-plan-badge.plan-team {
+      :root[data-theme="mint"] .account-plan-badge.plan-business,
+      :root[data-theme="sand"] .account-plan-badge.plan-team,
+      :root[data-theme="sand"] .account-plan-badge.plan-business {
         color: #6f4300;
         background: linear-gradient(135deg, rgba(255, 220, 135, 0.62), rgba(228, 174, 72, 0.42));
         border-color: rgba(189, 135, 34, 0.32);
@@ -2497,9 +2504,13 @@
       }
 
       :root[data-theme="pearl"] .account-plan-badge.plan-team:hover,
+      :root[data-theme="pearl"] .account-plan-badge.plan-business:hover,
       :root[data-theme="mist"] .account-plan-badge.plan-team:hover,
+      :root[data-theme="mist"] .account-plan-badge.plan-business:hover,
       :root[data-theme="mint"] .account-plan-badge.plan-team:hover,
-      :root[data-theme="sand"] .account-plan-badge.plan-team:hover {
+      :root[data-theme="mint"] .account-plan-badge.plan-business:hover,
+      :root[data-theme="sand"] .account-plan-badge.plan-team:hover,
+      :root[data-theme="sand"] .account-plan-badge.plan-business:hover {
         box-shadow:
           inset 0 1px 0 rgba(255, 248, 218, 0.95),
           0 10px 22px rgba(172, 126, 42, 0.26);
@@ -2678,6 +2689,10 @@
 
       .mini-btn.bridge {
         background: #1d7e5c;
+      }
+
+      .mini-btn.codex-local {
+        background: linear-gradient(135deg, #2aa7d6, #3b63d9);
       }
 
       .provider-grid {
@@ -3546,6 +3561,8 @@
             <div class="card"><div id="sTotal" class="num">0</div><div class="label">账号总数</div></div>
             <div class="card"><div id="sOAuth" class="num">0</div><div class="label">OAuth 账号</div></div>
             <div class="card"><div id="sApi" class="num">0</div><div class="label">API Key 账号</div></div>
+            <div class="card"><div id="sFree" class="num">0</div><div class="label">Free 账号</div></div>
+            <div class="card"><div id="sBusiness" class="num">0</div><div class="label">Business账号</div></div>
             <div class="card"><div id="sKeys" class="num">0</div><div class="label">密钥数量</div></div>
             <div class="card"><div id="sHealthy" class="num">0</div><div class="label">正常账号</div></div>
             <div class="card"><div id="sAbnormal" class="num">0</div><div class="label">异常账号</div></div>
@@ -3662,6 +3679,10 @@
               <select id="keyClientMode">
                 <option value="codex">Codex Key</option>
                 <option value="cursor">Cursor Key</option>
+              </select>
+              <select id="keyPolicy">
+                <option value="standard">标准路由</option>
+                <option value="gpt55_xhigh">固定 GPT-5.5 XHigh</option>
               </select>
               <select id="keyAccount"></select>
               <input id="keyName" placeholder="Key 名称（可选）" />
@@ -3956,6 +3977,7 @@
           <div class="field-line">
             <label>接入方法</label>
             <div class="key-usage-actions">
+              <button id="keyUsageConfigureCodexBtn" class="btn primary">直接配置 Codex App/CLI</button>
               <button id="keyUsageBasicCmdBtn" class="btn primary">一键生成普通版 CMD</button>
               <button id="keyUsageGatewayCmdBtn" class="btn primary">一键生成网关版 CMD</button>
               <button id="keyUsageRestoreCmdBtn" class="btn">一键生成还原 CMD</button>
@@ -4053,7 +4075,9 @@
             unpricedRequestCount: 0,
           },
           models: [],
+          defaultModelId: "gpt-5.5",
           logs: [],
+          recentFailovers: [],
           bootstrapLogs: [],
           requestLogs: [],
           requestLogsLoadedAt: 0,
@@ -4132,6 +4156,7 @@
           keyIssueRoutingMode: "pool",
           keyIssueAccountId: "",
           keyIssueClientMode: "codex",
+          keyIssuePolicy: "standard",
           adminToken: "",
           encryptionKey: "",
         },
@@ -4214,6 +4239,7 @@
         ["keyUsageText", "ui.keyUsageText"],
         ["keyAccountSelection", "draft.keyIssueAccountId"],
         ["keyClientMode", "draft.keyIssueClientMode"],
+        ["keyPolicy", "draft.keyIssuePolicy"],
         ["adminToken", "draft.adminToken"],
         ["encryptionKey", "draft.encryptionKey"],
       ].forEach(([alias, path]) => defineStateAlias(S, alias, path));
@@ -4728,7 +4754,21 @@
         const hint = document.getElementById("keyAccountStateHint");
         if (!hint) return;
         const { routingMode, accountId } = getKeyIssueDraftSelection();
+        const keyPolicy = S.draft.keyIssuePolicy === "gpt55_xhigh" ? "gpt55_xhigh" : "standard";
         hint.classList.remove("is-error");
+        if (keyPolicy === "gpt55_xhigh") {
+          if (routingMode !== "single") {
+            hint.textContent = "当前为自动均流模式，请求会固定转发到 gpt-5.5 xhigh，并且仅使用可用的 Plus/Business 账号。";
+            return;
+          }
+          const fixedPolicyAccount = S.accounts.find((item) => item.id === accountId);
+          if (fixedPolicyAccount) {
+            const fixedPolicyName =
+              fixedPolicyAccount.displayName || fixedPolicyAccount.email || fixedPolicyAccount.accountId || fixedPolicyAccount.id;
+            hint.textContent = `当前绑定单账号：${fixedPolicyName}；请求将固定转发到 gpt-5.5 xhigh。`;
+            return;
+          }
+        }
         if (routingMode !== "single") {
           hint.textContent = "当前为自动均流模式，会在可用账号之间自动分配请求。";
           return;
@@ -5431,6 +5471,8 @@
       function drawStats() {
         const total = S.accounts.length;
         const apiCount = S.accounts.filter((a) => a.methodId === "api" || a.methodId === "api-key").length;
+        const freeCount = S.accounts.filter((a) => getAccountPlanBucket(a) === "free").length;
+        const businessCount = S.accounts.filter((a) => getAccountPlanBucket(a) === "business").length;
         const keyCount = S.virtualKeys.length;
         const abnormalCount = S.accounts.filter((a) => Boolean(normalizeAbnormalState(a))).length;
         const healthyCount = Math.max(0, total - abnormalCount);
@@ -5445,6 +5487,10 @@
         if (oauthEl) oauthEl.textContent = String(total - apiCount);
         const apiEl = document.getElementById("sApi");
         if (apiEl) apiEl.textContent = String(apiCount);
+        const freeEl = document.getElementById("sFree");
+        if (freeEl) freeEl.textContent = String(freeCount);
+        const businessEl = document.getElementById("sBusiness");
+        if (businessEl) businessEl.textContent = String(businessCount);
         const keysEl = document.getElementById("sKeys");
         if (keysEl) keysEl.textContent = String(keyCount);
         const healthyEl = document.getElementById("sHealthy");
@@ -5507,6 +5553,28 @@
         const amount = Number(value || 0);
         if (!Number.isFinite(amount) || amount <= 0) return "$0.00";
         return `$${amount.toFixed(amount >= 100 ? 0 : 2)}`;
+      }
+
+      function getAccountPlanLabel(account) {
+        return String(account?.quota?.planType || account?.chatgptPlanType || account?.metadata?.chatgptPlanType || "").trim();
+      }
+
+      function normalizeAccountPlanDisplayLabel(value) {
+        const label = String(value || "").trim();
+        if (!label) return "";
+        const normalized = label.toLowerCase();
+        if (normalized.includes("team") || normalized.includes("business") || normalized.includes("enterprise")) {
+          return "Business账号";
+        }
+        if (normalized.includes("free") || normalized.includes("trial") || normalized.includes("starter")) return "Free";
+        return label;
+      }
+
+      function getAccountPlanBucket(account) {
+        const normalized = getAccountPlanLabel(account).toLowerCase();
+        if (normalized.includes("team") || normalized.includes("business") || normalized.includes("enterprise")) return "business";
+        if (normalized.includes("free") || normalized.includes("trial") || normalized.includes("starter")) return "free";
+        return "other";
       }
 
       function coerceDashboardMetrics(metrics) {
@@ -6020,7 +6088,7 @@
                 label: `${account.displayName || account.email || account.accountId} (${account.providerName})`,
               }));
         const targetIds = targetOptions.map((item) => item.id);
-        const modelIds = S.models.map((item) => String(item || ""));
+        const modelIds = S.models.map((item) => String(item?.id || ""));
         const targetSignature = buildOptionSignature([S.testMode, ...targetIds]);
         const modelSignature = buildOptionSignature(modelIds);
         const targetFocused = shouldSkipSelectRebuild(accountSelect);
@@ -6370,7 +6438,50 @@
         const toLabel = formatAccountLogLabel(payload?.toAccountId);
         const reason = String(payload?.reason || "").trim() || "quota_exhausted";
         const sessionShort = sessionId.length > 16 ? `${sessionId.slice(0, 16)}...` : sessionId;
+        const record = { at: Date.now(), keyId, sessionId, fromLabel, toLabel, reason };
+        S.recentFailovers = [record, ...(Array.isArray(S.recentFailovers) ? S.recentFailovers : [])].slice(0, 5);
         log(`均流切换: Key=${keyId} 会话=${sessionShort} ${fromLabel} -> ${toLabel} (原因: ${reason})`, "warn");
+        renderTodayStats();
+        renderSettingsReadOnly();
+      }
+
+      function formatOfficialAssetsSummary(serviceSummary) {
+        const assets = serviceSummary?.officialAssets || null;
+        if (!assets) return "-";
+        return [`Version:${assets.clientVersionSource?.kind || "-"}`, `Prompt:${assets.promptSource?.kind || "-"}`, `Models:${assets.modelsSource?.kind || "-"}`].join(" · ");
+      }
+
+      function getRealtimeStatusLabel() {
+        if (S.usageEventReady) return "SSE 已连接";
+        if (S.usageFallbackActive) return "轮询刷新中";
+        if (S.service) return "未连接";
+        return "离线";
+      }
+
+      function getRecentFailoverSummary() {
+        const entries = Array.isArray(S.recentFailovers) ? S.recentFailovers : [];
+        if (entries.length === 0) return "最近 5 次均流切换：0";
+        const latest = entries[0];
+        return `最近 5 次均流切换：${entries.length} · 最近原因 ${latest.reason}`;
+      }
+
+      function getRoutingStateSummary(metrics) {
+        const eligible = Number(metrics?.accountsEligible || 0);
+        const softDrained = Number(metrics?.accountsSoftDrained || 0);
+        const excluded = Number(metrics?.accountsExcluded || 0);
+        return `可路由 ${eligible} · 软排水 ${softDrained} · 已排除 ${excluded}`;
+      }
+
+      function updateRuntimeObservabilityHints() {
+        const serviceSummary = S.settings.serviceStatusSummary || S.dashboardMetrics?.serviceStatusSummary || null;
+        const officialAssetsState = document.getElementById("settingsOfficialAssetsState");
+        if (officialAssetsState) officialAssetsState.textContent = formatOfficialAssetsSummary(serviceSummary);
+        const realtimeState = document.getElementById("settingsRealtimeState");
+        if (realtimeState) realtimeState.textContent = getRealtimeStatusLabel();
+        const failoverState = document.getElementById("settingsFailoverState");
+        if (failoverState) failoverState.textContent = getRecentFailoverSummary();
+        const routingState = document.getElementById("settingsRoutingState");
+        if (routingState) routingState.textContent = getRoutingStateSummary(S.dashboardMetrics || {});
       }
 
       async function loadRefreshTokenForAccount(id) {
@@ -6515,7 +6626,8 @@
 
         const primary = quota.primary?.primary || null;
         const secondary = quota.primary?.secondary || null;
-        if (!primary) return { text: "暂无", detail: quota.planType ? `套餐: ${quota.planType}` : "" };
+        const planLabel = normalizeAccountPlanDisplayLabel(quota.planType);
+        if (!primary) return { text: "暂无", detail: planLabel ? `套餐: ${planLabel}` : "" };
 
         const remain = Number(primary.remainingPercent);
         const primaryResetText = formatQuotaResetAt(primary.resetsAt);
@@ -6528,7 +6640,7 @@
         const secondaryDisplay = secondaryText ? (secondaryResetText ? `${secondaryText}(${secondaryResetText})` : secondaryText) : "";
 
         const detailParts = [];
-        if (quota.planType) detailParts.push(`套餐: ${quota.planType}`);
+        if (planLabel) detailParts.push(`套餐: ${planLabel}`);
         if (primaryResetText) detailParts.push(`主窗口: ${primaryResetText}`);
         if (secondaryResetText) detailParts.push(`次窗口: ${secondaryResetText}`);
         return {
@@ -7113,6 +7225,7 @@
           .map((row) => {
             const revealed = S.revealedKeys[row.id];
             const expired = isVirtualKeyExpired(row);
+            const fixedPolicy = getVirtualKeyFixedPolicyLabel(row);
             const status = row.isRevoked
               ? '<span class="muted">已吊销</span>'
               : expired
@@ -7122,7 +7235,10 @@
             const displayKey = revealed || maskedKey;
             return `
               <tr>
-                <td>${esc(row.name || "未命名 Key")}</td>
+                <td>
+                  <div>${esc(getVirtualKeyDisplayName(row))}</div>
+                  ${fixedPolicy ? `<div class="muted">Fixed: ${esc(fixedPolicy)}</div>` : ""}
+                </td>
                 <td>${esc(keyAccountLabel(row))}</td>
                 <td class="key-cell"><code>${esc(displayKey)}</code></td>
                 <td>${status}</td>
@@ -7271,6 +7387,8 @@
                 ...row,
                 clientMode: row?.clientMode ?? row?.client_mode ?? "codex",
                 wireApi: row?.wireApi ?? row?.wire_api ?? (row?.clientMode === "cursor" || row?.client_mode === "cursor" ? "chat_completions" : "responses"),
+                fixedModel: row?.fixedModel ?? row?.fixed_model ?? null,
+                fixedReasoningEffort: row?.fixedReasoningEffort ?? row?.fixed_reasoning_effort ?? null,
               }))
             : [];
           const validIds = new Set(S.virtualKeys.map((item) => item.id));
@@ -7326,7 +7444,7 @@
 
       function defaultChatModel() {
         const model = S.models.find((item) => item?.id);
-        return model?.id || "gpt-5.4";
+        return model?.id || S.defaultModelId || "gpt-5.5";
       }
 
       function toTomlString(value) {
@@ -7378,7 +7496,128 @@
         ].join("\r\n");
       }
 
-      function buildBasicSetupPowerShell(key, apiBase) {
+      const CODEX_GATEWAY_MODEL_REASONING_LEVELS = [
+        { effort: "low", description: "Fast responses with lighter reasoning" },
+        { effort: "medium", description: "Balances speed and reasoning depth for everyday tasks" },
+        { effort: "high", description: "Greater reasoning depth for complex problems" },
+        { effort: "xhigh", description: "Extra high reasoning depth for complex problems" },
+      ];
+
+      function buildCodexGatewayModelInfo(id, displayName, priority, defaultReasoningLevel, additionalSpeedTiers = []) {
+        return {
+          slug: id,
+          id,
+          object: "model",
+          created: 0,
+          owned_by: "openai",
+          display_name: displayName,
+          description: `${displayName} via Codex Gateway`,
+          default_reasoning_level: defaultReasoningLevel,
+          supported_reasoning_levels: CODEX_GATEWAY_MODEL_REASONING_LEVELS,
+          shell_type: "shell_command",
+          visibility: "list",
+          supported_in_api: true,
+          priority,
+          additional_speed_tiers: additionalSpeedTiers,
+          additionalSpeedTiers,
+          availability_nux: null,
+          upgrade: null,
+          base_instructions: "",
+          supports_reasoning_summaries: true,
+          default_reasoning_summary: "none",
+          support_verbosity: true,
+          default_verbosity: "low",
+          apply_patch_tool_type: "freeform",
+          web_search_tool_type: "text_and_image",
+          truncation_policy: { mode: "tokens", limit: 10000 },
+          supports_parallel_tool_calls: true,
+          supports_image_detail_original: true,
+          context_window: 272000,
+          max_context_window: id === "gpt-5.4" ? 1000000 : 272000,
+          effective_context_window_percent: 95,
+          experimental_supported_tools: [],
+          input_modalities: ["text", "image"],
+          supports_search_tool: true,
+        };
+      }
+
+      const CODEX_GATEWAY_MODEL_CATALOG = {
+        "gpt-5.5": buildCodexGatewayModelInfo("gpt-5.5", "GPT-5.5", 0, "xhigh", ["fast"]),
+        "gpt-5.4": buildCodexGatewayModelInfo("gpt-5.4", "GPT-5.4", 1, "medium", ["fast"]),
+        "gpt-5.4-mini": buildCodexGatewayModelInfo("gpt-5.4-mini", "GPT-5.4-Mini", 2, "medium", []),
+        "gpt-5.3-codex": buildCodexGatewayModelInfo("gpt-5.3-codex", "GPT-5.3 Codex", 3, "medium", []),
+        "gpt-5.2": buildCodexGatewayModelInfo("gpt-5.2", "GPT-5.2", 4, "medium", []),
+      };
+
+      function buildCodexGatewayModelCatalog(row) {
+        const fixedModel = String(row?.fixedModel || row?.fixed_model || "").trim();
+        if (fixedModel) {
+          const known = CODEX_GATEWAY_MODEL_CATALOG[fixedModel];
+          return { models: [known || buildCodexGatewayModelInfo(fixedModel, fixedModel, 0, "medium", [])] };
+        }
+        return { models: Object.values(CODEX_GATEWAY_MODEL_CATALOG) };
+      }
+
+      function buildCodexModelCatalogPowerShellLines(row) {
+        const catalogJson = JSON.stringify(buildCodexGatewayModelCatalog(row), null, 2);
+        return [
+          "$modelCatalogFile = Join-Path $codexHome 'codex-gateway-models.json'",
+          "$modelCatalogBackup = Join-Path $codexHome ('codex-gateway-models.backup.' + $timestamp + '.json')",
+          "if (Test-Path $modelCatalogFile) { Copy-Item -Force $modelCatalogFile $modelCatalogBackup }",
+          "$modelCatalogPayload = @'",
+          catalogJson,
+          "'@",
+          "$modelCatalogTomlPath = $modelCatalogFile.Replace('\\', '\\\\').Replace('\"', '\\\"')",
+          "$modelCatalogLine = 'model_catalog_json = \"' + $modelCatalogTomlPath + '\"'",
+          "$cfg = [System.Text.RegularExpressions.Regex]::Replace($cfg, '(?m)^[ \\t]*model_catalog_json\\s*=.*(?:\\r?\\n)?', '')",
+          "$cfg = $cfg.TrimStart(\"`r\", \"`n\")",
+          "if ([string]::IsNullOrWhiteSpace($cfg)) { $cfg = $credentialStoreLine + [Environment]::NewLine + $cfgLine + [Environment]::NewLine + $modelCatalogLine + [Environment]::NewLine } else { $cfg = $credentialStoreLine + [Environment]::NewLine + $cfgLine + [Environment]::NewLine + $modelCatalogLine + [Environment]::NewLine + $cfg }",
+          "[System.IO.File]::WriteAllText($modelCatalogFile, $modelCatalogPayload + [Environment]::NewLine, $utf8NoBom)",
+        ];
+      }
+
+      function buildCodexFastModeFeaturePowerShellLines() {
+        return [
+          "$configLines = [System.Collections.Generic.List[string]]::new()",
+          "foreach ($line in ($cfg -split \"`r?`n\")) { [void]$configLines.Add($line) }",
+          "$featuresIndex = -1",
+          "for ($i = 0; $i -lt $configLines.Count; $i++) { if ($configLines[$i] -match '^\\s*\\[features\\]\\s*$') { $featuresIndex = $i; break } }",
+          "if ($featuresIndex -ge 0) {",
+          "  $nextSection = $configLines.Count",
+          "  for ($j = $featuresIndex + 1; $j -lt $configLines.Count; $j++) { if ($configLines[$j] -match '^\\s*\\[') { $nextSection = $j; break } }",
+          "  $fastIndex = -1",
+          "  for ($j = $featuresIndex + 1; $j -lt $nextSection; $j++) { if ($configLines[$j] -match '^\\s*fast_mode\\s*=') { $fastIndex = $j; break } }",
+          "  if ($fastIndex -ge 0) { $configLines[$fastIndex] = 'fast_mode = true' } else { $configLines.Insert($featuresIndex + 1, 'fast_mode = true') }",
+          "} else {",
+          "  if ($configLines.Count -gt 0 -and -not [string]::IsNullOrWhiteSpace($configLines[$configLines.Count - 1])) { [void]$configLines.Add('') }",
+          "  [void]$configLines.Add('[features]')",
+          "  [void]$configLines.Add('fast_mode = true')",
+          "}",
+          "$cfg = ($configLines -join [Environment]::NewLine).TrimStart(\"`r\", \"`n\") + [Environment]::NewLine",
+        ];
+      }
+
+      function buildCodexGatewayChatGptShimAuthPowerShellLines() {
+        const shimIdToken =
+          "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJlbWFpbCI6ImNvZGV4LWdhdGV3YXlAbG9jYWwiLCJodHRwczovL2FwaS5vcGVuYWkuY29tL3Byb2ZpbGUiOnsiZW1haWwiOiJjb2RleC1nYXRld2F5QGxvY2FsIn0sImh0dHBzOi8vYXBpLm9wZW5haS5jb20vYXV0aCI6eyJjaGF0Z3B0X2FjY291bnRfaWQiOiJjb2RleC1nYXRld2F5IiwiY2hhdGdwdF9wbGFuX3R5cGUiOiJwbHVzIiwiY2hhdGdwdF91c2VyX2lkIjoiY29kZXgtZ2F0ZXdheSIsImNoYXRncHRfYWNjb3VudF9pc19mZWRyYW1wIjpmYWxzZX19.codexgateway";
+        return [
+          `$gatewayShimIdToken = '${shimIdToken}'`,
+          "$authObj = [ordered]@{",
+          "  auth_mode = 'chatgpt'",
+          "  OPENAI_API_KEY = $null",
+          "  tokens = [ordered]@{",
+          "    id_token = $gatewayShimIdToken",
+          "    access_token = $key",
+          "    refresh_token = 'codex-gateway-no-refresh'",
+          "    account_id = 'codex-gateway'",
+          "  }",
+          "  last_refresh = (Get-Date).ToUniversalTime().AddYears(10).ToString('o')",
+          "}",
+          "$authJson = ($authObj | ConvertTo-Json -Depth 8) + [Environment]::NewLine",
+        ];
+      }
+
+      function buildBasicSetupPowerShell(key, apiBase, row = null) {
         const escapedKey = toPowerShellSingleQuoted(key);
         const escapedApiBase = toPowerShellSingleQuoted(apiBase);
         return [
@@ -7388,6 +7627,7 @@
           "$codexHome = Join-Path $env:USERPROFILE '.codex'",
           "$configFile = Join-Path $codexHome 'config.toml'",
           "$authFile = Join-Path $codexHome 'auth.json'",
+          "$modelCatalogFile = Join-Path $codexHome 'codex-gateway-models.json'",
           "$launcherFile = Join-Path $codexHome 'codex-gateway.cmd'",
           "$startMenuShortcut = Join-Path $env:APPDATA 'Microsoft\\Windows\\Start Menu\\Programs\\Codex Gateway.lnk'",
           "$desktopShortcut = Join-Path $env:USERPROFILE 'Desktop\\Codex Gateway.lnk'",
@@ -7397,27 +7637,29 @@
           "$authBackup = Join-Path $codexHome ('auth.backup.' + $timestamp + '.json')",
           "if (Test-Path $configFile) { Copy-Item -Force $configFile $configBackup }",
           "if (Test-Path $authFile) { Copy-Item -Force $authFile $authBackup }",
+          "$credentialStoreLine = 'cli_auth_credentials_store = \"file\"'",
           "$cfgLine = 'openai_base_url = \"' + $apiBase + '\"'",
           "$cfg = ''",
           "if (Test-Path $configFile) { $cfg = [System.IO.File]::ReadAllText($configFile) }",
           "$cfg = [System.Text.RegularExpressions.Regex]::Replace($cfg, '(?m)^[ \\t]*openai_base_url\\s*=.*(?:\\r?\\n)?', '')",
-          "$cfg = $cfg.TrimStart(\"`r\", \"`n\")",
-          "if ([string]::IsNullOrWhiteSpace($cfg)) { $cfg = $cfgLine + [Environment]::NewLine } else { $cfg = $cfgLine + [Environment]::NewLine + $cfg }",
-          "$authObj = @{ auth_mode = 'apikey'; OPENAI_API_KEY = $key }",
-          "$authJson = ($authObj | ConvertTo-Json -Depth 5) + [Environment]::NewLine",
+          "$cfg = [System.Text.RegularExpressions.Regex]::Replace($cfg, '(?m)^[ \\t]*cli_auth_credentials_store\\s*=.*(?:\\r?\\n)?', '')",
           "$utf8NoBom = New-Object System.Text.UTF8Encoding($false)",
+          ...buildCodexGatewayChatGptShimAuthPowerShellLines(),
+          ...buildCodexModelCatalogPowerShellLines(row),
+          ...buildCodexFastModeFeaturePowerShellLines(),
           "[System.IO.File]::WriteAllText($configFile, $cfg, $utf8NoBom)",
           "[System.IO.File]::WriteAllText($authFile, $authJson, $utf8NoBom)",
           "foreach ($path in @($launcherFile, $startMenuShortcut, $desktopShortcut)) { if (Test-Path $path) { Remove-Item -Force $path -ErrorAction SilentlyContinue } }",
           "Write-Host '[OK] Updated official-style Codex files:'",
           "Write-Host ('  Config : ' + $configFile)",
           "Write-Host ('  Auth   : ' + $authFile)",
+          "Write-Host ('  Models : ' + $modelCatalogFile)",
           "Write-Host '[OK] Removed any prior gateway-only launcher shortcuts for this user.'",
           "Write-Host '[INFO] Launch Codex normally from its original icon or command.'",
         ].join('\n');
       }
 
-      function buildGatewaySetupPowerShell(key, apiBase) {
+      function buildGatewaySetupPowerShell(key, apiBase, row = null) {
         const escapedKey = toPowerShellSingleQuoted(key);
         const escapedApiBase = toPowerShellSingleQuoted(apiBase);
         return [
@@ -7436,14 +7678,12 @@
           "$authBackup = Join-Path $codexHome ('auth.backup.' + $timestamp + '.json')",
           "if (Test-Path $configFile) { Copy-Item -Force $configFile $configBackup }",
           "if (Test-Path $authFile) { Copy-Item -Force $authFile $authBackup }",
+          "$credentialStoreLine = 'cli_auth_credentials_store = \"file\"'",
           "$cfgLine = 'openai_base_url = \"' + $apiBase + '\"'",
           "$cfg = ''",
           "if (Test-Path $configFile) { $cfg = [System.IO.File]::ReadAllText($configFile) }",
           "$cfg = [System.Text.RegularExpressions.Regex]::Replace($cfg, '(?m)^[ \\t]*openai_base_url\\s*=.*(?:\\r?\\n)?', '')",
-          "$cfg = $cfg.TrimStart(\"`r\", \"`n\")",
-          "if ([string]::IsNullOrWhiteSpace($cfg)) { $cfg = $cfgLine + [Environment]::NewLine } else { $cfg = $cfgLine + [Environment]::NewLine + $cfg }",
-          "$authObj = @{ auth_mode = 'apikey'; OPENAI_API_KEY = $key }",
-          "$authJson = ($authObj | ConvertTo-Json -Depth 5) + [Environment]::NewLine",
+          "$cfg = [System.Text.RegularExpressions.Regex]::Replace($cfg, '(?m)^[ \\t]*cli_auth_credentials_store\\s*=.*(?:\\r?\\n)?', '')",
           "$gatewayHost = ''",
           "try { $uri = [Uri]$apiBase; if ($uri.Host) { $gatewayHost = $uri.Host } } catch {}",
           "$noProxyValues = New-Object 'System.Collections.Generic.List[string]'",
@@ -7464,6 +7704,9 @@
           ")",
           "$launcher = [string]::Join([Environment]::NewLine, $launcherLines)",
           "$utf8NoBom = New-Object System.Text.UTF8Encoding($false)",
+          ...buildCodexGatewayChatGptShimAuthPowerShellLines(),
+          ...buildCodexModelCatalogPowerShellLines(row),
+          ...buildCodexFastModeFeaturePowerShellLines(),
           "[System.IO.File]::WriteAllText($configFile, $cfg, $utf8NoBom)",
           "[System.IO.File]::WriteAllText($authFile, $authJson, $utf8NoBom)",
           "[System.IO.File]::WriteAllText($launcherFile, $launcher, $utf8NoBom)",
@@ -7480,6 +7723,7 @@
           "Write-Host '[OK] Updated official-style Codex files:'",
           "Write-Host ('  Config : ' + $configFile)",
           "Write-Host ('  Auth   : ' + $authFile)",
+          "Write-Host ('  Models : ' + $modelCatalogFile)",
           "Write-Host ('  Launcher: ' + $launcherFile)",
           "Write-Host ('  Start Menu Shortcut: ' + $startMenuShortcut)",
           "Write-Host ('  Desktop Shortcut   : ' + $desktopShortcut)",
@@ -7522,7 +7766,13 @@
           "  Write-Host ('[WARN] No auth backup found under ' + $codexHome)",
           "  $restoreWarn = $true",
           "}",
-          "foreach ($path in @($launcherFile, $startMenuShortcut, $desktopShortcut)) { if (Test-Path $path) { Remove-Item -Force $path -ErrorAction SilentlyContinue } }",
+          "if (Test-Path $configFile) {",
+          "  $cfg = [System.IO.File]::ReadAllText($configFile)",
+          "  $cfg = [System.Text.RegularExpressions.Regex]::Replace($cfg, '(?m)^[ \\t]*model_catalog_json\\s*=.*(?:\\r?\\n)?', '')",
+          "  $utf8NoBom = New-Object System.Text.UTF8Encoding($false)",
+          "  [System.IO.File]::WriteAllText($configFile, $cfg, $utf8NoBom)",
+          "}",
+          "foreach ($path in @($launcherFile, $startMenuShortcut, $desktopShortcut, $modelCatalogFile)) { if (Test-Path $path) { Remove-Item -Force $path -ErrorAction SilentlyContinue } }",
           "foreach ($name in @('OPENAI_BASE_URL', 'OPENAI_API_BASE', 'OPENAI_API_KEY', 'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY')) {",
           "  Remove-ItemProperty -Path 'HKCU:\\Environment' -Name $name -ErrorAction SilentlyContinue",
           "}",
@@ -7574,27 +7824,77 @@
         ].join('\n');
       }
 
-      function buildBasicConfigSwitchCmd(key, apiBase) {
-        return buildPowerShellBatchScript(buildBasicSetupPowerShell(key, apiBase), "[ERROR] Failed to update Codex files.");
+      function buildCodexDirectConfigurePowerShell(apiBase, row = null) {
+        const serviceBase = String(apiBase || "").replace(/\/v1\/?$/, "");
+        const keyId = String(row?.id || "").trim();
+        return [
+          "$ErrorActionPreference = 'Stop'",
+          `$serviceBase = '${toPowerShellSingleQuoted(serviceBase)}'`,
+          `$apiBase = '${toPowerShellSingleQuoted(apiBase)}'`,
+          `$keyId = '${toPowerShellSingleQuoted(keyId)}'`,
+          "if ([string]::IsNullOrWhiteSpace($keyId)) { throw 'Virtual key id is missing.' }",
+          "$endpoint = $serviceBase.TrimEnd('/') + '/api/virtual-keys/' + [uri]::EscapeDataString($keyId) + '/configure-codex'",
+          "$body = @{ apiBase = $apiBase; restartCodexApp = $true } | ConvertTo-Json -Compress",
+          "$result = Invoke-RestMethod -Method Post -Uri $endpoint -ContentType 'application/json' -Body $body",
+          "Write-Host '[OK] Codex direct configuration completed through Codex Gateway.'",
+          "Write-Host ('  API Base: ' + $apiBase)",
+          "Write-Host ('  Config : ' + $result.configPath)",
+          "Write-Host ('  Auth   : ' + $result.authPath)",
+          "Write-Host ('  Models : ' + $result.modelCatalogPath)",
+        ].join('\n');
       }
 
-      function buildGatewayConfigSwitchCmd(key, apiBase) {
-        return buildPowerShellBatchScript(buildGatewaySetupPowerShell(key, apiBase), "[ERROR] Failed to update Codex gateway launcher files.");
+      function buildBasicConfigSwitchCmd(key, apiBase, row = null) {
+        return buildPowerShellBatchScript(buildCodexDirectConfigurePowerShell(apiBase, row), "[ERROR] Failed to update Codex files.");
+      }
+
+      function buildGatewayConfigSwitchCmd(key, apiBase, row = null) {
+        return buildPowerShellBatchScript(buildCodexDirectConfigurePowerShell(apiBase, row), "[ERROR] Failed to update Codex gateway launcher files.");
       }
 
       function buildConfigRestoreCmd() {
         return buildPowerShellBatchScript(buildRestorePowerShell(), "[ERROR] Restore command failed.");
       }
 
+      function formatReasoningEffortLabel(value) {
+        const normalized = String(value || "").trim().toLowerCase();
+        if (!normalized) return "";
+        const labels = {
+          low: "Low",
+          medium: "Medium",
+          high: "High",
+          xhigh: "XHigh",
+        };
+        return labels[normalized] || normalized.toUpperCase();
+      }
+
+      function getVirtualKeyFixedPolicyLabel(row) {
+        const fixedModel = String(row?.fixedModel ?? row?.fixed_model ?? "").trim();
+        const fixedReasoningEffort = formatReasoningEffortLabel(row?.fixedReasoningEffort ?? row?.fixed_reasoning_effort);
+        return [fixedModel, fixedReasoningEffort].filter(Boolean).join(" ");
+      }
+
+      function getVirtualKeyDisplayName(row) {
+        const explicitName = String(row?.name || "").trim();
+        if (explicitName) return explicitName;
+        const fixedPolicy = getVirtualKeyFixedPolicyLabel(row);
+        if (!fixedPolicy) return "未命名 Key";
+        const clientPrefix = row?.clientMode === "cursor" ? "Cursor fixed" : "Codex fixed";
+        return `${clientPrefix} ${fixedPolicy}`;
+      }
+
       function getVirtualKeyClientModeLabel(row) {
-        return row?.clientMode === "cursor" ? "Cursor Key" : "Codex Key";
+        const base = row?.clientMode === "cursor" ? "Cursor Key" : "Codex Key";
+        const fixedPolicy = getVirtualKeyFixedPolicyLabel(row);
+        return fixedPolicy ? `${base} · ${fixedPolicy}` : base;
       }
 
       function buildKeyUsageText(mode, row, key) {
         const base = activeServiceBaseUrl();
         const apiBase = `${base}/v1`;
         const cursorApiBase = `${base}/cursor/v1`;
-        const modelId = defaultChatModel();
+        const modelId = row?.fixedModel || row?.fixed_model || defaultChatModel();
+        const fixedPolicy = getVirtualKeyFixedPolicyLabel(row);
         const keyLabel = row?.name || row?.keyPrefix || row?.id || "铏氭嫙Key";
         if (mode === "restore-cmd") {
           return buildConfigRestoreCmd();
@@ -7626,11 +7926,11 @@
         ].join("\n");
 
         if (mode === "config-cmd-basic") {
-          return buildBasicConfigSwitchCmd(key, apiBase);
+          return buildBasicConfigSwitchCmd(key, apiBase, row);
         }
 
         if (mode === "config-cmd-gateway") {
-          return buildGatewayConfigSwitchCmd(key, apiBase);
+          return buildGatewayConfigSwitchCmd(key, apiBase, row);
         }
 
         if (mode === "config") {
@@ -7985,8 +8285,11 @@
         const keyValidityInput = document.getElementById("keyValidityDays");
         const issueButton = document.getElementById("issueKey");
         const keyClientModeInput = document.getElementById("keyClientMode");
-        const keyName = keyNameInput?.value?.trim() || undefined;
+        const keyPolicyInput = document.getElementById("keyPolicy");
+        const keyPolicyLabel = keyPolicy === "gpt55_xhigh" ? "gpt-5.5 XHigh" : "";
+        const keyName = keyNameInput?.value?.trim() || (keyPolicyLabel ? `Codex fixed ${keyPolicyLabel}` : undefined);
         const clientMode = keyClientModeInput?.value === "cursor" ? "cursor" : "codex";
+        const keyPolicy = keyPolicyInput?.value === "gpt55_xhigh" ? "gpt55_xhigh" : "standard";
         const wireApi = clientMode === "cursor" ? "chat_completions" : "responses";
         const routeLabel = clientMode === "cursor" ? "Cursor 兼容链路" : "Codex 官方链路";
         const validityDaysRaw = keyValidityInput?.value?.trim() ?? "30";
@@ -8023,6 +8326,8 @@
                 clientMode,
                 wireApi,
                 name: keyName,
+                fixedModel: keyPolicy === "gpt55_xhigh" ? "gpt-5.5" : null,
+                fixedReasoningEffort: keyPolicy === "gpt55_xhigh" ? "xhigh" : null,
                 validityDays,
               }),
             });
@@ -8031,14 +8336,16 @@
             }
             const issuedBox = document.getElementById("issuedKeyBox");
             if (issuedBox) {
-              issuedBox.textContent = output?.key || "生成成功，但没有返回完整 Key。";
+              issuedBox.innerHTML = output?.key
+                ? `${keyPolicyLabel ? `<div class="muted">Fixed: ${esc(keyPolicyLabel)}</div>` : ""}<code>${esc(output.key)}</code>`
+                : "生成成功，但没有返回完整 Key。";
             }
             if (keyNameInput) keyNameInput.value = "";
             if (keyValidityInput) keyValidityInput.value = "30";
             setKeyIssueDraft(routingMode, accountId);
             await loadVirtualKeys();
             renderKeyAccountStateHint();
-            log("虚拟 Key 已生成（" + routeLabel + "）");
+            log("虚拟 Key 已生成（" + routeLabel + (keyPolicyLabel ? ` · Fixed ${keyPolicyLabel}` : "") + "）");
             showToast("虚拟 Key 已生成", "success");
           },
           {
@@ -8508,9 +8815,120 @@
         };
       }
 
+      function normalizeChatModelOption(item) {
+        if (typeof item === "string") {
+          return {
+            id: item,
+            displayName: item,
+            description: "",
+            visibility: "list",
+            supportedInApi: true,
+            defaultReasoningLevel: "medium",
+            supportedReasoningLevels: [],
+            supportsParallelToolCalls: true,
+            supportsReasoningSummaries: true,
+            supportVerbosity: false,
+            defaultVerbosity: null,
+            defaultReasoningSummary: null,
+            reasoningSummaryFormat: null,
+            preferWebsockets: false,
+            minimalClientVersion: null,
+            contextWindow: null,
+            maxContextWindow: null,
+            inputModalities: [],
+            truncationPolicy: null,
+            autoCompactTokenLimit: null,
+            supportsImageDetailOriginal: false,
+            applyPatchToolType: null,
+            webSearchToolType: null,
+            shellType: null,
+            availabilityNux: null,
+            upgrade: null,
+            priority: null,
+            additionalSpeedTiers: [],
+            availableInPlans: [],
+            supportsSearchTool: false,
+          };
+        }
+        if (item && typeof item === "object") {
+          const id = String(item.id || "").trim();
+          if (!id) return null;
+          return {
+            id,
+            displayName: String(item.displayName || item.display_name || id).trim() || id,
+            description: String(item.description || "").trim(),
+            visibility: String(item.visibility || "list").trim() || "list",
+            supportedInApi: item.supportedInApi !== false && item.supported_in_api !== false,
+            defaultReasoningLevel: String(item.defaultReasoningLevel || item.default_reasoning_level || "medium").trim() || "medium",
+            supportedReasoningLevels: Array.isArray(item.supportedReasoningLevels)
+              ? item.supportedReasoningLevels.map((value) => String(value)).filter(Boolean)
+              : Array.isArray(item.supported_reasoning_levels)
+                ? item.supported_reasoning_levels.map((value) => String(value?.effort || value)).filter(Boolean)
+                : [],
+            supportsParallelToolCalls: item.supportsParallelToolCalls !== false && item.supports_parallel_tool_calls !== false,
+            supportsReasoningSummaries: item.supportsReasoningSummaries !== false && item.supports_reasoning_summaries !== false,
+            supportVerbosity: item.supportVerbosity !== false && item.support_verbosity !== false,
+            defaultVerbosity: item.defaultVerbosity ?? item.default_verbosity ?? null,
+            defaultReasoningSummary: item.defaultReasoningSummary ?? item.default_reasoning_summary ?? null,
+            reasoningSummaryFormat: item.reasoningSummaryFormat ?? item.reasoning_summary_format ?? null,
+            preferWebsockets: item.preferWebsockets !== false && item.prefer_websockets !== false,
+            minimalClientVersion: item.minimalClientVersion ?? item.minimal_client_version ?? null,
+            contextWindow: Number.isFinite(Number(item.contextWindow ?? item.context_window))
+              ? Math.max(0, Math.floor(Number(item.contextWindow ?? item.context_window)))
+              : null,
+            maxContextWindow: Number.isFinite(Number(item.maxContextWindow ?? item.max_context_window))
+              ? Math.max(0, Math.floor(Number(item.maxContextWindow ?? item.max_context_window)))
+              : null,
+            inputModalities: Array.isArray(item.inputModalities)
+              ? item.inputModalities.map((value) => String(value)).filter(Boolean)
+              : Array.isArray(item.input_modalities)
+                ? item.input_modalities.map((value) => String(value)).filter(Boolean)
+                : [],
+            truncationPolicy:
+              item.truncationPolicy && typeof item.truncationPolicy === "object"
+                ? item.truncationPolicy
+                : item.truncation_policy && typeof item.truncation_policy === "object"
+                  ? item.truncation_policy
+                  : null,
+            autoCompactTokenLimit:
+              item.autoCompactTokenLimit ?? item.auto_compact_token_limit ?? null,
+            supportsImageDetailOriginal:
+              item.supportsImageDetailOriginal === true || item.supports_image_detail_original === true,
+            applyPatchToolType: item.applyPatchToolType ?? item.apply_patch_tool_type ?? null,
+            webSearchToolType: item.webSearchToolType ?? item.web_search_tool_type ?? null,
+            shellType: item.shellType ?? item.shell_type ?? null,
+            availabilityNux:
+              item.availabilityNux && typeof item.availabilityNux === "object"
+                ? item.availabilityNux
+                : item.availability_nux && typeof item.availability_nux === "object"
+                  ? item.availability_nux
+                  : null,
+            upgrade:
+              item.upgrade && typeof item.upgrade === "object"
+                ? item.upgrade
+                : null,
+            priority: Number.isFinite(Number(item.priority)) ? Math.max(0, Math.floor(Number(item.priority))) : null,
+            additionalSpeedTiers: Array.isArray(item.additionalSpeedTiers)
+              ? item.additionalSpeedTiers
+              : Array.isArray(item.additional_speed_tiers)
+                ? item.additional_speed_tiers
+                : [],
+            availableInPlans: Array.isArray(item.availableInPlans)
+              ? item.availableInPlans
+              : Array.isArray(item.available_in_plans)
+                ? item.available_in_plans
+                : [],
+            supportsSearchTool: item.supportsSearchTool === true || item.supports_search_tool === true,
+          };
+        }
+        return null;
+      }
+
       async function loadModels() {
-        const { models } = await api("/api/chat/models");
+        const output = await api("/api/chat/models");
+        const models = Array.isArray(output?.models) ? output.models.map((item) => normalizeChatModelOption(item)).filter(Boolean) : [];
         S.models = models;
+        S.defaultModelId = String(output?.defaultModelId || models[0]?.id || "gpt-5.5");
         fillTestSelectors();
         drawTestChatLog();
       }
@@ -8788,10 +9206,10 @@
                       <th>时间</th>
                       <th>方法 / 路径</th>
                       <th>账号 / 密钥</th>
-                      <th>模型 / 推理</th>
+                      <th>模型 / 推理强度</th>
                       <th>状态</th>
                       <th>耗时</th>
-                      <th>Token</th>
+                      <th>Token 明细</th>
                       <th>预计费用</th>
                       <th>错误</th>
                     </tr>
@@ -8901,6 +9319,7 @@
               <div class="info-item"><span>统计时区</span><strong id="settingsStatTimezone">-</strong></div>
               <div class="info-item"><span>价格模式</span><strong id="settingsStatPricingMode">-</strong></div>
               <div class="info-item"><span>价格表版本</span><strong id="settingsStatCatalogVersion">-</strong></div>
+              <div class="info-item"><span>官方资产来源</span><strong id="settingsOfficialAssetsState">-</strong></div>
               <div class="info-item"><span>今日令牌</span><strong id="settingsStatTodayTokens">0</strong></div>
               <div class="info-item"><span>缓存令牌</span><strong id="settingsStatCachedTokens">0</strong></div>
               <div class="info-item"><span>推理令牌</span><strong id="settingsStatReasoningTokens">0</strong></div>
@@ -8920,6 +9339,8 @@
             <div class="settings-kv">
               <div class="settings-kv-row"><span>同步状态</span><strong id="settingsSyncState">同步中</strong></div>
               <div class="settings-kv-row"><span>实时事件通道</span><strong id="settingsRealtimeState">未连接</strong></div>
+              <div class="settings-kv-row"><span>均流切换摘要</span><strong id="settingsFailoverState">最近 5 次均流切换：0</strong></div>
+              <div class="settings-kv-row"><span>路由状态摘要</span><strong id="settingsRoutingState">可路由 0 · 软排水 0 · 已排除 0</strong></div>
               <div class="settings-kv-row"><span>请求日志刷新</span><strong id="settingsRequestLogState">未加载</strong></div>
               <div class="settings-kv-row"><span>系统日志条数</span><strong id="settingsSystemLogState">0</strong></div>
               <div class="settings-kv-row"><span>是否需重启</span><strong id="settingsRestartState">是</strong></div>
@@ -9095,7 +9516,7 @@
           if (S.ui.currentView === "logs" && S.logsTab === "requests" && !S.requestLogLoading) {
             void loadRequestLogs({ silent: true });
           }
-        }, 5000);
+        }, 2000);
       }
 
       async function loadDashboardMetrics(options = {}) {
@@ -9259,6 +9680,35 @@
         if (S.requestLogPage > totalPages) S.requestLogPage = totalPages;
         if (S.requestLogPage < 1) S.requestLogPage = 1;
         const pageRows = Array.isArray(S.requestLogs) ? S.requestLogs : [];
+        const formatRequestReasoningLabel = (value) => {
+          const normalized = String(value || "").trim();
+          return normalized ? `强度 ${normalized}` : "未记录";
+        };
+        const renderRequestTokenBreakdown = (row) => {
+          const inputTokens = Math.max(0, Math.floor(Number(row?.inputTokens || 0)));
+          const cachedTokens = Math.max(0, Math.floor(Number(row?.cachedInputTokens || 0)));
+          const outputTokens = Math.max(0, Math.floor(Number(row?.outputTokens || 0)));
+          const totalCandidate = Math.max(0, Math.floor(Number(row?.totalTokens || 0)));
+          const totalTokens = totalCandidate > 0 ? totalCandidate : inputTokens + outputTokens;
+          const explicitBillableTokens = Math.max(0, Math.floor(Number(row?.billableTokens || 0)));
+          const billableTokens = explicitBillableTokens > 0 ? explicitBillableTokens : Math.max(0, inputTokens - cachedTokens) + outputTokens;
+          const reasoningTokens = Math.max(0, Math.floor(Number(row?.reasoningOutputTokens || 0)));
+          const hasTokenMetrics =
+            totalTokens > 0 ||
+            inputTokens > 0 ||
+            outputTokens > 0 ||
+            cachedTokens > 0 ||
+            billableTokens > 0 ||
+            reasoningTokens > 0;
+          if (!hasTokenMetrics) return "-";
+          const primaryLine = `总 ${formatCompactNumber(totalTokens)} · 输入 ${formatCompactNumber(inputTokens)} · 输出 ${formatCompactNumber(outputTokens)}`;
+          const secondaryParts = [
+            `缓存输入 ${formatCompactNumber(cachedTokens)}`,
+            `计费 ${formatCompactNumber(billableTokens)}`,
+          ];
+          if (reasoningTokens > 0) secondaryParts.push(`推理输出 ${formatCompactNumber(reasoningTokens)}`);
+          return `<div>${esc(primaryLine)}</div><div class="muted">${esc(secondaryParts.join(" · "))}</div>`;
+        };
 
         if (S.requestLogBusyVisible && !pageRows.length) {
           tbody.innerHTML = '<tr><td colspan="9" class="table-placeholder">正在同步请求日志...</td></tr>';
@@ -9273,21 +9723,16 @@
               const model = String(row?.model || "").trim() || "-";
               const reasoningEffort = String(row?.reasoningEffort || "").trim();
               const errorText = String(row?.error || "").trim();
-              const totalTokens = Math.max(0, Math.floor(Number(row?.totalTokens || 0)));
-              const inputTokens = Math.max(0, Math.floor(Number(row?.inputTokens || 0)));
-              const cachedTokens = Math.max(0, Math.floor(Number(row?.cachedInputTokens || 0)));
-              const tokenText = totalTokens > 0 || inputTokens > 0 || cachedTokens > 0
-                ? `${formatCompactNumber(totalTokens)} / ${formatCompactNumber(inputTokens)} / ${formatCompactNumber(cachedTokens)}`
-                : "-";
+              const tokenBreakdown = renderRequestTokenBreakdown(row);
               return `
                 <tr>
                   <td>${esc(dt(row?.at))}</td>
                   <td><div><strong>${esc(String(row?.method || "-").toUpperCase())}</strong></div><div class="muted">${esc(String(row?.route || "-"))}</div></td>
                   <td><div>${esc(formatRequestLogAccount(row?.accountId))}</div><div class="muted">${esc(formatRequestLogKey(row?.virtualKeyId))}</div></td>
-                  <td><div>${esc(model)}</div><div class="muted">${esc(reasoningEffort || "-")}</div></td>
+                  <td><div>${esc(model)}</div><div class="muted">${esc(formatRequestReasoningLabel(reasoningEffort))}</div></td>
                   <td><span class="${statusMeta.className}">${esc(statusMeta.text)}</span></td>
                   <td>${esc(formatLatencyMs(row?.latencyMs))}</td>
-                  <td class="mono">${esc(tokenText)}</td>
+                  <td class="mono">${tokenBreakdown}</td>
                   <td class="mono">${esc(row?.estimatedCostUsd === null || row?.estimatedCostUsd === undefined ? "-" : formatUsd(row?.estimatedCostUsd))}</td>
                   <td class="request-error" title="${esc(errorText)}">${esc(errorText || "-")}</td>
                 </tr>
@@ -9354,6 +9799,7 @@
                 cachedInputTokens: Math.max(0, Math.floor(Number(item?.cachedInputTokens || 0))),
                 outputTokens: Math.max(0, Math.floor(Number(item?.outputTokens || 0))),
                 totalTokens: Math.max(0, Math.floor(Number(item?.totalTokens || 0))),
+                billableTokens: Math.max(0, Math.floor(Number(item?.billableTokens || 0))),
                 reasoningOutputTokens: Math.max(0, Math.floor(Number(item?.reasoningOutputTokens || 0))),
                 estimatedCostUsd:
                   item?.estimatedCostUsd === null || item?.estimatedCostUsd === undefined ? null : Number(item.estimatedCostUsd || 0),
@@ -9479,7 +9925,7 @@
         renderLogsActions();
         if (nextTab === "requests") {
           startRequestLogPolling();
-          if (!S.requestLogsLoadedAt && !S.requestLogLoading) {
+          if (!S.requestLogLoading) {
             void loadRequestLogs({ silent: true });
           } else {
             drawRequestLogsTable();
@@ -10053,6 +10499,7 @@
             .map((row) => {
               const revealed = S.revealedKeys[row.id];
               const expired = isVirtualKeyExpired(row);
+              const fixedPolicy = getVirtualKeyFixedPolicyLabel(row);
               const status = row.isRevoked
                 ? '<span class="muted">已吊销</span>'
                 : expired
@@ -10062,7 +10509,10 @@
               const displayKey = revealed || maskedKey;
               return `
                 <tr>
-                  <td>${esc(row.name || "未命名 Key")}</td>
+                  <td>
+                    <div>${esc(getVirtualKeyDisplayName(row))}</div>
+                    ${fixedPolicy ? `<div class="muted">Fixed: ${esc(fixedPolicy)}</div>` : ""}
+                  </td>
                   <td>${esc(keyAccountLabel(row))}</td>
                   <td class="key-cell"><code>${esc(displayKey)}</code></td>
                   <td>${status}</td>
@@ -10206,11 +10656,11 @@
           ].join("\n");
 
           if (mode === "config-cmd-basic") {
-            return buildBasicConfigSwitchCmd(key, apiBase);
+            return buildBasicConfigSwitchCmd(key, apiBase, row);
           }
 
           if (mode === "config-cmd-gateway") {
-            return buildGatewayConfigSwitchCmd(key, apiBase);
+            return buildGatewayConfigSwitchCmd(key, apiBase, row);
           }
 
           if (mode === "config") {
@@ -10354,6 +10804,55 @@
             log(`生成接入说明失败: ${msg}`, "error");
             alert(msg);
           }
+        }
+
+        async function configureCodexWithManagedKey() {
+          if (!S.keyManageId) return;
+          const row = getVirtualKeyById(S.keyManageId);
+          if (!row) return;
+          if (row?.clientMode === "cursor") {
+            setKeyUsageOutput("当前选中的是 Cursor Key，不能直接配置到 Codex App/CLI。请先生成 Codex Key。");
+            showToast("请使用 Codex Key 配置 Codex", "error");
+            return;
+          }
+
+          await runBusyAction(
+            `key-usage:configure-codex:${S.keyManageId}`,
+            async () => {
+              const apiBase = `${activeServiceBaseUrl()}/v1`;
+              const result = await api(`/api/virtual-keys/${encodeURIComponent(S.keyManageId)}/configure-codex`, {
+                method: "POST",
+                body: JSON.stringify({
+                  apiBase,
+                  restartCodexApp: true,
+                }),
+              });
+              const restart = result?.appRestart || {};
+              const bindingCount = Array.isArray(result?.bridgeBinding?.keys) ? result.bridgeBinding.keys.length : 0;
+              const restartStatus = restart.status ? `${restart.status}${restart.message ? `: ${restart.message}` : ""}` : "未尝试";
+              const output = [
+                "Codex App/CLI 已直接配置为使用当前网关 Key。",
+                "",
+                `API Base: ${apiBase}`,
+                `Config : ${result?.configPath || "-"}`,
+                `Auth   : ${result?.authPath || "-"} (preserved)`,
+                `Models : ${result?.modelCatalogPath || "-"}`,
+                `Bridge : ${bindingCount || "-"}`,
+                `Codex App 重启: ${restartStatus}`,
+                "",
+                "现在重新打开或切回 Codex App，应显示 GPT-5.5 / xhigh，并在速度菜单中提供 standard / fast。",
+              ].join("\n");
+              setKeyUsageOutput(output);
+              log("Codex App/CLI 已直接配置为当前网关 Key");
+            },
+            {
+              button: document.getElementById("keyUsageConfigureCodexBtn"),
+              busyLabel: "配置中...",
+              successToast: "Codex 配置完成",
+              errorToast: "配置 Codex 失败",
+              rethrow: false,
+            },
+          );
         }
 
         async function renameVirtualKey(id) {
@@ -10578,6 +11077,7 @@
         setClick("refreshTokenCopyBtn", copyRefreshToken);
         setClick("keyManageRenameBtn", submitKeyManageRename);
         setClick("keyManageRenewBtn", submitKeyManageRenew);
+        setClick("keyUsageConfigureCodexBtn", configureCodexWithManagedKey);
         setClick("keyUsageBasicCmdBtn", () => generateKeyUsage("config-cmd-basic"));
         setClick("keyUsageGatewayCmdBtn", () => generateKeyUsage("config-cmd-gateway"));
         setClick("keyUsageRestoreCmdBtn", () => generateKeyUsage("restore-cmd"));
@@ -10602,11 +11102,11 @@
           const modelSelect = document.getElementById("testModel");
           if (modelSelect) {
             const rememberedModel = getRememberedTestModel(S.testMode, nextTargetId);
-            if (rememberedModel && S.models.some((item) => item === rememberedModel)) {
+            if (rememberedModel && S.models.some((item) => item?.id === rememberedModel)) {
               modelSelect.value = rememberedModel;
             }
-            if (!modelSelect.value && S.models[0]) {
-              modelSelect.value = S.models[0];
+            if (!modelSelect.value && S.models[0]?.id) {
+              modelSelect.value = S.models[0].id;
             }
             S.testModelId = modelSelect.value || "";
             if (nextTargetId && S.testModelId) {
@@ -10632,6 +11132,10 @@
         });
         document.getElementById("keyClientMode")?.addEventListener("change", (e) => {
           S.draft.keyIssueClientMode = e.target.value === "cursor" ? "cursor" : "codex";
+          renderKeyAccountStateHint();
+        });
+        document.getElementById("keyPolicy")?.addEventListener("change", (e) => {
+          S.draft.keyIssuePolicy = e.target.value === "gpt55_xhigh" ? "gpt55_xhigh" : "standard";
           renderKeyAccountStateHint();
         });
         document.getElementById("testInput")?.addEventListener("keydown", (e) => {
@@ -10932,6 +11436,7 @@
               <div class="info-item"><span>统计时区</span><strong id="settingsStatTimezone">-</strong></div>
               <div class="info-item"><span>价格模式</span><strong id="settingsStatPricingMode">-</strong></div>
               <div class="info-item"><span>价格表版本</span><strong id="settingsStatCatalogVersion">-</strong></div>
+              <div class="info-item"><span>官方资产来源</span><strong id="settingsOfficialAssetsState">-</strong></div>
               <div class="info-item"><span>今日令牌</span><strong id="settingsStatTodayTokens">0</strong></div>
               <div class="info-item"><span>缓存令牌</span><strong id="settingsStatCachedTokens">0</strong></div>
               <div class="info-item"><span>推理令牌</span><strong id="settingsStatReasoningTokens">0</strong></div>
@@ -10951,6 +11456,8 @@
             <div class="settings-kv">
               <div class="settings-kv-row"><span>同步状态</span><strong id="settingsSyncState">同步中</strong></div>
               <div class="settings-kv-row"><span>实时事件通道</span><strong id="settingsRealtimeState">未连接</strong></div>
+              <div class="settings-kv-row"><span>均流切换摘要</span><strong id="settingsFailoverState">最近 5 次均流切换：0</strong></div>
+              <div class="settings-kv-row"><span>路由状态摘要</span><strong id="settingsRoutingState">可路由 0 · 软排水 0 · 已排除 0</strong></div>
               <div class="settings-kv-row"><span>请求日志刷新</span><strong id="settingsRequestLogState">未加载</strong></div>
               <div class="settings-kv-row"><span>系统日志条数</span><strong id="settingsSystemLogState">0</strong></div>
               <div class="settings-kv-row"><span>是否需重启</span><strong id="settingsRestartState">是</strong></div>

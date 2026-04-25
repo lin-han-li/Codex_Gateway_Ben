@@ -167,15 +167,23 @@ export function createDashboardView(deps) {
     }
 
     if (!hint) return
+    const realtimeLabel = S.usageEventReady ? "SSE 已连接" : S.usageFallbackActive ? "轮询刷新中" : S.service ? "未连接" : "离线"
+    const routingLabel = `可路由 ${formatCompactNumber(metrics.accountsEligible || 0)} · 软排水 ${formatCompactNumber(metrics.accountsSoftDrained || 0)} · 已排除 ${formatCompactNumber(metrics.accountsExcluded || 0)}`
+    const failovers = Array.isArray(S.recentFailovers) ? S.recentFailovers : []
+    const failoverLabel = failovers.length > 0 ? `最近切换 ${failovers.length} 次（${failovers[0]?.reason || "-"}）` : "最近切换 0 次"
+    const assets = metrics.serviceStatusSummary?.officialAssets || S.settings.serviceStatusSummary?.officialAssets || null
+    const assetsLabel = assets
+      ? `Version:${assets.clientVersionSource?.kind || "-"} · Prompt:${assets.promptSource?.kind || "-"} · Models:${assets.modelsSource?.kind || "-"}`
+      : "Version:- · Prompt:- · Models:-"
     if (S.requestLogError) {
-      hint.textContent = `请求日志读取失败：${S.requestLogError}`
+      hint.textContent = `请求日志读取失败：${S.requestLogError} | ${realtimeLabel} | ${routingLabel} | ${failoverLabel} | ${assetsLabel}`
       return
     }
     if (S.requestLogBusyVisible && !S.requestLogsLoadedAt) {
-      hint.textContent = "正在同步请求日志与今日统计..."
+      hint.textContent = `正在同步请求日志与今日统计... | ${realtimeLabel} | ${routingLabel} | ${failoverLabel} | ${assetsLabel}`
       return
     }
-    hint.textContent = `统计范围：今日 00:00 至今 | 时区 ${metrics.statsTimezone || "-"} | 请求 ${formatCompactNumber(metrics.todayRequestCount)} | 更新时间 ${dt(S.requestLogsLoadedAt || Date.now())}`
+    hint.textContent = `统计范围：今日 00:00 至今 | 时区 ${metrics.statsTimezone || "-"} | 请求 ${formatCompactNumber(metrics.todayRequestCount)} | 更新时间 ${dt(S.requestLogsLoadedAt || Date.now())} | ${realtimeLabel} | ${routingLabel} | ${failoverLabel} | ${assetsLabel}`
   }
 
   return {

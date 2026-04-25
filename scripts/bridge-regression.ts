@@ -3,6 +3,8 @@ import { spawn } from "node:child_process"
 import os from "node:os"
 import path from "node:path"
 import net from "node:net"
+import * as zlib from "node:zlib"
+import { detectTransientUpstreamError } from "../src/behavior/codex-failure"
 import { resolveCodexClientVersion } from "../src/codex-version"
 import { bindClientIdentifierToAccount, isAccountBoundSessionFieldKey } from "../src/upstream-session-binding"
 
@@ -79,6 +81,57 @@ function rewriteExpectedSessionBody(body: string, accountId: string) {
   }
 }
 
+function assertNormalizedModelsPayload(payload: unknown) {
+  const body = payload as { data?: Array<Record<string, unknown>>; models?: Array<Record<string, unknown>> }
+  assertCondition(Array.isArray(body.data), "Models payload should normalize to OpenAI list format")
+  assertCondition(Array.isArray(body.models), "Models payload should expose Codex ModelsResponse format")
+  const modelsById = new Map(
+    body.data
+      .map((item) => [String(item.id ?? item.slug ?? ""), item] as const)
+      .filter(([id]) => id.length > 0),
+  )
+  const codexModelsById = new Map(
+    body.models
+      .map((item) => [String(item.slug ?? item.id ?? ""), item] as const)
+      .filter(([id]) => id.length > 0),
+  )
+  assertCondition(modelsById.has("gpt-5.4"), "Models payload should preserve upstream gpt-5.4 entry")
+  assertCondition(modelsById.has("gpt-5.5"), "Models payload should expose hardcoded gpt-5.5 entry")
+  assertCondition(codexModelsById.has("gpt-5.5"), "Codex models payload should expose hardcoded gpt-5.5 entry")
+  assertCondition(
+    String(modelsById.get("gpt-5.4")?.default_reasoning_level ?? "") === "medium",
+    "Upstream gpt-5.4 default reasoning level should remain medium",
+  )
+  assertCondition(
+    typeof codexModelsById.get("gpt-5.5")?.base_instructions === "string",
+    "Codex gpt-5.5 model should include required base_instructions",
+  )
+  assertCondition(
+    typeof codexModelsById.get("gpt-5.5")?.truncation_policy === "object",
+    "Codex gpt-5.5 model should include required truncation_policy",
+  )
+  assertCondition(
+    Array.isArray(codexModelsById.get("gpt-5.5")?.experimental_supported_tools),
+    "Codex gpt-5.5 model should include required experimental_supported_tools",
+  )
+  const hardcoded55Levels = Array.isArray(modelsById.get("gpt-5.5")?.supported_reasoning_levels)
+    ? (modelsById.get("gpt-5.5")?.supported_reasoning_levels as Array<Record<string, unknown>>).map((item) => String(item.effort ?? ""))
+    : []
+  assertCondition(hardcoded55Levels.includes("xhigh"), "Hardcoded gpt-5.5 entry should expose xhigh reasoning")
+  const hardcoded55AppLevels = Array.isArray(modelsById.get("gpt-5.5")?.supportedReasoningEfforts)
+    ? (modelsById.get("gpt-5.5")?.supportedReasoningEfforts as Array<Record<string, unknown>>).map((item) =>
+        String(item.reasoningEffort ?? ""),
+      )
+    : []
+  assertCondition(hardcoded55AppLevels.includes("xhigh"), "Hardcoded gpt-5.5 entry should expose Codex App xhigh reasoning")
+  assertCondition(
+    Array.isArray(modelsById.get("gpt-5.5")?.additionalSpeedTiers) &&
+      (modelsById.get("gpt-5.5")?.additionalSpeedTiers as string[]).includes("fast"),
+    "Hardcoded gpt-5.5 entry should expose Codex App fast tier",
+  )
+  assertCondition(modelsById.get("gpt-5.5")?.model === "gpt-5.5", "Hardcoded gpt-5.5 entry should expose Codex App model field")
+}
+
 async function waitForHealth(origin: string, timeoutMs: number) {
   const startedAt = Date.now()
   while (Date.now() - startedAt < timeoutMs) {
@@ -119,6 +172,16 @@ async function reserveFreePort() {
 }
 
 async function main() {
+  const certificateTransient = detectTransientUpstreamError(new Error("unknown certificate verification error"))
+  assertCondition(
+    certificateTransient.matched,
+    "Certificate verification errors should be classified as transient upstream failures",
+  )
+  assertCondition(
+    certificateTransient.reason === "upstream_certificate_verification_error",
+    `Unexpected certificate transient reason: ${String(certificateTransient.reason ?? "<missing>")}`,
+  )
+
   const tempDataDir = await mkdtemp(path.join(os.tmpdir(), "oauth-bridge-regression-"))
   const port = String(await reserveFreePort())
   const upstreamPort = String(await reserveFreePort())
@@ -569,6 +632,39 @@ async function main() {
       "client_metadata should preserve x-codex-parent-thread-id",
     )
 
+    const zstdCompressSync = (zlib as typeof zlib & { zstdCompressSync?: (input: Uint8Array) => Uint8Array }).zstdCompressSync
+    assertCondition(typeof zstdCompressSync === "function", "zstd compression should be available for request compatibility tests")
+    const zstdBody = JSON.stringify({
+      model: "gpt-5.4",
+      input: [{ role: "user", content: [{ type: "input_text", text: "zstd-check" }] }],
+      instructions: "zstd-instructions",
+      prompt_cache_key: "sess-zstd",
+      store: false,
+      stream: true,
+      reasoning: { effort: "medium" },
+    })
+    const zstdResponse = await fetch(`${origin}/v1/responses`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Content-Encoding": "zstd",
+        Authorization: `Bearer ${sync.virtualKey?.key ?? ""}`,
+        "openai-beta": "responses=v1",
+      },
+      body: zstdCompressSync(new TextEncoder().encode(zstdBody)),
+    })
+    assertCondition(zstdResponse.status === 418, `Expected zstd upstream passthrough status 418, got ${zstdResponse.status}`)
+    await zstdResponse.text()
+    const zstdForwarded = capturedUpstreamRequests.at(-1)
+    assertCondition(zstdForwarded, "No upstream request captured for zstd compatibility validation")
+    assertCondition(!zstdForwarded.headers["content-encoding"], "Decoded zstd requests should be forwarded without content-encoding")
+    const zstdForwardedParsed = JSON.parse(zstdForwarded.body) as Record<string, unknown>
+    assertCondition(zstdForwardedParsed.model === "gpt-5.4", "Decoded zstd request should preserve model")
+    assertCondition(
+      (zstdForwardedParsed.reasoning as Record<string, unknown> | undefined)?.effort === "medium",
+      "Decoded zstd request should preserve reasoning effort",
+    )
+
     const compactBody = JSON.stringify({
       model: "gpt-5.4",
       input: [{ role: "user", content: [{ type: "input_text", text: "compact-check" }] }],
@@ -678,8 +774,7 @@ async function main() {
       !modelsResponse.headers.get("x-upstream-test"),
       "Models response should come from local snapshot layer, not passthrough upstream headers",
     )
-    const modelsResponseText = await modelsResponse.text()
-    assertCondition(modelsResponseText === upstreamModelsPayload, "Models payload was altered by proxy")
+    assertNormalizedModelsPayload(await modelsResponse.json())
     const modelsForwarded = capturedUpstreamRequests.at(-1)
     assertCondition(modelsForwarded, "No upstream request captured for models parity validation")
     assertCondition(
@@ -717,8 +812,7 @@ async function main() {
       },
     })
     assertCondition(modelsCachedResponse.status === 200, `Expected cached models status 200, got ${modelsCachedResponse.status}`)
-    const modelsCachedText = await modelsCachedResponse.text()
-    assertCondition(modelsCachedText === upstreamModelsPayload, "Cached models payload was altered")
+    assertNormalizedModelsPayload(await modelsCachedResponse.json())
     assertCondition(
       capturedUpstreamRequests.length === modelsRequestsBefore + 1,
       "Second models request should be served from local cache without upstream call",
@@ -870,13 +964,27 @@ async function main() {
       body: turnStateBody,
     })
     assertCondition(secondTurnStateResponse.status === 200, `Expected second turn-state status 200, got ${secondTurnStateResponse.status}`)
-    assertCondition(turnStateReplayCount === 2, `Expected 2 turn-state upstream requests, got ${turnStateReplayCount}`)
+    const thirdTurnStateResponse = await fetch(`${origin}/v1/responses`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${sync.virtualKey?.key ?? ""}`,
+        "openai-beta": "responses=v1",
+        "x-audit-case": turnStateAuditCase,
+      },
+      body: turnStateBody,
+    })
+    assertCondition(thirdTurnStateResponse.status === 200, `Expected third turn-state status 200, got ${thirdTurnStateResponse.status}`)
+    assertCondition(turnStateReplayCount === 3, `Expected 3 turn-state upstream requests, got ${turnStateReplayCount}`)
     assertCondition(turnStateReplaySeenHeaders[0] == null, `First turn-state request should not replay header, got ${turnStateReplaySeenHeaders[0] ?? "<set>"}`)
     assertCondition(turnStateReplaySeenHeaders[1] === expectedTurnState, `Second turn-state request should replay ${expectedTurnState}, got ${turnStateReplaySeenHeaders[1] ?? "<missing>"}`)
+    assertCondition(turnStateReplaySeenHeaders[2] == null, `Third turn-state request should clear replay header, got ${turnStateReplaySeenHeaders[2] ?? "<set>"}`)
     assertCondition(turnStateWindowHeaders[0] === expectedTurnStateHeader, `Turn-state window header mismatch on first request: ${turnStateWindowHeaders[0] ?? "<missing>"}`)
     assertCondition(turnStateWindowHeaders[1] === expectedTurnStateHeader, `Turn-state window header mismatch on second request: ${turnStateWindowHeaders[1] ?? "<missing>"}`)
+    assertCondition(turnStateWindowHeaders[2] === expectedTurnStateHeader, `Turn-state window header mismatch on third request: ${turnStateWindowHeaders[2] ?? "<missing>"}`)
     assertCondition(turnStateTurnMetadataHeaders[0] === JSON.stringify({ turn_id: turnStateSessionKey }), `First turn metadata header mismatch: ${turnStateTurnMetadataHeaders[0] ?? "<missing>"}`)
     assertCondition(turnStateTurnMetadataHeaders[1] === JSON.stringify({ turn_id: turnStateSessionKey }), `Second turn metadata header mismatch: ${turnStateTurnMetadataHeaders[1] ?? "<missing>"}`)
+    assertCondition(turnStateTurnMetadataHeaders[2] === JSON.stringify({ turn_id: turnStateSessionKey }), `Third turn metadata header mismatch: ${turnStateTurnMetadataHeaders[2] ?? "<missing>"}`)
     assertCondition(turnStateTraceParents[0] === "00-00000000000000000000000000000011-0000000000000022-01", "First turn-state traceparent should be forwarded")
     assertCondition(turnStateTraceStates[0] === "vendor=value", "First turn-state tracestate should be forwarded")
     assertCondition(turnStateTraceParents[1] === "", "Second turn-state traceparent should not be synthesized as header")
@@ -889,44 +997,62 @@ async function main() {
     assertCondition(turnStateClientMetadataWindowHeaders[1] === expectedTurnStateHeader, "Second turn-state client_metadata window id mismatch")
     assertCondition(turnStateForwardedMetadata[0]?.existing === "preserved", "Existing client_metadata should be preserved on first turn-state request")
     assertCondition(turnStateForwardedMetadata[1]?.existing === "preserved", "Existing client_metadata should be preserved on second turn-state request")
+    assertCondition(turnStateForwardedMetadata[2]?.existing === "preserved", "Existing client_metadata should be preserved on third turn-state request")
     assertCondition(turnStateHeaderValues[1] === expectedTurnState, `Second turn-state header replay mismatch: ${turnStateHeaderValues[1] ?? "<missing>"}`)
+    assertCondition(turnStateHeaderValues[2] === "", `Third turn-state header should be cleared, got ${turnStateHeaderValues[2] ?? "<missing>"}`)
     assertCondition(turnStateResponseHeaderValues[0] === expectedTurnState, "First turn-state response should set turn-state header")
     assertCondition(firstTurnStateResponse.headers.get("x-request-id") === turnStateFirstResponseRequestId, "First turn-state response request id mismatch")
     assertCondition(secondTurnStateResponse.headers.get("x-request-id") === turnStateSecondResponseRequestId, "Second turn-state response request id mismatch")
+    assertCondition(thirdTurnStateResponse.headers.get("x-request-id") === turnStateSecondResponseRequestId, "Third turn-state response request id mismatch")
     assertCondition(typeof turnStateInstallationHeaders[0] === "string" && turnStateInstallationHeaders[0].length > 0, "Turn-state installation header should be injected on first request")
     assertCondition(typeof turnStateInstallationHeaders[1] === "string" && turnStateInstallationHeaders[1].length > 0, "Turn-state installation header should be injected on second request")
+    assertCondition(typeof turnStateInstallationHeaders[2] === "string" && turnStateInstallationHeaders[2].length > 0, "Turn-state installation header should be injected on third request")
     assertCondition(typeof turnStateClientMetadataInstallationHeaders[0] === "string" && turnStateClientMetadataInstallationHeaders[0].length > 0, "Turn-state client_metadata installation id should be injected on first request")
     assertCondition(typeof turnStateClientMetadataInstallationHeaders[1] === "string" && turnStateClientMetadataInstallationHeaders[1].length > 0, "Turn-state client_metadata installation id should be injected on second request")
+    assertCondition(typeof turnStateClientMetadataInstallationHeaders[2] === "string" && turnStateClientMetadataInstallationHeaders[2].length > 0, "Turn-state client_metadata installation id should be injected on third request")
     assertCondition(turnStateClientMetadataParentHeaders[0] === "", "Turn-state parent thread id should stay empty when not provided")
     assertCondition(turnStateClientMetadataSubagents[0] === "", "Turn-state subagent should stay empty when not provided")
     assertCondition(turnStateClientMetadataTurnStates[0] === "", "Turn-state should not be copied into client_metadata")
     assertCondition(turnStateClientMetadataTurnStates[1] === "", "Replayed turn-state should not be copied into client_metadata")
+    assertCondition(turnStateClientMetadataTurnStates[2] === "", "Cleared turn-state should not be copied into client_metadata")
     assertCondition(turnStatePromptCacheKeys[0].length > 0, "Turn-state prompt_cache_key should remain present on first request")
     assertCondition(turnStatePromptCacheKeys[1].length > 0, "Turn-state prompt_cache_key should remain present on second request")
+    assertCondition(turnStatePromptCacheKeys[2].length > 0, "Turn-state prompt_cache_key should remain present on third request")
     assertCondition(turnStateAuthorizationHeaders[0] === "Bearer fake-access-token", "Turn-state authorization should resolve to upstream token on first request")
     assertCondition(turnStateAuthorizationHeaders[1] === "Bearer fake-access-token", "Turn-state authorization should resolve to upstream token on second request")
+    assertCondition(turnStateAuthorizationHeaders[2] === "Bearer fake-access-token", "Turn-state authorization should resolve to upstream token on third request")
     assertCondition(turnStateBodies[0].includes("existing"), "Turn-state first request body should preserve existing client_metadata")
     assertCondition(turnStateBodies[1].includes("existing"), "Turn-state second request body should preserve existing client_metadata")
+    assertCondition(turnStateBodies[2].includes("existing"), "Turn-state third request body should preserve existing client_metadata")
     assertCondition(turnStateForwardedMetadata[0] && typeof turnStateForwardedMetadata[0] === "object", "Turn-state first request should inject client_metadata")
     assertCondition(turnStateForwardedMetadata[1] && typeof turnStateForwardedMetadata[1] === "object", "Turn-state second request should inject client_metadata")
+    assertCondition(turnStateForwardedMetadata[2] && typeof turnStateForwardedMetadata[2] === "object", "Turn-state third request should inject client_metadata")
     assertCondition(turnStateForwardedHeaders[0] === expectedTurnStateHeader, "Turn-state first request x-codex-window-id mismatch")
     assertCondition(turnStateForwardedHeaders[1] === expectedTurnStateHeader, "Turn-state second request x-codex-window-id mismatch")
+    assertCondition(turnStateForwardedHeaders[2] === expectedTurnStateHeader, "Turn-state third request x-codex-window-id mismatch")
     assertCondition(turnStateRequestIds[0] === "", "Turn-state first request should not synthesize x-request-id upstream")
     assertCondition(turnStateRequestIds[1] === "", "Turn-state second request should not synthesize x-request-id upstream")
+    assertCondition(turnStateRequestIds[2] === "", "Turn-state third request should not synthesize x-request-id upstream")
     assertCondition(turnStateClientRequestIds[0] === "", "Turn-state first request should not synthesize x-client-request-id upstream for pass-through body path")
     assertCondition(turnStateClientRequestIds[1] === "", "Turn-state second request should not synthesize x-client-request-id upstream for pass-through body path")
+    assertCondition(turnStateClientRequestIds[2] === "", "Turn-state third request should not synthesize x-client-request-id upstream for pass-through body path")
 
     const firstTurnStateJson = (await firstTurnStateResponse.json()) as { output_text?: string }
     const secondTurnStateJson = (await secondTurnStateResponse.json()) as { output_text?: string }
+    const thirdTurnStateJson = (await thirdTurnStateResponse.json()) as { output_text?: string }
     assertCondition(firstTurnStateJson.output_text === "turn-state-ok", "First turn-state payload mismatch")
     assertCondition(secondTurnStateJson.output_text === "turn-state-ok", "Second turn-state payload mismatch")
+    assertCondition(thirdTurnStateJson.output_text === "turn-state-ok", "Third turn-state payload mismatch")
 
     const firstTurnStateExpectedBody = JSON.parse(rewriteExpectedSessionBody(turnStateBody, boundAccountId)) as Record<string, unknown>
     const firstTurnStateForwarded = JSON.parse(turnStateBodies[0]) as Record<string, unknown>
     assertCondition(firstTurnStateForwarded.prompt_cache_key === firstTurnStateExpectedBody.prompt_cache_key, "Turn-state first prompt_cache_key mismatch after rewrite")
     const secondTurnStateForwarded = JSON.parse(turnStateBodies[1]) as Record<string, unknown>
+    const thirdTurnStateForwarded = JSON.parse(turnStateBodies[2]) as Record<string, unknown>
     assertCondition(secondTurnStateForwarded.prompt_cache_key === firstTurnStateExpectedBody.prompt_cache_key, "Turn-state second prompt_cache_key mismatch after rewrite")
+    assertCondition(thirdTurnStateForwarded.prompt_cache_key === firstTurnStateExpectedBody.prompt_cache_key, "Turn-state third prompt_cache_key mismatch after rewrite")
     assertCondition(secondTurnStateForwarded.previous_response_id === "resp-turn-state-prev", "Turn-state previous_response_id should remain unchanged on replay")
+    assertCondition(thirdTurnStateForwarded.previous_response_id === "resp-turn-state-prev", "Turn-state previous_response_id should remain unchanged after clear")
     assertCondition(firstTurnStateForwarded.previous_response_id === "resp-turn-state-prev", "Turn-state previous_response_id should remain unchanged initially")
 
     assertCondition(rerouteResponse.status === 200, `Expected reroute regression status 200, got ${rerouteResponse.status}`)

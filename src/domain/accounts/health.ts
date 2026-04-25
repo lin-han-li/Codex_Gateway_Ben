@@ -6,6 +6,9 @@ export type AccountHealthSnapshot = {
   expiresAt: number | null
 }
 
+const CERTIFICATE_VERIFICATION_HEALTH_REASON = "upstream_certificate_verification_error"
+const CERTIFICATE_VERIFICATION_HEALTH_COOLDOWN_MS = 6 * 60 * 60 * 1000
+
 export function normalizeAccountHealthReason(reason: string) {
   const normalized = String(reason ?? "")
     .replace(/\s+/g, " ")
@@ -37,7 +40,12 @@ export function isStickyAccountHealthSnapshot(snapshot?: AccountHealthSnapshot |
 }
 
 export function resolveAccountHealthExpiry(reason: string, transientCooldownMs: number, now = Date.now()) {
-  return isStickyAccountHealthReason(reason) ? null : now + transientCooldownMs
+  const normalizedReason = normalizeAccountHealthReason(reason)
+  if (isStickyAccountHealthReason(normalizedReason)) return null
+  if (normalizedReason === CERTIFICATE_VERIFICATION_HEALTH_REASON) {
+    return now + Math.max(transientCooldownMs, CERTIFICATE_VERIFICATION_HEALTH_COOLDOWN_MS)
+  }
+  return now + transientCooldownMs
 }
 
 export function getActiveAccountHealthSnapshot(

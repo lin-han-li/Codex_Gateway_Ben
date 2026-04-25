@@ -1,16 +1,22 @@
 import type { Hono } from "hono"
 
 export type ModelsRouteDeps = {
-  resolveChatModelList: () => string[]
+  resolveChatModelList: () => Array<Record<string, unknown>>
+  resolveDefaultChatModelId?: () => string
   resolveVirtualKeyContext: (
     c: any,
     options?: {
       expectedClientMode?: "codex" | "cursor"
       expectedWireApi?: "responses" | "chat_completions"
       bodySessionId?: string | null
+      requestedModel?: string | null
     },
   ) => any
-  ensureResolvedPoolAccountConsistent: (input: { resolved: any; sessionId?: string | null }) => Promise<any>
+  ensureResolvedPoolAccountConsistent: (input: {
+    resolved: any
+    sessionId?: string | null
+    requestedModel?: string | null
+  }) => Promise<any>
   behaviorController: {
     acquire: (input: any) => Promise<any>
   }
@@ -58,10 +64,56 @@ function toBehaviorAcquireResponse(decision: any) {
   )
 }
 
+function resolveFixedModelId(key: { fixedModel?: unknown } | null | undefined) {
+  return typeof key?.fixedModel === "string" && key.fixedModel.trim() ? key.fixedModel.trim() : null
+}
+
+function buildFilteredModelsPayload(payload: Record<string, unknown>, filteredEntries: unknown[]) {
+  const next = { ...payload }
+  if (Array.isArray(payload.data)) next.data = filteredEntries
+  if (Array.isArray(payload.models)) next.models = filteredEntries
+  if (!Array.isArray(payload.data) && !Array.isArray(payload.models)) {
+    next.data = filteredEntries
+    next.models = filteredEntries
+  }
+  return next
+}
+
+function filterSnapshotToFixedModel(
+  snapshot: any,
+  fixedModelId: string,
+  extractModelEntryID: (item: any) => string | null,
+) {
+  const entries = Array.isArray(snapshot?.entries) ? snapshot.entries : []
+  const filteredEntries = entries.filter((item: unknown) => extractModelEntryID(item) === fixedModelId)
+  const payload = buildFilteredModelsPayload(
+    snapshot?.payload && typeof snapshot.payload === "object" ? snapshot.payload : {},
+    filteredEntries,
+  )
+  return {
+    ...snapshot,
+    payload,
+    entries: filteredEntries,
+    body: new TextEncoder().encode(JSON.stringify(payload)),
+    contentType: snapshot?.contentType || "application/json",
+  }
+}
+
+function filterCursorCatalogToFixedModel(payload: any, fixedModelId: string) {
+  const data = Array.isArray(payload?.data) ? payload.data : []
+  return {
+    ...payload,
+    data: data.filter((item: { id?: string }) => String(item?.id || "") === fixedModelId),
+  }
+}
+
 export function registerModelsRoutes(app: Hono, deps: ModelsRouteDeps) {
   app.get("/api/chat/models", (c) => {
     const models = deps.resolveChatModelList()
-    return c.json({ models })
+    return c.json({
+      models,
+      defaultModelId: deps.resolveDefaultChatModelId?.() ?? models[0]?.id ?? null,
+    })
   })
 
   app.get("/v1/models", async (c) => {
@@ -72,9 +124,11 @@ export function registerModelsRoutes(app: Hono, deps: ModelsRouteDeps) {
     if ("error" in context) {
       return c.json({ error: context.error }, context.status ?? 401)
     }
+    const fixedModelId = resolveFixedModelId(context.resolved.key)
     const consistentContext = await deps.ensureResolvedPoolAccountConsistent({
       resolved: context.resolved,
       sessionId: context.sessionId,
+      requestedModel: fixedModelId,
     })
     if (!consistentContext.ok) {
       return c.json({ error: "No healthy accounts available for pool routing" }, 503)
@@ -98,11 +152,14 @@ export function registerModelsRoutes(app: Hono, deps: ModelsRouteDeps) {
           routeTag: "/models",
         })
       }
-      const snapshot = await deps.getModelsSnapshot({
+      let snapshot = await deps.getModelsSnapshot({
         account: resolvedContext.account,
         requestUrl: c.req.url,
         requestHeaders: c.req.raw.headers,
       })
+      if (fixedModelId) {
+        snapshot = filterSnapshotToFixedModel(snapshot, fixedModelId, deps.extractModelEntryID)
+      }
       const headers = new Headers()
       headers.set("content-type", snapshot.contentType)
       if (snapshot.etag) headers.set("etag", snapshot.etag)
@@ -137,22 +194,28 @@ export function registerModelsRoutes(app: Hono, deps: ModelsRouteDeps) {
   })
 
   app.get("/v1/models/:id", async (c) => {
+    const id = c.req.param("id")
     const context = deps.resolveVirtualKeyContext(c, {
       expectedClientMode: "codex",
       expectedWireApi: "responses",
+      requestedModel: id,
     })
     if ("error" in context) {
       return c.json({ error: context.error }, context.status ?? 401)
     }
+    const fixedModelId = resolveFixedModelId(context.resolved.key)
+    if (fixedModelId && id !== fixedModelId) {
+      return c.json({ error: `Model not found: ${id}` }, 404)
+    }
     const consistentContext = await deps.ensureResolvedPoolAccountConsistent({
       resolved: context.resolved,
       sessionId: context.sessionId,
+      requestedModel: fixedModelId ?? id,
     })
     if (!consistentContext.ok) {
       return c.json({ error: "No healthy accounts available for pool routing" }, 503)
     }
     const resolvedContext = consistentContext.resolved
-    const id = c.req.param("id")
     const profile = deps.resolveUpstreamProfileForAccount(resolvedContext.account)
 
     const behaviorDecision = await deps.behaviorController.acquire({
@@ -219,6 +282,7 @@ export function registerModelsRoutes(app: Hono, deps: ModelsRouteDeps) {
     const context = deps.resolveVirtualKeyContext(c, {
       expectedClientMode: "cursor",
       expectedWireApi: "chat_completions",
+      requestedModel: null,
     })
     if ("error" in context) {
       const status = typeof context.status === "number" ? context.status : 401
@@ -229,47 +293,60 @@ export function registerModelsRoutes(app: Hono, deps: ModelsRouteDeps) {
         status === 401 ? "authentication_error" : "invalid_request_error",
       )
     }
+    const fixedModelId = resolveFixedModelId(context.resolved.key)
     const consistentContext = await deps.ensureResolvedPoolAccountConsistent({
       resolved: context.resolved,
+      requestedModel: fixedModelId,
     })
     if (!consistentContext.ok) {
       return deps.toOpenAICompatibleErrorResponse("No healthy accounts available for pool routing", 503, "server_error")
     }
-    return c.json(
-      await deps.resolveModelCatalogForCursorAccount({
-        account: consistentContext.resolved.account,
-        requestUrl: c.req.url,
-        requestHeaders: c.req.raw.headers,
-      }),
-    )
-  })
-
-  app.get("/cursor/v1/models/:id", async (c) => {
-    const context = deps.resolveVirtualKeyContext(c, {
-      expectedClientMode: "cursor",
-      expectedWireApi: "chat_completions",
-    })
-    if ("error" in context) {
-      const status = typeof context.status === "number" ? context.status : 401
-      const message = String(context.error || "Invalid virtual API key")
-      return deps.toOpenAICompatibleErrorResponse(
-        message,
-        status,
-        status === 401 ? "authentication_error" : "invalid_request_error",
-      )
-    }
-    const modelId = c.req.param("id")
-    const consistentContext = await deps.ensureResolvedPoolAccountConsistent({
-      resolved: context.resolved,
-    })
-    if (!consistentContext.ok) {
-      return deps.toOpenAICompatibleErrorResponse("No healthy accounts available for pool routing", 503, "server_error")
-    }
-    const payload = await deps.resolveModelCatalogForCursorAccount({
+    let payload = await deps.resolveModelCatalogForCursorAccount({
       account: consistentContext.resolved.account,
       requestUrl: c.req.url,
       requestHeaders: c.req.raw.headers,
     })
+    if (fixedModelId) {
+      payload = filterCursorCatalogToFixedModel(payload, fixedModelId)
+    }
+    return c.json(payload)
+  })
+
+  app.get("/cursor/v1/models/:id", async (c) => {
+    const modelId = c.req.param("id")
+    const context = deps.resolveVirtualKeyContext(c, {
+      expectedClientMode: "cursor",
+      expectedWireApi: "chat_completions",
+      requestedModel: modelId,
+    })
+    if ("error" in context) {
+      const status = typeof context.status === "number" ? context.status : 401
+      const message = String(context.error || "Invalid virtual API key")
+      return deps.toOpenAICompatibleErrorResponse(
+        message,
+        status,
+        status === 401 ? "authentication_error" : "invalid_request_error",
+      )
+    }
+    const fixedModelId = resolveFixedModelId(context.resolved.key)
+    if (fixedModelId && modelId !== fixedModelId) {
+      return deps.toOpenAICompatibleErrorResponse("Model is not available for Cursor compatibility mode", 404, "invalid_request_error")
+    }
+    const consistentContext = await deps.ensureResolvedPoolAccountConsistent({
+      resolved: context.resolved,
+      requestedModel: fixedModelId ?? modelId,
+    })
+    if (!consistentContext.ok) {
+      return deps.toOpenAICompatibleErrorResponse("No healthy accounts available for pool routing", 503, "server_error")
+    }
+    let payload = await deps.resolveModelCatalogForCursorAccount({
+      account: consistentContext.resolved.account,
+      requestUrl: c.req.url,
+      requestHeaders: c.req.raw.headers,
+    })
+    if (fixedModelId) {
+      payload = filterCursorCatalogToFixedModel(payload, fixedModelId)
+    }
     const match = payload.data.find((item: { id?: string }) => String(item.id || "") === modelId)
     if (!match) {
       return deps.toOpenAICompatibleErrorResponse("Model is not available for Cursor compatibility mode", 404, "invalid_request_error")
