@@ -140,6 +140,7 @@ async function main() {
   const freeToken = "mixed-plan-free-token"
   const paidTokenA = "mixed-plan-paid-token-a"
   const paidTokenB = "mixed-plan-paid-token-b"
+  const paidTokenC = "mixed-plan-paid-token-c"
 
   const upstreamServer = Bun.serve({
     hostname: "127.0.0.1",
@@ -159,7 +160,26 @@ async function main() {
       if (text === "hold-paid-a" && token === paidTokenA) {
         await paidGate.wait
       }
-      if ((text === "gpt55-business-unavailable-free-fallback" || text === "member-gpt55-business-unavailable-fallback") && token === paidTokenA) {
+      if (
+        (text === "gpt55-business-unavailable-free-fallback" ||
+          text === "member-gpt55-business-unavailable-fallback") &&
+        token === paidTokenA
+      ) {
+        return new Response(
+          JSON.stringify({
+            error: {
+              type: "usage_limit_reached",
+              code: "usage_limit_reached",
+              message: "The usage limit has been reached",
+            },
+          }),
+          {
+            status: 429,
+            headers: { "content-type": "application/json" },
+          },
+        )
+      }
+      if (text === "single-member-quota-failover" && token === paidTokenC) {
         return new Response(
           JSON.stringify({
             error: {
@@ -286,6 +306,7 @@ async function main() {
         providerId: "chatgpt",
         accountId: paidA.account.id,
         routingMode: "single",
+        accountScope: "member",
         name: "Mixed Plan Paid A Key",
       }),
     })
@@ -540,6 +561,58 @@ async function main() {
     assertCondition(
       memberScopeFallbackAttempts.every((entry) => entry.token !== freeToken),
       `Expected member-scoped fallback to exclude Free, got ${memberScopeFallbackAttempts.map((entry) => entry.token).join(", ")}`,
+    )
+
+    const paidC = await syncAccount({
+      email: "mixed-plan-business-failover@example.com",
+      accountId: "org-mixed-paid-failover",
+      accessToken: paidTokenC,
+      refreshToken: "mixed-plan-business-failover-refresh",
+      planType: "Business",
+    })
+    assertCondition(paidC.account.id, "Failed to prepare single-key failover account")
+    const activeDb = new Database(path.join(tempDataDir, "accounts.db"))
+    activeDb.query(`UPDATE accounts SET is_active = 1 WHERE id = ?`).run(paidC.account.id)
+    activeDb.close()
+    const singleMemberFailoverKey = await requestJSON<IssueKeyResponse>(`${origin}/api/virtual-keys/issue`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        providerId: "chatgpt",
+        accountId: paidC.account.id,
+        routingMode: "single",
+        accountScope: "member",
+        name: "Single Member Quota Failover Key",
+      }),
+    })
+    const singleMemberQuotaFailoverResponse = await sendResponses(
+      singleMemberFailoverKey.key,
+      "single-member-quota-failover",
+      "mixed-plan-single-member-quota-failover",
+      "gpt-5.4",
+    )
+    assertCondition(
+      singleMemberQuotaFailoverResponse.output_text === `token=${paidTokenB}`,
+      `Expected single member key quota failover to switch to Plus, got ${singleMemberQuotaFailoverResponse.output_text ?? "<missing>"}`,
+    )
+    const singleMemberQuotaFailoverAttempts = capturedRequests.filter(
+      (entry) => entry.text === "single-member-quota-failover",
+    )
+    assertCondition(
+      singleMemberQuotaFailoverAttempts.some((entry) => entry.token === paidTokenC),
+      "Expected single member quota failover to try the bound Business account first",
+    )
+    assertCondition(
+      singleMemberQuotaFailoverAttempts.at(-1)?.token === paidTokenB,
+      `Expected final single member quota failover attempt to use Plus, got ${singleMemberQuotaFailoverAttempts
+        .map((entry) => entry.token)
+        .join(", ")}`,
+    )
+    assertCondition(
+      singleMemberQuotaFailoverAttempts.every((entry) => entry.token !== freeToken),
+      `Expected single member quota failover to stay inside member scope, got ${singleMemberQuotaFailoverAttempts
+        .map((entry) => entry.token)
+        .join(", ")}`,
     )
 
     paidGate.release()

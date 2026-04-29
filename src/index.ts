@@ -574,7 +574,7 @@ const POOL_FAIL_FAST_RETRY_POLICY: Partial<UpstreamRetryPolicy> = {
   retryTransport: true,
 }
 
-const POOL_REROUTE_MAX_ATTEMPTS = 3
+const POOL_REROUTE_MAX_ATTEMPTS = 64
 
 type BehaviorAcquireError = Error & {
   behaviorFailure: BehaviorAcquireFailure
@@ -3905,6 +3905,17 @@ function resolveVirtualKeyAllowedPlanCohorts(key?: { accountScope?: VirtualApiKe
   return null
 }
 
+function canFailoverQuotaForVirtualKey(key?: { id?: string | null; routingMode?: string | null } | null) {
+  if (!key) return false
+  if (key.routingMode === "pool") return true
+  if (key.routingMode !== "single") return false
+  return !String(key.id ?? "").startsWith(OAUTH_BRIDGE_VIRTUAL_KEY_ID_PREFIX)
+}
+
+function isQuotaRoutingAvailabilityReason(reason?: string | null) {
+  return reason === "quota_exhausted_cooldown" || reason === "quota_headroom_exhausted" || reason === "quota_headroom_low"
+}
+
 function resolvePreferredPlanCohortForVirtualKey(input: {
   key?: { accountScope?: VirtualApiKeyRecord["accountScope"] | null } | null
   requestedModel?: string | null
@@ -5015,7 +5026,65 @@ function ensureResolvedPoolAccountEligible(input: {
   const availability = resolveAutomaticAccountAvailability({ account: input.resolved.account })
   const modelEligible = accountCanUseRequestedModel(input.resolved.account, input.requestedModel)
   if (input.resolved.key.routingMode !== "pool") {
-    return availability.ok && modelEligible ? input.resolved : null
+    if (availability.ok && modelEligible) return input.resolved
+    if (!modelEligible || !canFailoverQuotaForVirtualKey(input.resolved.key) || !isQuotaRoutingAvailabilityReason(availability.reason)) {
+      return null
+    }
+
+    const preferredPlanCohort = resolvePreferredPlanCohortForVirtualKey({
+      key: input.resolved.key,
+      requestedModel: input.requestedModel,
+      account: input.resolved.account,
+      routingHints: input.routingHints ?? null,
+    })
+    const routingHints =
+      input.routingHints ??
+      buildProviderRoutingHintsForVirtualKey(input.resolved.key, input.requestedModel, Date.now(), {
+        preferredPlanCohort,
+      })
+    const excluded = new Set<string>(routingHints.excludeAccountIds)
+    excluded.add(input.resolved.account.id)
+    let reroutedAccount = rerouteResolvedPoolAccount({
+      resolved: input.resolved,
+      sessionId: input.sessionId,
+      routingHints: {
+        excludeAccountIds: [...excluded],
+        deprioritizedAccountIds: routingHints.deprioritizedAccountIds,
+        headroomByAccountId: routingHints.headroomByAccountId,
+        pressureScoreByAccountId: routingHints.pressureScoreByAccountId,
+        preferredPlanCohort,
+        allowedPlanCohorts: routingHints.allowedPlanCohorts,
+      },
+    })
+    if (!reroutedAccount) {
+      const relaxedHints = buildRelaxedProviderRoutingHintsForVirtualKey(input.resolved.key, input.requestedModel, Date.now(), {
+        preferredPlanCohort,
+      })
+      const relaxedExcluded = new Set(relaxedHints.excludeAccountIds)
+      relaxedExcluded.add(input.resolved.account.id)
+      reroutedAccount = rerouteResolvedPoolAccount({
+        resolved: input.resolved,
+        sessionId: input.sessionId,
+        routingHints: {
+          ...relaxedHints,
+          excludeAccountIds: [...relaxedExcluded],
+        },
+      })
+    }
+    if (!reroutedAccount) return null
+    emitServerEvent("virtual-key-failover", {
+      type: "virtual-key-failover",
+      at: Date.now(),
+      keyId: input.resolved.key.id,
+      sessionId: input.sessionId ?? null,
+      fromAccountId: input.resolved.account.id,
+      toAccountId: reroutedAccount.id,
+      reason: availability.reason ?? "quota_exhausted_cooldown",
+    })
+    return {
+      key: input.resolved.key,
+      account: reroutedAccount,
+    }
   }
 
   const preferredPlanCohort = resolvePreferredPlanCohortForVirtualKey({
@@ -7426,6 +7495,9 @@ async function detectQuotaExhaustedUpstreamResponse(response: Response) {
     "billing_hard_limit_reached",
     "quota_exceeded",
     "usage_limit_reached",
+    "rate_limit_exceeded",
+    "requests_limit_reached",
+    "tokens_limit_reached",
     "credits_exhausted",
     "plan_limit_reached",
   ])
@@ -7441,6 +7513,8 @@ async function detectQuotaExhaustedUpstreamResponse(response: Response) {
     "insufficient quota",
     "quota exceeded",
     "usage limit reached",
+    "rate limit reached",
+    "rate limit exceeded",
     "billing hard limit",
     "credits have been exhausted",
     "额度已用尽",
@@ -7903,6 +7977,19 @@ async function normalizeCodexFailureResponse(input: {
   })
 
   if (blocked.matched) {
+    return buildUpstreamAccountUnavailableFailure({
+      routingMode: input.routingMode,
+      retryAfter: input.headers.get("retry-after"),
+    })
+  }
+
+  const quota = await detectQuotaExhaustedUpstreamResponse(
+    new Response(decodedBody, {
+      status: input.status,
+      headers: input.headers,
+    }),
+  )
+  if (quota.matched) {
     return buildUpstreamAccountUnavailableFailure({
       routingMode: input.routingMode,
       retryAfter: input.headers.get("retry-after"),
@@ -9974,15 +10061,17 @@ async function proxyVirtualKeyCodexRequest(c: any, upstreamPath = "/responses") 
       requestedModel: effectiveRequestedModel,
     })
     if (!eligibleResolved) {
+      const errorMessage =
+        resolved.key.routingMode === "pool" ? "No healthy accounts available for pool routing" : "Upstream account is unavailable"
       writeAudit({
         virtualKeyId: resolved.key.id,
         providerId: resolved.key.providerId,
         statusCode: 503,
         latencyMs: Date.now() - startedAt,
-        error: "No healthy accounts available for pool routing",
+        error: errorMessage,
         clientTag,
       })
-      return c.json({ error: "No healthy accounts available for pool routing" }, 503)
+      return c.json({ error: errorMessage }, 503)
     }
 
     const consistentResolved = await ensureResolvedPoolAccountConsistent({
@@ -10317,11 +10406,13 @@ async function proxyVirtualKeyCodexRequest(c: any, upstreamPath = "/responses") 
       }
     }
 
-    if (key.routingMode === "pool") {
+    const canQuotaFailover = canFailoverQuotaForVirtualKey(key)
+    if (key.routingMode === "pool" || canQuotaFailover) {
       while (true) {
         const blockedSignal = await detectRoutingBlockedUpstreamResponse(upstream)
         const quotaSignal = await detectQuotaExhaustedUpstreamResponse(upstream)
         const transientSignal = await detectTransientUpstreamResponse(upstream)
+        if (key.routingMode !== "pool" && !quotaSignal.matched) break
         if (!blockedSignal.matched && !quotaSignal.matched && !transientSignal.matched) break
         if (transientSignal.matched) {
           const sameAccountRetryResponse = await tryStickySameAccountRetry().catch(() => null)
@@ -11032,11 +11123,13 @@ async function proxyVirtualKeyCursorChatCompletions(c: any) {
       }
     }
 
-    if (key.routingMode === "pool") {
+    const canQuotaFailover = canFailoverQuotaForVirtualKey(key)
+    if (key.routingMode === "pool" || canQuotaFailover) {
       while (true) {
         const blockedSignal = await detectRoutingBlockedUpstreamResponse(upstream)
         const quotaSignal = await detectQuotaExhaustedUpstreamResponse(upstream)
         const transientSignal = await detectTransientUpstreamResponse(upstream)
+        if (key.routingMode !== "pool" && !quotaSignal.matched) break
         if (!blockedSignal.matched && !quotaSignal.matched && !transientSignal.matched) break
         if (transientSignal.matched) {
           const sameAccountRetryResponse = await tryStickySameAccountRetry().catch(() => null)
@@ -11120,11 +11213,23 @@ async function proxyVirtualKeyCursorChatCompletions(c: any) {
 
     if (!upstream.ok) {
       const bodyText = await upstream.text().catch(() => "")
+      const quotaSignal = await detectQuotaExhaustedUpstreamResponse(
+        new Response(bodyText, {
+          status: upstream.status,
+          headers: upstream.headers,
+        }),
+      )
       const blocked = detectRoutingBlockedAccount({
         statusCode: upstream.status,
         text: bodyText,
       })
-      if (blocked.matched) {
+      if (quotaSignal.matched) {
+        markAccountQuotaExhausted(account.id)
+        handleBackgroundPromise(
+          "refreshAndEmitAccountQuota:cursor-chat-usage-limit-reached",
+          refreshAndEmitAccountQuota(account.id, "cursor-chat-usage-limit-reached"),
+        )
+      } else if (blocked.matched) {
         markAccountUnhealthy(account.id, blocked.reason, "cursor-chat")
       }
       writeAudit({
@@ -11142,6 +11247,9 @@ async function proxyVirtualKeyCursorChatCompletions(c: any) {
         error: bodyText || "Cursor upstream request failed",
         clientTag,
       })
+      if (quotaSignal.matched) {
+        return toOpenAICompatibleErrorResponse("Upstream account is unavailable", 503, "server_error")
+      }
       return toOpenAICompatibleErrorResponse(bodyText || `Upstream request failed (${upstream.status})`, upstream.status, upstream.status === 401 ? "authentication_error" : "server_error")
     }
 
@@ -11342,15 +11450,17 @@ async function proxyVirtualKeyRateLimitUsage(c: any) {
       sessionId: sessionRouteId,
     })
     if (!eligibleResolved) {
+      const errorMessage =
+        resolved.key.routingMode === "pool" ? "No healthy accounts available for pool routing" : "Upstream account is unavailable"
       writeAudit({
         virtualKeyId: resolved.key.id,
         providerId: resolved.key.providerId,
         statusCode: 503,
         latencyMs: Date.now() - startedAt,
-        error: "No healthy accounts available for pool routing",
+        error: errorMessage,
         clientTag,
       })
-      return c.json({ error: "No healthy accounts available for pool routing" }, 503)
+      return c.json({ error: errorMessage }, 503)
     }
 
     const consistentResolved = await ensureResolvedPoolAccountConsistent({
@@ -11726,18 +11836,19 @@ app.post("/api/chat/virtual-key", async (c) => {
           routedAccountId: activeAccount.id,
         })
       } catch (error) {
-        if (eligibleResolved.key.routingMode !== "pool") {
-          const behaviorFailure = getBehaviorAcquireFailure(error)
+        const quotaSignal = await detectQuotaExhaustedChatError(error)
+        const blockedSignal = detectRoutingBlockedChatError(error)
+        const transientSignal = detectTransientUpstreamError(error)
+        const behaviorFailure = getBehaviorAcquireFailure(error)
+        const canRerouteCurrentFailure =
+          eligibleResolved.key.routingMode === "pool" ||
+          (quotaSignal.matched && canFailoverQuotaForVirtualKey(eligibleResolved.key))
+        if (!canRerouteCurrentFailure) {
           if (behaviorFailure) {
             return toBehaviorAcquireResponse(behaviorFailure)
           }
           throw error
         }
-
-        const quotaSignal = await detectQuotaExhaustedChatError(error)
-        const blockedSignal = detectRoutingBlockedChatError(error)
-        const transientSignal = detectTransientUpstreamError(error)
-        const behaviorFailure = getBehaviorAcquireFailure(error)
         if (!quotaSignal.matched && !blockedSignal.matched && !transientSignal.matched && !behaviorFailure) {
           throw error
         }
