@@ -138,6 +138,33 @@ function resolvePlanMeta(account) {
   }
 }
 
+const ACCOUNT_PLAN_GROUPS = [
+  {
+    key: "business",
+    title: "Business",
+    tone: "business",
+    description: "Business / Team / Enterprise",
+  },
+  {
+    key: "plus",
+    title: "PLUS",
+    tone: "plus",
+    description: "Plus / Pro / Premium",
+  },
+  {
+    key: "free",
+    title: "Free",
+    tone: "free",
+    description: "Free / Trial / Starter",
+  },
+]
+
+function accountPlanGroupKey(account) {
+  const kind = resolvePlanMeta(account).kind
+  if (kind === "business" || kind === "plus") return kind
+  return "free"
+}
+
 export function createAccountsView(deps) {
   const {
     S,
@@ -153,13 +180,92 @@ export function createAccountsView(deps) {
     openTestModal,
     openRefreshTokenModal,
     refreshSingleAccountQuota,
+    applyRefreshedAccountQuota,
+    getAccountDisplayLabel,
     runBusyAction,
     api,
     loadAccounts,
     loadVirtualKeys,
     log,
     showToast,
+    toErrorMessage,
   } = deps
+
+  function accountLabel(accountId) {
+    if (typeof getAccountDisplayLabel === "function") return getAccountDisplayLabel(accountId)
+    const account = (S.accounts || []).find((item) => String(item?.id || "") === String(accountId || ""))
+    return account?.email || account?.accountId || account?.displayName || accountId
+  }
+
+  function quotaRefreshErrorMessage(error) {
+    if (typeof toErrorMessage === "function") return toErrorMessage(error)
+    return error instanceof Error ? error.message : String(error)
+  }
+
+  async function refreshAccountQuotaGroup(groupKey, triggerButton = null) {
+    const group = ACCOUNT_PLAN_GROUPS.find((item) => item.key === groupKey)
+    if (!group) return
+
+    const queue = (S.accounts || [])
+      .filter((account) => accountPlanGroupKey(account) === group.key && canRefreshAccountQuota(account))
+      .map((account) => String(account?.id || "").trim())
+      .filter(Boolean)
+
+    if (!queue.length) {
+      showToast(`当前 ${group.title} 分组没有可刷新的账号额度`, "info")
+      return
+    }
+
+    await runBusyAction(
+      `accounts:quota:refresh:${group.key}`,
+      async () => {
+        let successCount = 0
+        let failureCount = 0
+
+        for (let index = 0; index < queue.length; index += 1) {
+          const accountId = queue[index]
+          const currentAccount = (S.accounts || []).find((item) => String(item?.id || "") === accountId)
+          const label = accountLabel(accountId)
+
+          if (triggerButton) triggerButton.textContent = `刷新中 ${index + 1}/${queue.length}`
+
+          if (!currentAccount || accountPlanGroupKey(currentAccount) !== group.key || !canRefreshAccountQuota(currentAccount)) {
+            failureCount += 1
+            log(`刷新 ${group.title} 额度已跳过：${label}`)
+            continue
+          }
+
+          try {
+            const output = await api(`/api/accounts/${encodeURIComponent(accountId)}/refresh-quota`, { method: "POST" })
+            if (typeof applyRefreshedAccountQuota === "function") {
+              applyRefreshedAccountQuota(output?.account || null, output?.dashboardMetrics || null)
+            } else {
+              await refreshSingleAccountQuota(accountId, null)
+            }
+            successCount += 1
+            log(`已刷新 ${group.title} 账号额度：${label}（${successCount}/${queue.length}）`)
+          } catch (error) {
+            failureCount += 1
+            log(`刷新 ${group.title} 账号额度失败：${label} - ${quotaRefreshErrorMessage(error)}`, "error")
+          }
+        }
+
+        if (failureCount > 0) {
+          showToast(`已刷新 ${group.title} 分组 ${successCount}/${queue.length} 个账号额度，失败 ${failureCount} 个`, successCount > 0 ? "info" : "error", 4200)
+          return
+        }
+
+        showToast(`已按顺序刷新 ${group.title} 分组 ${successCount} 个账号额度`, "success")
+      },
+      {
+        button: triggerButton,
+        busyLabel: "刷新中...",
+        successToast: false,
+        errorToast: `刷新 ${group.title} 分组额度失败`,
+        rethrow: false,
+      },
+    )
+  }
 
   function drawAccountsTable() {
     const tbody = document.getElementById("accountsTableBody")
@@ -224,7 +330,7 @@ export function createAccountsView(deps) {
       return
     }
 
-    const cards = rows
+    const cardItems = rows
       .map((account) => {
         const abnormal = normalizeAbnormalState(account)
         const status = getAccountStatusMeta(account)
@@ -269,7 +375,11 @@ export function createAccountsView(deps) {
           ? '<button class="mini-btn activate" disabled>当前</button>'
           : `<button class="mini-btn activate" data-account-action="activate" data-id="${esc(account.id)}">设为默认</button>`
 
-        return `
+        return {
+          groupKey: accountPlanGroupKey(account),
+          id: account.id,
+          canRefreshQuota: canRefreshAccountQuota(account),
+          html: `
           <article class="account-card ${abnormal ? "is-abnormal" : ""}">
             <div class="account-card-top">
               <div class="account-card-badges">
@@ -299,6 +409,43 @@ export function createAccountsView(deps) {
               </div>
             </div>
           </article>
+        `,
+        }
+      })
+
+    const groupedSections = ACCOUNT_PLAN_GROUPS
+      .map((group) => {
+        const groupItems = cardItems.filter((item) => item.groupKey === group.key)
+        const groupCards = groupItems
+          .map((item) => item.html)
+          .join("")
+        const refreshableCount = groupItems.filter((item) => item.canRefreshQuota).length
+        const isGroupRefreshing = Boolean(S.ui?.busyActions?.[`accounts:quota:refresh:${group.key}`])
+        const body = groupCards
+          ? `<div class="account-card-grid">${groupCards}</div>`
+          : `<div class="account-plan-section-empty">\u6682\u65e0 ${esc(group.title)} \u8d26\u53f7</div>`
+
+        return `
+          <section class="account-plan-section account-plan-section-${esc(group.tone)}">
+            <div class="account-plan-section-head">
+              <div>
+                <div class="account-plan-section-kicker">${esc(group.title)}</div>
+                <h3>${esc(group.title)} \u8d26\u53f7</h3>
+                <p>${esc(group.description)}</p>
+              </div>
+              <div class="account-plan-section-actions">
+                <span class="account-plan-section-count">${groupItems.length}</span>
+                <button
+                  class="mini-btn account-plan-refresh"
+                  data-account-action="refresh-quota-group"
+                  data-group="${esc(group.key)}"
+                  title="只刷新 ${esc(group.title)} 分组账号额度"
+                  ${refreshableCount > 0 && !isGroupRefreshing ? "" : "disabled"}
+                >${isGroupRefreshing ? "刷新中..." : "刷新额度"}</button>
+              </div>
+            </div>
+            ${body}
+          </section>
         `
       })
       .join("")
@@ -306,7 +453,7 @@ export function createAccountsView(deps) {
     tbody.innerHTML = `
       <tr class="account-card-row">
         <td colspan="7">
-          <div class="account-card-grid">${cards}</div>
+          <div class="account-plan-sections">${groupedSections}</div>
         </td>
       </tr>
     `
@@ -314,8 +461,13 @@ export function createAccountsView(deps) {
     tbody.querySelectorAll("[data-account-action]").forEach((button) => {
       button.onclick = async () => {
         const action = button.dataset.accountAction
+        if (!action) return
+        if (action === "refresh-quota-group") {
+          await refreshAccountQuotaGroup(button.dataset.group, button)
+          return
+        }
         const id = button.dataset.id
-        if (!action || !id) return
+        if (!id) return
         if (action === "test") {
           openTestModal(id)
           return

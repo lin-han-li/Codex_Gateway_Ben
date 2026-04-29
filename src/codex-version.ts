@@ -3,7 +3,7 @@ import { existsSync } from "node:fs"
 import path from "node:path"
 
 const VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/
-const FALLBACK_CODEX_CLIENT_VERSION = "0.117.0"
+const FALLBACK_CODEX_CLIENT_VERSION = "0.125.0"
 const FALLBACK_CODEX_PROMPT = "You are Codex, a coding agent based on GPT-5."
 const OFFICIAL_PROMPT_RELATIVE_PATHS = [
   path.join("codex-rs", "core", "prompt.md"),
@@ -35,6 +35,11 @@ function normalizeVersion(raw?: string | null) {
   if (!value) return undefined
   const withoutPrefix = value.replace(/^rust-v/i, "").replace(/^v/i, "")
   if (!VERSION_PATTERN.test(withoutPrefix)) return undefined
+  const [major = 0, minor = 0, patch = 0] = withoutPrefix
+    .split("-")[0]
+    .split(".")
+    .map((part) => Number.parseInt(part, 10))
+  if (major === 0 && minor === 0 && patch > 999) return undefined
   return withoutPrefix
 }
 

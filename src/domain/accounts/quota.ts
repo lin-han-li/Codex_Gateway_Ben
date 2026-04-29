@@ -26,7 +26,7 @@ export type AccountQuotaSnapshot = {
   error: string | null
 }
 
-export type AccountPlanCohort = "free" | "paid" | "unknown"
+export type AccountPlanCohort = "free" | "paid" | "business" | "unknown"
 
 function asObjectRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : null
@@ -208,17 +208,22 @@ export function resolveAccountPlanCohort(account: StoredAccount): AccountPlanCoh
     normalizeChatgptPlanType(metadataRecord.subscriptionPlan) ??
     normalizeChatgptPlanType(metadataRecord.accountPlan)
   if (!raw) return "unknown"
-  if (raw.includes("free")) return "free"
   if (
     raw.includes("business") ||
     raw.includes("team") ||
-    raw.includes("enterprise") ||
+    raw.includes("enterprise")
+  ) {
+    return "business"
+  }
+  if (
     raw.includes("pro") ||
     raw.includes("plus") ||
+    raw.includes("premium") ||
     raw.includes("paid")
   ) {
     return "paid"
   }
+  if (raw.includes("free") || raw.includes("trial") || raw.includes("starter")) return "free"
   return "unknown"
 }
 
@@ -228,8 +233,10 @@ export function resolvePlanCohortPriority(cohort: AccountPlanCohort) {
       return 0
     case "unknown":
       return 1
-    default:
+    case "paid":
       return 2
+    default:
+      return 3
   }
 }
 

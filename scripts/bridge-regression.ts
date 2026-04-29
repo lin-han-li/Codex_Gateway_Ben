@@ -1,5 +1,6 @@
 import { mkdtemp, rm } from "node:fs/promises"
 import { spawn } from "node:child_process"
+import { createHash } from "node:crypto"
 import os from "node:os"
 import path from "node:path"
 import net from "node:net"
@@ -35,6 +36,13 @@ type CapturedUpstreamRequest = {
 
 function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message)
+}
+
+function expectedCodexWindowId(baseSessionId: string, shardParts: Array<string | null | undefined> = []) {
+  const normalizedShardParts = shardParts.map((part) => String(part ?? "").trim()).filter((part) => part.length > 0)
+  if (normalizedShardParts.length === 0) return `${baseSessionId}:0`
+  const shard = createHash("sha256").update(normalizedShardParts.join("|")).digest("hex").slice(0, 16)
+  return `${baseSessionId}:shard:${shard}:0`
 }
 
 function tryParseRecord(body: string): Record<string, unknown> | null {
@@ -542,8 +550,9 @@ async function main() {
     assertCondition(forwardedParsed.store === expectedParityBody.store, "store should be preserved while injecting codex metadata")
     assertCondition(forwardedParsed.stream === expectedParityBody.stream, "stream should be preserved while injecting codex metadata")
     const forwardedClientMetadata = forwardedParsed.client_metadata as Record<string, unknown> | undefined
+    const expectedParityWindowId = expectedCodexWindowId("sess-from-prompt-cache", ["review", "parent-thread-1"])
     const expectedClientMetadata = {
-      "x-codex-window-id": "sess-from-prompt-cache:0",
+      "x-codex-window-id": expectedParityWindowId,
       "x-openai-subagent": "review",
       "x-codex-parent-thread-id": "parent-thread-1",
     }
@@ -605,7 +614,7 @@ async function main() {
       "x-codex-installation-id should be injected",
     )
     assertCondition(
-      forwarded.headers["x-codex-window-id"] === "sess-from-prompt-cache:0",
+      forwarded.headers["x-codex-window-id"] === expectedParityWindowId,
       `x-codex-window-id mismatch: ${forwarded.headers["x-codex-window-id"] ?? "<missing>"}`,
     )
     const clientMetadata = forwardedClientMetadata
@@ -623,7 +632,7 @@ async function main() {
       "client_metadata.x-codex-installation-id should be injected",
     )
     assertCondition(
-      clientMetadata?.["x-codex-window-id"] === "sess-from-prompt-cache:0",
+      clientMetadata?.["x-codex-window-id"] === expectedParityWindowId,
       `client_metadata.x-codex-window-id mismatch: ${String(clientMetadata?.["x-codex-window-id"] ?? "<missing>")}`,
     )
     assertCondition(clientMetadata?.["x-openai-subagent"] === "review", "client_metadata should preserve x-openai-subagent")
@@ -730,7 +739,7 @@ async function main() {
       "Compact x-codex-installation-id should be injected",
     )
     assertCondition(
-      compactForwarded.headers["x-codex-window-id"] === "sess-compact:0",
+      compactForwarded.headers["x-codex-window-id"] === expectedCodexWindowId("sess-compact", ["compact-review", "compact-parent-1"]),
       `Compact x-codex-window-id mismatch: ${compactForwarded.headers["x-codex-window-id"] ?? "<missing>"}`,
     )
     assertCondition(
@@ -1089,7 +1098,7 @@ async function main() {
     const firstRerouteClientMetadata = actualFirstRerouteBody.client_metadata as Record<string, unknown> | undefined
     assertCondition(firstRerouteClientMetadata && typeof firstRerouteClientMetadata === "object", "First reroute attempt should inject client_metadata")
     assertCondition(
-      firstRerouteClientMetadata?.["x-codex-window-id"] === "sess-reroute-check:0",
+      firstRerouteClientMetadata?.["x-codex-window-id"] === expectedCodexWindowId("sess-reroute-check"),
       "First reroute attempt should inject the expected x-codex-window-id",
     )
 
@@ -1102,7 +1111,7 @@ async function main() {
     const finalRerouteClientMetadata = actualFinalRerouteBody.client_metadata as Record<string, unknown> | undefined
     assertCondition(finalRerouteClientMetadata && typeof finalRerouteClientMetadata === "object", "Final reroute attempt should inject client_metadata")
     assertCondition(
-      finalRerouteClientMetadata?.["x-codex-window-id"] === "sess-reroute-check:0",
+      finalRerouteClientMetadata?.["x-codex-window-id"] === expectedCodexWindowId("sess-reroute-check"),
       "Final reroute attempt should inject the expected x-codex-window-id",
     )
     assertCondition(

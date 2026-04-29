@@ -1,6 +1,6 @@
 {
   "name": "oauth-multi-login-app",
-  "version": "1.2.0",
+  "version": "1.2.3",
   "private": true,
   "description": "Desktop OAuth multi-account login application",
   "author": {

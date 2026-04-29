@@ -2,6 +2,7 @@ const path = require("node:path")
 const fs = require("node:fs")
 const http = require("node:http")
 const net = require("node:net")
+const crypto = require("node:crypto")
 const { spawn, spawnSync } = require("node:child_process")
 const { setTimeout: delay } = require("node:timers/promises")
 const { TextDecoder } = require("node:util")
@@ -10,6 +11,7 @@ const { app, BrowserWindow, shell, dialog } = require("electron")
 let serverProcess = null
 let serverBaseUrl = null
 let serverManagementToken = ""
+let attachedServerProcessId = null
 let isQuitting = false
 let mainWindow = null
 let serverLogTail = []
@@ -19,7 +21,7 @@ const WINDOW_DEFAULT_WIDTH = 1200
 const WINDOW_DEFAULT_HEIGHT = 820
 const WINDOW_MIN_WIDTH = 1120
 const WINDOW_MIN_HEIGHT = 720
-const DEFAULT_PACKAGED_LOOPBACK_PORT = 57509
+const DEFAULT_PACKAGED_LOOPBACK_PORT = 65260
 const REQUIRED_NO_PROXY_LOOPBACK_ENTRIES = ["localhost", "127.0.0.1"]
 const UTF16LE_DECODER = new TextDecoder("utf-16le")
 const GBK_DECODER = (() => {
@@ -244,7 +246,7 @@ function quotePowerShellLiteral(value) {
   return `'${String(value ?? "").replace(/'/g, "''")}'`
 }
 
-function writeDesktopServerLauncher({ exePath, dataDir, webDir, bindHost, port }) {
+function writeDesktopServerLauncher({ exePath, dataDir, webDir, bindHost, port, serverBuildId }) {
   if (process.platform !== "win32" || !app.isPackaged) return
   try {
     const launcherPath = path.join(app.getPath("userData"), "run-oauth-server.ps1")
@@ -259,6 +261,7 @@ function writeDesktopServerLauncher({ exePath, dataDir, webDir, bindHost, port }
       `$env:OAUTH_APP_DATA_DIR = ${quotePowerShellLiteral(dataDir)}`,
       `$env:OAUTH_APP_WEB_DIR = ${quotePowerShellLiteral(webDir)}`,
       `$env:OAUTH_BOOT_LOG_FILE = ${quotePowerShellLiteral(bootstrapLogPath)}`,
+      `$env:OAUTH_APP_SERVER_BUILD_ID = ${quotePowerShellLiteral(serverBuildId || "")}`,
       "$env:OAUTH_APP_ADMIN_TOKEN = ''",
       "if ($settings.PSObject.Properties['adminToken']) { $env:OAUTH_APP_ADMIN_TOKEN = [string]$settings.adminToken }",
       "$env:OAUTH_APP_ENCRYPTION_KEY = ''",
@@ -320,6 +323,17 @@ function runPowerShell(command, extraEnv = {}) {
   }
 }
 
+function computeServerBuildId(exePath) {
+  try {
+    const hash = crypto.createHash("sha256")
+    hash.update(fs.readFileSync(exePath))
+    return hash.digest("hex").slice(0, 16)
+  } catch (error) {
+    appendBootstrapLog("warn", `Failed to compute server build id: ${error instanceof Error ? error.message : String(error)}`)
+    return ""
+  }
+}
+
 function stopExistingOAuthServerProcesses() {
   if (process.platform !== "win32" || !app.isPackaged) return null
   const command = `
@@ -328,7 +342,21 @@ $stopped = @()
 $failed = @()
 $remaining = @()
 $processes = @(Get-CimInstance Win32_Process -Filter "Name='oauth-server.exe'" -ErrorAction SilentlyContinue)
+$launcherParents = @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue | Where-Object { [string]$_.CommandLine -like '*run-oauth-server.ps1*' })
+$targets = @()
 foreach ($p in $processes) {
+  $targets += $p
+  $parentId = [int]$p.ParentProcessId
+  if ($parentId -gt 0) {
+    $parent = @(Get-CimInstance Win32_Process -Filter "ProcessId=$parentId" -ErrorAction SilentlyContinue | Where-Object { [string]$_.CommandLine -like '*run-oauth-server.ps1*' })
+    $targets += $parent
+  }
+}
+$targets += $launcherParents
+$seen = @{}
+foreach ($p in $targets) {
+  if ($null -eq $p -or $seen.ContainsKey([string]$p.ProcessId)) { continue }
+  $seen[[string]$p.ProcessId] = $true
   try {
     Stop-Process -Id $p.ProcessId -Force -ErrorAction Stop
     $stopped += [pscustomobject]@{
@@ -337,15 +365,27 @@ foreach ($p in $processes) {
       commandLine = [string]$p.CommandLine
     }
   } catch {
+    $firstError = [string]$_.Exception.Message
+    try {
+      & taskkill.exe /PID ([string]$p.ProcessId) /T /F 2>$null | Out-Null
+      if ($LASTEXITCODE -eq 0) {
+        $stopped += [pscustomobject]@{
+          pid = [int]$p.ProcessId
+          path = [string]$p.ExecutablePath
+          commandLine = [string]$p.CommandLine
+        }
+        continue
+      }
+    } catch {}
     $failed += [pscustomobject]@{
       pid = [int]$p.ProcessId
       path = [string]$p.ExecutablePath
       commandLine = [string]$p.CommandLine
-      error = [string]$_.Exception.Message
+      error = $firstError
     }
   }
 }
-Start-Sleep -Milliseconds 500
+Start-Sleep -Milliseconds 800
 $after = @(Get-CimInstance Win32_Process -Filter "Name='oauth-server.exe'" -ErrorAction SilentlyContinue)
 foreach ($p in $after) {
   $ports = @()
@@ -354,6 +394,7 @@ foreach ($p in $after) {
   } catch {}
   $remaining += [pscustomobject]@{
     pid = [int]$p.ProcessId
+    parentPid = [int]$p.ParentProcessId
     path = [string]$p.ExecutablePath
     commandLine = [string]$p.CommandLine
     ports = @($ports)
@@ -782,7 +823,84 @@ function collectRemainingGatewayPorts(cleanupReport) {
   return Array.from(ports).sort((left, right) => left - right)
 }
 
-async function attachToExistingGatewayService({ cleanupReport, dataDir, webDir, exePath, managementToken }) {
+function resolveRemainingProcessIdForPort(cleanupReport, port) {
+  const numericPort = Number(port)
+  if (!cleanupReport || !Array.isArray(cleanupReport.remaining) || !Number.isInteger(numericPort)) return null
+  for (const item of cleanupReport.remaining) {
+    const ports = Array.isArray(item?.ports) ? item.ports.map((value) => Number(value)) : []
+    if (!ports.includes(numericPort)) continue
+    const pid = Number(item?.pid)
+    return Number.isInteger(pid) && pid > 0 ? pid : null
+  }
+  return null
+}
+
+function collectRemainingGatewayProcessIds(cleanupReport) {
+  const pids = new Set()
+  if (!cleanupReport || !Array.isArray(cleanupReport.remaining)) return []
+  for (const item of cleanupReport.remaining) {
+    for (const value of [item?.pid, item?.parentPid]) {
+      const pid = Number(value)
+      if (Number.isInteger(pid) && pid > 0) pids.add(pid)
+    }
+  }
+  return Array.from(pids).sort((left, right) => left - right)
+}
+
+function tryStopRemainingGatewayProcessesElevated(cleanupReport, dataDir) {
+  if (process.platform !== "win32" || !app.isPackaged) return null
+  const pids = collectRemainingGatewayProcessIds(cleanupReport)
+  if (pids.length === 0) return null
+  let scriptPath = ""
+  try {
+    fs.mkdirSync(dataDir, { recursive: true })
+    scriptPath = path.join(dataDir, `kill-stale-codex-gateway-${Date.now()}.ps1`)
+    const script = [
+      "$ErrorActionPreference = 'Continue'",
+      `$targets = @(${pids.map((pid) => `[int]${pid}`).join(",")})`,
+      "$launchers = @(Get-CimInstance Win32_Process -Filter \"Name='powershell.exe'\" -ErrorAction SilentlyContinue | Where-Object { [string]$_.CommandLine -like '*run-oauth-server.ps1*' } | Select-Object -ExpandProperty ProcessId)",
+      "$allTargets = @($targets + $launchers) | Where-Object { $_ -gt 0 } | Select-Object -Unique",
+      "foreach ($pid in $allTargets) {",
+      "  try { & taskkill.exe /PID ([string]$pid) /T /F 2>$null | Out-Null } catch {}",
+      "}",
+      "",
+    ].join("\r\n")
+    fs.writeFileSync(scriptPath, script, "utf8")
+    const command = [
+      "$ErrorActionPreference = 'Stop'",
+      `$scriptPath = ${quotePowerShellLiteral(scriptPath)}`,
+      `$powershell = ${quotePowerShellLiteral(resolvePowerShellPath())}`,
+      "Start-Process -FilePath $powershell -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',$scriptPath) -Verb RunAs -Wait -WindowStyle Hidden",
+    ].join("\n")
+    runPowerShell(command)
+    appendBootstrapLog("warn", `Requested elevated cleanup for stale Codex Gateway processes: ${pids.join(",")}`)
+    return { attempted: true, pids }
+  } catch (error) {
+    appendBootstrapLog(
+      "warn",
+      `Elevated stale Codex Gateway cleanup failed or was cancelled: ${error instanceof Error ? error.message : String(error)}`,
+    )
+    return { attempted: false, pids, error: error instanceof Error ? error.message : String(error) }
+  } finally {
+    if (scriptPath) {
+      try {
+        fs.unlinkSync(scriptPath)
+      } catch {}
+    }
+  }
+}
+
+function stopWindowsProcessTreeByPid(pid) {
+  const numericPid = Number(pid)
+  if (process.platform !== "win32" || !Number.isInteger(numericPid) || numericPid <= 0) return false
+  const result = spawnSync("taskkill", ["/PID", String(numericPid), "/T", "/F"], {
+    stdio: "ignore",
+    windowsHide: true,
+  })
+  return result.status === 0
+}
+
+async function attachToExistingGatewayService({ cleanupReport, dataDir, webDir, exePath, managementToken, expectedServerBuildId }) {
   if (!app.isPackaged) return null
   const ports = collectRemainingGatewayPorts(cleanupReport)
   for (const port of ports) {
@@ -794,18 +912,24 @@ async function attachToExistingGatewayService({ cleanupReport, dataDir, webDir, 
       const dataMatches = areSamePath(runtime.dataDir, dataDir)
       const exeMatches = areSamePath(runtime.serverExecutable, exePath)
       const webMatches = areSamePath(runtime.webDir, webDir)
-      if (isGateway && dataMatches && (exeMatches || webMatches)) {
+      const buildIdMatches =
+        !expectedServerBuildId ||
+        (typeof runtime.serverBuildId === "string" && runtime.serverBuildId === expectedServerBuildId)
+      if (isGateway && dataMatches && (exeMatches || webMatches) && buildIdMatches) {
         serverBaseUrl = baseUrl
         serverManagementToken = managementToken
+        const healthPid = Number(health?.pid)
+        attachedServerProcessId =
+          Number.isInteger(healthPid) && healthPid > 0 ? healthPid : resolveRemainingProcessIdForPort(cleanupReport, port)
         appendBootstrapLog(
           "info",
-          `Attached to existing Codex Gateway service at ${baseUrl} pid=${health?.pid ?? "unknown"}`,
+          `Attached to existing Codex Gateway service at ${baseUrl} pid=${attachedServerProcessId ?? health?.pid ?? "unknown"}`,
         )
         return baseUrl
       }
       appendBootstrapLog(
         "warn",
-        `Existing service at ${baseUrl} is not attachable: gateway=${isGateway}, dataMatches=${dataMatches}, exeMatches=${exeMatches}, webMatches=${webMatches}`,
+        `Existing service at ${baseUrl} is not attachable: gateway=${isGateway}, dataMatches=${dataMatches}, exeMatches=${exeMatches}, webMatches=${webMatches}, buildIdMatches=${buildIdMatches}, expectedBuildId=${expectedServerBuildId || "-"}, actualBuildId=${runtime.serverBuildId ?? "-"}`,
       )
     } catch (error) {
       appendBootstrapLog(
@@ -840,25 +964,52 @@ async function waitForServer(baseUrl) {
   throw lastError ?? new Error(`Server startup timeout after ${HEALTH_CHECK_ATTEMPTS * HEALTH_CHECK_DELAY_MS}ms`)
 }
 
-function stopServer() {
-  if (!serverProcess) return
+function stopServer(options = {}) {
+  const force = options.force === true
+  if (!serverProcess) {
+    const attachedPid = attachedServerProcessId
+    attachedServerProcessId = null
+    serverManagementToken = ""
+    if (attachedPid) {
+      const stopped = stopWindowsProcessTreeByPid(attachedPid)
+      appendBootstrapLog(
+        stopped ? "info" : "warn",
+        `Stopped attached Codex Gateway service pid=${attachedPid}: ${stopped ? "ok" : "failed"}`,
+      )
+    }
+    return
+  }
   const proc = serverProcess
   serverProcess = null
+  attachedServerProcessId = null
   serverManagementToken = ""
 
+  if (process.platform === "win32" && Number(proc.pid) > 0) {
+    const stopped = stopWindowsProcessTreeByPid(proc.pid)
+    appendBootstrapLog(
+      stopped ? "info" : "warn",
+      `Stopped bundled Codex Gateway service pid=${proc.pid}: ${stopped ? "ok" : "failed"}`,
+    )
+    if (!stopped) {
+      try {
+        proc.kill("SIGKILL")
+      } catch {}
+    }
+    return
+  }
+
   try {
-    proc.kill("SIGTERM")
+    proc.kill(force ? "SIGKILL" : "SIGTERM")
   } catch {}
+
+  if (force) return
 
   setTimeout(() => {
     const stillRunning = proc.exitCode === null && proc.signalCode === null
     if (!stillRunning) return
     if (process.platform === "win32" && Number(proc.pid) > 0) {
       try {
-        spawnSync("taskkill", ["/PID", String(proc.pid), "/T", "/F"], {
-          stdio: "ignore",
-          windowsHide: true,
-        })
+        stopWindowsProcessTreeByPid(proc.pid)
         return
       } catch {}
     }
@@ -882,19 +1033,21 @@ async function startServer() {
   const webDir = resolveWebDir()
   fs.mkdirSync(dataDir, { recursive: true })
   prepareBootstrapLog()
+  const serverBuildId = computeServerBuildId(exePath)
   appendBootstrapLog("info", "Starting bundled OAuth server")
   appendBootstrapLog("info", `Data directory: ${dataDir}`)
   appendBootstrapLog("info", `Web directory: ${webDir}`)
+  appendBootstrapLog("info", `Server build id: ${serverBuildId || "unknown"}`)
   const localBinding = loadLocalBinding(dataDir)
   const savedAdminToken = loadSavedAdminToken(dataDir)
   const savedEncryptionKey = loadSavedEncryptionKey(dataDir)
   const effectiveAdminToken = String(process.env.OAUTH_APP_ADMIN_TOKEN ?? "").trim() || savedAdminToken
   const effectiveEncryptionKey = String(process.env.OAUTH_APP_ENCRYPTION_KEY ?? "").trim() || savedEncryptionKey
-  const cleanupReport = stopExistingOAuthServerProcesses()
+  let cleanupReport = stopExistingOAuthServerProcesses()
   if (cleanupReport) {
-    const stoppedCount = Array.isArray(cleanupReport.stopped) ? cleanupReport.stopped.length : 0
-    const failedCount = Array.isArray(cleanupReport.failed) ? cleanupReport.failed.length : 0
-    const remainingCount = Array.isArray(cleanupReport.remaining) ? cleanupReport.remaining.length : 0
+    let stoppedCount = Array.isArray(cleanupReport.stopped) ? cleanupReport.stopped.length : 0
+    let failedCount = Array.isArray(cleanupReport.failed) ? cleanupReport.failed.length : 0
+    let remainingCount = Array.isArray(cleanupReport.remaining) ? cleanupReport.remaining.length : 0
     appendBootstrapLog(
       failedCount > 0 || remainingCount > 0 || cleanupReport.error ? "warn" : "info",
       `Existing oauth-server cleanup: stopped=${stoppedCount}, failed=${failedCount}, remaining=${remainingCount}${
@@ -902,17 +1055,34 @@ async function startServer() {
       }`,
     )
     if (remainingCount > 0) {
+      const elevatedCleanup = tryStopRemainingGatewayProcessesElevated(cleanupReport, dataDir)
+      if (elevatedCleanup?.attempted) {
+        await delay(1000)
+        cleanupReport = stopExistingOAuthServerProcesses()
+        stoppedCount = Array.isArray(cleanupReport?.stopped) ? cleanupReport.stopped.length : 0
+        failedCount = Array.isArray(cleanupReport?.failed) ? cleanupReport.failed.length : 0
+        remainingCount = Array.isArray(cleanupReport?.remaining) ? cleanupReport.remaining.length : 0
+        appendBootstrapLog(
+          failedCount > 0 || remainingCount > 0 || cleanupReport?.error ? "warn" : "info",
+          `Existing oauth-server cleanup after elevated attempt: stopped=${stoppedCount}, failed=${failedCount}, remaining=${remainingCount}${
+            cleanupReport?.error ? `, error=${cleanupReport.error}` : ""
+          }`,
+        )
+      }
+    }
+    if (remainingCount > 0) {
       const attachedBaseUrl = await attachToExistingGatewayService({
         cleanupReport,
         dataDir,
         webDir,
         exePath,
         managementToken: effectiveAdminToken,
+        expectedServerBuildId: serverBuildId,
       })
       if (attachedBaseUrl) {
         const attachedPort = Number(new URL(attachedBaseUrl).port)
         if (Number.isInteger(attachedPort) && attachedPort > 0) {
-          writeDesktopServerLauncher({ exePath, dataDir, webDir, bindHost: "127.0.0.1", port: attachedPort })
+          writeDesktopServerLauncher({ exePath, dataDir, webDir, bindHost: "127.0.0.1", port: attachedPort, serverBuildId })
         }
         ensureUserLoopbackNoProxyCompatibility(dataDir, "127.0.0.1")
         return attachedBaseUrl
@@ -923,8 +1093,15 @@ async function startServer() {
           return `pid=${item?.pid ?? "unknown"}${ports}`
         })
         .join("; ")
-      throw new Error(
-        `Existing oauth-server process could not be stopped, refusing to start a second gateway service. Close it or kill it as administrator first: ${remainingDetail}`,
+      const remainingPorts = collectRemainingGatewayPorts(cleanupReport)
+      if (remainingPorts.includes(1455)) {
+        throw new Error(
+          `A stale Codex Gateway oauth-server still owns the official Codex OAuth callback port 1455 and could not be stopped automatically. This would break browser login, so startup was stopped instead of falling back to a random port. Close or kill the stale process as administrator first: ${remainingDetail}`,
+        )
+      }
+      appendBootstrapLog(
+        "warn",
+        `Existing oauth-server process could not be stopped and is not attachable; quarantining it and starting a fresh gateway on a free port: ${remainingDetail}`,
       )
     }
   }
@@ -946,6 +1123,14 @@ async function startServer() {
   }
   let localOpenHost = bindHost === "0.0.0.0" ? "127.0.0.1" : bindHost
   let port = localBinding?.port
+  if (app.isPackaged && isLoopbackHost(bindHost) && port && port !== DEFAULT_PACKAGED_LOOPBACK_PORT) {
+    appendBootstrapLog(
+      "warn",
+      `Resetting stale loopback service port ${port} to stable packaged port ${DEFAULT_PACKAGED_LOOPBACK_PORT}`,
+    )
+    port = DEFAULT_PACKAGED_LOOPBACK_PORT
+    shouldPersistResolvedBinding = true
+  }
 
   if (port) {
     try {
@@ -1030,10 +1215,12 @@ async function startServer() {
     OAUTH_APP_ADMIN_TOKEN: effectiveAdminToken,
     OAUTH_APP_ENCRYPTION_KEY: effectiveEncryptionKey,
     OAUTH_APP_SERVER_EXE: exePath,
+    OAUTH_APP_SERVER_BUILD_ID: serverBuildId,
     OAUTH_APP_INSTANCE_ID: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
   }
   serverManagementToken = effectiveAdminToken
-  writeDesktopServerLauncher({ exePath, dataDir, webDir, bindHost, port })
+  attachedServerProcessId = null
+  writeDesktopServerLauncher({ exePath, dataDir, webDir, bindHost, port, serverBuildId })
 
   serverProcess = spawn(exePath, [], {
     env,
@@ -1095,7 +1282,7 @@ async function restartServerProcess() {
   serverRestartInProgress = true
   suppressExitNotification = true
   try {
-    stopServer()
+    stopServer({ force: true })
     serverBaseUrl = null
     const baseUrl = await startServer()
     if (!mainWindow || mainWindow.isDestroyed()) return
@@ -1206,8 +1393,14 @@ app.on("activate", async () => {
 
 app.on("before-quit", () => {
   isQuitting = true
-  stopServer()
+  stopServer({ force: true })
   serverBaseUrl = null
+})
+
+process.once("exit", () => {
+  try {
+    stopServer({ force: true })
+  } catch {}
 })
 
 app.on("window-all-closed", () => {

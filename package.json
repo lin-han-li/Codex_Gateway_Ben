@@ -1,6 +1,6 @@
 {
   "name": "oauth-multi-login-app",
-  "version": "1.2.0",
+  "version": "1.2.3",
   "private": true,
   "description": "Desktop OAuth multi-account login application",
   "author": {
@@ -94,6 +94,7 @@
       "target": [
         "nsis"
       ],
+      "icon": "build/icons/icon.ico",
       "artifactName": "${productName} Setup ${version}.${ext}"
     },
     "linux": {
@@ -126,7 +127,14 @@
     },
     "nsis": {
       "oneClick": false,
+      "perMachine": true,
+      "allowElevation": true,
       "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": "always",
+      "shortcutName": "Codex Gateway",
+      "installerIcon": "build/icons/icon.ico",
+      "uninstallerIcon": "build/icons/icon.ico",
+      "runAfterFinish": false,
       "include": "build/installer.nsh"
     }
   }

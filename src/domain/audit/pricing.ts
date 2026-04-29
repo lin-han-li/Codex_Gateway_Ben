@@ -1,7 +1,7 @@
 import type { UsageMetrics } from "./types"
 
 export const PRICING_MODE = "builtin-default"
-export const PRICING_CATALOG_VERSION = "builtin-v1"
+export const PRICING_CATALOG_VERSION = "openai-api-pricing-2026-04-29"
 
 const GPT_5_4_INPUT_TIER_BREAKPOINT = 272_000
 const MODEL_PRICE_PER_1K_TOKENS: Array<[string, number, number, number]> = [
@@ -47,14 +47,32 @@ function resolveModelPricePer1K(model: string | null | undefined, inputTokensTot
     .toLowerCase()
   if (!normalized) return null
 
-  if (normalized.startsWith("gpt-5.5-pro") || normalized.startsWith("gpt-5.4-pro")) {
+  if (normalized.startsWith("gpt-5.5-pro")) {
     if (inputTokensTotal > GPT_5_4_INPUT_TIER_BREAKPOINT) {
       return { inputUsdPer1K: 0.06, cachedInputUsdPer1K: 0.06, outputUsdPer1K: 0.27 }
     }
     return { inputUsdPer1K: 0.03, cachedInputUsdPer1K: 0.03, outputUsdPer1K: 0.18 }
   }
 
-  if (normalized.startsWith("gpt-5.5") || normalized.startsWith("gpt-5.4")) {
+  if (normalized.startsWith("gpt-5.4-pro")) {
+    if (inputTokensTotal > GPT_5_4_INPUT_TIER_BREAKPOINT) {
+      return { inputUsdPer1K: 0.06, cachedInputUsdPer1K: 0.06, outputUsdPer1K: 0.27 }
+    }
+    return { inputUsdPer1K: 0.03, cachedInputUsdPer1K: 0.03, outputUsdPer1K: 0.18 }
+  }
+
+  if (normalized.startsWith("gpt-5.5")) {
+    if (inputTokensTotal > GPT_5_4_INPUT_TIER_BREAKPOINT) {
+      return { inputUsdPer1K: 0.01, cachedInputUsdPer1K: 0.001, outputUsdPer1K: 0.045 }
+    }
+    return { inputUsdPer1K: 0.005, cachedInputUsdPer1K: 0.0005, outputUsdPer1K: 0.03 }
+  }
+
+  if (normalized.startsWith("gpt-5.4-mini")) {
+    return { inputUsdPer1K: 0.00075, cachedInputUsdPer1K: 0.000075, outputUsdPer1K: 0.0045 }
+  }
+
+  if (normalized.startsWith("gpt-5.4")) {
     if (inputTokensTotal > GPT_5_4_INPUT_TIER_BREAKPOINT) {
       return { inputUsdPer1K: 0.005, cachedInputUsdPer1K: 0.0005, outputUsdPer1K: 0.0225 }
     }

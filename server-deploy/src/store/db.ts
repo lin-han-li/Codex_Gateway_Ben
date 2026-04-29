@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite"
 import { createHash, randomBytes } from "node:crypto"
-import { resolveAccountPlanCohort } from "../domain/accounts/quota"
 import type { LoginResult, StoredAccount } from "../types"
+import { resolveAccountPlanCohort } from "../domain/accounts/quota"
 import { isSecretEncryptionEnabled, openSecret, sealSecret } from "../security/secrets"
 import {
   CREATE_REQUEST_AUDITS_TABLE_SQL,
@@ -43,12 +43,14 @@ type SaveAccountInput = LoginResult & { providerName: string }
 export type VirtualKeyRoutingMode = "single" | "pool"
 export type VirtualKeyClientMode = "codex" | "cursor"
 export type VirtualKeyWireAPI = "responses" | "chat_completions"
+export type VirtualKeyAccountScope = "all" | "member" | "free"
 
 export type VirtualApiKeyRecord = {
   id: string
   accountId: string | null
   providerId: string
   routingMode: VirtualKeyRoutingMode
+  accountScope: VirtualKeyAccountScope
   clientMode: VirtualKeyClientMode
   wireApi: VirtualKeyWireAPI
   name: string | null
@@ -135,6 +137,7 @@ export type RequestTokenStatsDayRecord = {
   outputTokens: number
   totalTokens: number
   billableTokens: number
+  pricedTokens: number
   reasoningOutputTokens: number
   estimatedCostUsd: number
   unpricedRequestCount: number
@@ -149,6 +152,7 @@ export type RequestTokenStatsDaySummary = {
 type VirtualApiKeyRow = {
   id: string
   account_id: string | null
+  account_scope: string | null
   client_mode: string | null
   wire_api: string | null
   name: string | null
@@ -201,6 +205,7 @@ type RequestAuditRow = {
 
 type RequestAuditCostBackfillCandidate = {
   id: string
+  at: number
   model: string | null
   input_tokens: number | null
   cached_input_tokens: number | null
@@ -218,6 +223,7 @@ type RequestTokenStatsDayRow = {
   output_tokens: number
   total_tokens: number
   billable_tokens: number
+  priced_tokens: number
   reasoning_output_tokens: number
   estimated_cost_usd: number
   unpriced_request_count: number
@@ -251,6 +257,10 @@ type GlobalUsageTotalsRow = {
   prompt_tokens: number
   completion_tokens: number
   total_tokens: number
+  cached_input_tokens: number
+  reasoning_output_tokens: number
+  priced_tokens: number
+  estimated_cost_usd: number
   updated_at: number
 }
 
@@ -258,6 +268,10 @@ export type UsageTotals = {
   promptTokens: number
   completionTokens: number
   totalTokens: number
+  cachedInputTokens: number
+  reasoningOutputTokens: number
+  pricedTokens: number
+  estimatedCostUsd: number
   updatedAt: number
 }
 
@@ -302,6 +316,7 @@ function toVirtualApiKeyRecord(row: VirtualApiKeyRow): VirtualApiKeyRecord {
     accountId: row.account_id,
     providerId: row.provider_id,
     routingMode: row.routing_mode === "pool" ? "pool" : "single",
+    accountScope: normalizeVirtualKeyAccountScope(row.account_scope),
     clientMode: row.client_mode === "cursor" ? "cursor" : "codex",
     wireApi: row.wire_api === "chat_completions" ? "chat_completions" : "responses",
     name: row.name,
@@ -344,6 +359,20 @@ function normalizeVirtualKeyOverrideValue(value?: string | null) {
   return normalized.slice(0, 120)
 }
 
+function normalizeVirtualKeyAccountScope(value: unknown): VirtualKeyAccountScope {
+  const normalized = String(value ?? "").trim().toLowerCase()
+  if (normalized === "free") return "free"
+  if (normalized === "member" || normalized === "paid" || normalized === "paid_member") return "member"
+  return "all"
+}
+
+function virtualKeyScopeMatchesAccount(account: StoredAccount, accountScope: VirtualKeyAccountScope) {
+  if (accountScope === "all") return true
+  const cohort = resolveAccountPlanCohort(account)
+  if (accountScope === "free") return cohort === "free"
+  return cohort === "paid" || cohort === "business"
+}
+
 function normalizeVirtualKeyDisplayName(value?: string | null) {
   const normalized = String(value ?? "").trim()
   if (!normalized) return null
@@ -355,15 +384,19 @@ function buildVirtualKeyDefaultName(input: {
   clientMode?: VirtualKeyClientMode | null
   fixedModel?: string | null
   fixedReasoningEffort?: string | null
+  accountScope?: VirtualKeyAccountScope | null
 }) {
   const explicitName = normalizeVirtualKeyDisplayName(input.name)
   if (explicitName) return explicitName
+  const scopeLabel = input.accountScope === "free" ? "Free" : input.accountScope === "member" ? "Member" : null
   const fixedModel = normalizeVirtualKeyOverrideValue(input.fixedModel)
   const fixedReasoningEffort = normalizeVirtualKeyOverrideValue(input.fixedReasoningEffort)
-  if (!fixedModel && !fixedReasoningEffort) return null
   const clientLabel = input.clientMode === "cursor" ? "Cursor" : "Codex"
+  if (!fixedModel && !fixedReasoningEffort) {
+    return scopeLabel ? normalizeVirtualKeyDisplayName(`${clientLabel} ${scopeLabel} key`) : null
+  }
   const suffix = [fixedModel, fixedReasoningEffort].filter(Boolean).join(" ")
-  return normalizeVirtualKeyDisplayName(`${clientLabel} fixed ${suffix}`)
+  return normalizeVirtualKeyDisplayName(`${clientLabel}${scopeLabel ? ` ${scopeLabel}` : ""} fixed ${suffix}`)
 }
 
 type RequestAuditSqlFilters = {
@@ -562,6 +595,7 @@ function mapRequestTokenStatsDayRow(row?: RequestTokenStatsDayRow | null): Reque
     outputTokens: Math.max(0, Math.floor(Number(row.output_tokens ?? 0))),
     totalTokens: Math.max(0, Math.floor(Number(row.total_tokens ?? 0))),
     billableTokens: Math.max(0, Math.floor(Number(row.billable_tokens ?? 0))),
+    pricedTokens: Math.max(0, Math.floor(Number(row.priced_tokens ?? 0))),
     reasoningOutputTokens: Math.max(0, Math.floor(Number(row.reasoning_output_tokens ?? 0))),
     estimatedCostUsd: Math.max(0, Number(row.estimated_cost_usd ?? 0)),
     unpricedRequestCount: Math.max(0, Math.floor(Number(row.unpriced_request_count ?? 0))),
@@ -613,6 +647,7 @@ export class AccountStore {
         account_id TEXT,
         provider_id TEXT NOT NULL DEFAULT 'chatgpt',
         routing_mode TEXT NOT NULL DEFAULT 'single',
+        account_scope TEXT NOT NULL DEFAULT 'all',
         client_mode TEXT NOT NULL DEFAULT 'codex',
         wire_api TEXT NOT NULL DEFAULT 'responses',
         name TEXT,
@@ -671,6 +706,10 @@ export class AccountStore {
         prompt_tokens INTEGER NOT NULL DEFAULT 0,
         completion_tokens INTEGER NOT NULL DEFAULT 0,
         total_tokens INTEGER NOT NULL DEFAULT 0,
+        cached_input_tokens INTEGER NOT NULL DEFAULT 0,
+        reasoning_output_tokens INTEGER NOT NULL DEFAULT 0,
+        priced_tokens INTEGER NOT NULL DEFAULT 0,
+        estimated_cost_usd REAL NOT NULL DEFAULT 0,
         updated_at INTEGER NOT NULL DEFAULT 0
       );
     `)
@@ -681,6 +720,7 @@ export class AccountStore {
     this.ensureVirtualKeyColumn("key_secret", "TEXT")
     this.ensureVirtualKeyColumn("provider_id", "TEXT NOT NULL DEFAULT 'chatgpt'")
     this.ensureVirtualKeyColumn("routing_mode", "TEXT NOT NULL DEFAULT 'single'")
+    this.ensureVirtualKeyColumn("account_scope", "TEXT NOT NULL DEFAULT 'all'")
     this.ensureVirtualKeyColumn("client_mode", "TEXT NOT NULL DEFAULT 'codex'")
     this.ensureVirtualKeyColumn("wire_api", "TEXT NOT NULL DEFAULT 'responses'")
     this.ensureVirtualKeyColumn("fixed_model", "TEXT")
@@ -693,7 +733,12 @@ export class AccountStore {
     this.db.exec(`CREATE INDEX IF NOT EXISTS idx_virtual_api_keys_provider ON virtual_api_keys(provider_id);`)
     this.ensureRequestAuditsSchema()
     this.ensureRequestTokenStatsSchema()
+    this.ensureTableColumn("global_usage_totals", "cached_input_tokens", "INTEGER NOT NULL DEFAULT 0")
+    this.ensureTableColumn("global_usage_totals", "reasoning_output_tokens", "INTEGER NOT NULL DEFAULT 0")
+    this.ensureTableColumn("global_usage_totals", "priced_tokens", "INTEGER NOT NULL DEFAULT 0")
+    this.ensureTableColumn("global_usage_totals", "estimated_cost_usd", "REAL NOT NULL DEFAULT 0")
     this.ensureGlobalUsageTotals()
+    this.reconcileGlobalUsageTotals()
     this.migrateSecretsToEncrypted()
   }
 
@@ -775,6 +820,7 @@ export class AccountStore {
     this.ensureTableColumn("request_token_stats", "output_tokens", "INTEGER NOT NULL DEFAULT 0")
     this.ensureTableColumn("request_token_stats", "total_tokens", "INTEGER NOT NULL DEFAULT 0")
     this.ensureTableColumn("request_token_stats", "billable_tokens", "INTEGER NOT NULL DEFAULT 0")
+    this.ensureTableColumn("request_token_stats", "priced_tokens", "INTEGER NOT NULL DEFAULT 0")
     this.ensureTableColumn("request_token_stats", "reasoning_output_tokens", "INTEGER NOT NULL DEFAULT 0")
     this.ensureTableColumn("request_token_stats", "estimated_cost_usd", "REAL NOT NULL DEFAULT 0")
     this.ensureTableColumn("request_token_stats", "unpriced_request_count", "INTEGER NOT NULL DEFAULT 0")
@@ -790,6 +836,7 @@ export class AccountStore {
         output_tokens,
         total_tokens,
         billable_tokens,
+        priced_tokens,
         reasoning_output_tokens,
         estimated_cost_usd,
         unpriced_request_count,
@@ -805,12 +852,35 @@ export class AccountStore {
         COALESCE(SUM(CASE WHEN output_tokens IS NOT NULL AND output_tokens > 0 THEN output_tokens ELSE 0 END), 0) AS output_tokens,
         COALESCE(SUM(${REQUEST_AUDIT_TOTAL_TOKENS_SQL}), 0) AS total_tokens,
         COALESCE(SUM(${REQUEST_AUDIT_BILLABLE_TOKENS_SQL}), 0) AS billable_tokens,
+        COALESCE(SUM(CASE WHEN estimated_cost_usd IS NOT NULL AND estimated_cost_usd > 0 AND ${REQUEST_AUDIT_TOTAL_TOKENS_SQL} > 0 THEN ${REQUEST_AUDIT_TOTAL_TOKENS_SQL} ELSE 0 END), 0) AS priced_tokens,
         COALESCE(SUM(CASE WHEN reasoning_output_tokens IS NOT NULL AND reasoning_output_tokens > 0 THEN reasoning_output_tokens ELSE 0 END), 0) AS reasoning_output_tokens,
         COALESCE(SUM(CASE WHEN estimated_cost_usd IS NOT NULL AND estimated_cost_usd > 0 THEN estimated_cost_usd ELSE 0 END), 0) AS estimated_cost_usd,
         COALESCE(SUM(CASE WHEN total_tokens IS NOT NULL AND total_tokens > 0 AND estimated_cost_usd IS NULL THEN 1 ELSE 0 END), 0) AS unpriced_request_count,
         COALESCE(MAX(at), 0) AS updated_at
       FROM request_audits
       GROUP BY strftime('%Y-%m-%d', at / 1000.0, 'unixepoch', 'localtime');
+    `)
+    this.db.exec(`
+      UPDATE request_token_stats
+      SET priced_tokens = COALESCE(
+        (
+          SELECT
+            COALESCE(
+              SUM(
+                CASE
+                  WHEN estimated_cost_usd IS NOT NULL AND estimated_cost_usd > 0 AND ${REQUEST_AUDIT_TOTAL_TOKENS_SQL} > 0
+                    THEN ${REQUEST_AUDIT_TOTAL_TOKENS_SQL}
+                  ELSE 0
+                END
+              ),
+              0
+            )
+          FROM request_audits
+          WHERE strftime('%Y-%m-%d', at / 1000.0, 'unixepoch', 'localtime') = request_token_stats.day_key
+        ),
+        0
+      )
+      WHERE COALESCE(priced_tokens, 0) = 0;
     `)
   }
 
@@ -821,8 +891,11 @@ export class AccountStore {
     const accountColumn = columns.find((column) => column.name === "account_id")
     const hasProvider = columns.some((column) => column.name === "provider_id")
     const hasRouting = columns.some((column) => column.name === "routing_mode")
+    const hasAccountScope = columns.some((column) => column.name === "account_scope")
     const hasClientMode = columns.some((column) => column.name === "client_mode")
     const hasWireApi = columns.some((column) => column.name === "wire_api")
+    const hasFixedModel = columns.some((column) => column.name === "fixed_model")
+    const hasFixedReasoningEffort = columns.some((column) => column.name === "fixed_reasoning_effort")
     const hasKeySecret = columns.some((column) => column.name === "key_secret")
     const hasPromptTokens = columns.some((column) => column.name === "prompt_tokens")
     const hasCompletionTokens = columns.some((column) => column.name === "completion_tokens")
@@ -834,6 +907,7 @@ export class AccountStore {
       !needsNullableAccount &&
       hasProvider &&
       hasRouting &&
+      hasAccountScope &&
       hasClientMode &&
       hasWireApi &&
       hasKeySecret &&
@@ -846,10 +920,15 @@ export class AccountStore {
 
     const providerExpr = hasProvider ? "COALESCE(provider_id, 'chatgpt')" : "'chatgpt'"
     const routingExpr = hasRouting ? "CASE WHEN routing_mode = 'pool' THEN 'pool' ELSE 'single' END" : "'single'"
+    const accountScopeExpr = hasAccountScope
+      ? "CASE WHEN account_scope = 'free' THEN 'free' WHEN account_scope IN ('member', 'paid', 'paid_member') THEN 'member' ELSE 'all' END"
+      : "'all'"
     const clientModeExpr = hasClientMode ? "CASE WHEN client_mode = 'cursor' THEN 'cursor' ELSE 'codex' END" : "'codex'"
     const wireApiExpr =
       hasWireApi ? "CASE WHEN wire_api = 'chat_completions' THEN 'chat_completions' ELSE 'responses' END" : "'responses'"
     const keySecretExpr = hasKeySecret ? "key_secret" : "NULL"
+    const fixedModelExpr = hasFixedModel ? "fixed_model" : "NULL"
+    const fixedReasoningEffortExpr = hasFixedReasoningEffort ? "fixed_reasoning_effort" : "NULL"
     const promptTokensExpr = hasPromptTokens ? "COALESCE(prompt_tokens, 0)" : "0"
     const completionTokensExpr = hasCompletionTokens ? "COALESCE(completion_tokens, 0)" : "0"
     const totalTokensExpr = hasTotalTokens ? "COALESCE(total_tokens, 0)" : "0"
@@ -862,6 +941,7 @@ export class AccountStore {
         account_id TEXT,
         provider_id TEXT NOT NULL DEFAULT 'chatgpt',
         routing_mode TEXT NOT NULL DEFAULT 'single',
+        account_scope TEXT NOT NULL DEFAULT 'all',
         client_mode TEXT NOT NULL DEFAULT 'codex',
         wire_api TEXT NOT NULL DEFAULT 'responses',
         name TEXT,
@@ -887,6 +967,7 @@ export class AccountStore {
         account_id,
         provider_id,
         routing_mode,
+        account_scope,
         client_mode,
         wire_api,
         name,
@@ -909,11 +990,12 @@ export class AccountStore {
         account_id,
         ${providerExpr},
         ${routingExpr},
+        ${accountScopeExpr},
         ${clientModeExpr},
         ${wireApiExpr},
         name,
-        NULL,
-        NULL,
+        ${fixedModelExpr},
+        ${fixedReasoningEffortExpr},
         key_hash,
         ${keySecretExpr},
         key_prefix,
@@ -955,6 +1037,7 @@ export class AccountStore {
         completion_tokens: 0,
         total_tokens: 0,
       }
+    const requestStatsTotals = this.getRequestTokenStatsTotals()
 
     const now = Date.now()
     this.db
@@ -965,15 +1048,145 @@ export class AccountStore {
             prompt_tokens,
             completion_tokens,
             total_tokens,
+            cached_input_tokens,
+            reasoning_output_tokens,
+            priced_tokens,
+            estimated_cost_usd,
             updated_at
-          ) VALUES (1, ?, ?, ?, ?)
+          ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)
         `,
       )
       .run(
         Math.max(0, Math.floor(Number(baseline.prompt_tokens ?? 0))),
         Math.max(0, Math.floor(Number(baseline.completion_tokens ?? 0))),
         Math.max(0, Math.floor(Number(baseline.total_tokens ?? 0))),
+        requestStatsTotals.cachedInputTokens,
+        requestStatsTotals.reasoningOutputTokens,
+        requestStatsTotals.pricedTokens,
+        requestStatsTotals.estimatedCostUsd,
         now,
+      )
+  }
+
+  private getRequestTokenStatsTotals() {
+    const row =
+      this.db
+        .query<
+          {
+            cached_input_tokens: number
+            reasoning_output_tokens: number
+            priced_tokens: number
+            estimated_cost_usd: number
+            updated_at: number
+          },
+          []
+        >(
+          `
+            SELECT
+              COALESCE(SUM(cached_input_tokens), 0) AS cached_input_tokens,
+              COALESCE(SUM(reasoning_output_tokens), 0) AS reasoning_output_tokens,
+              COALESCE(SUM(priced_tokens), 0) AS priced_tokens,
+              COALESCE(SUM(CASE WHEN estimated_cost_usd IS NOT NULL AND estimated_cost_usd > 0 THEN estimated_cost_usd ELSE 0 END), 0) AS estimated_cost_usd,
+              COALESCE(MAX(updated_at), 0) AS updated_at
+            FROM request_token_stats
+          `,
+        )
+        .get() ?? {
+        cached_input_tokens: 0,
+        reasoning_output_tokens: 0,
+        priced_tokens: 0,
+        estimated_cost_usd: 0,
+        updated_at: 0,
+      }
+
+    return {
+      cachedInputTokens: Math.max(0, Math.floor(Number(row.cached_input_tokens ?? 0))),
+      reasoningOutputTokens: Math.max(0, Math.floor(Number(row.reasoning_output_tokens ?? 0))),
+      pricedTokens: Math.max(0, Math.floor(Number(row.priced_tokens ?? 0))),
+      estimatedCostUsd: Math.max(0, Number(row.estimated_cost_usd ?? 0)),
+      updatedAt: Math.max(0, Math.floor(Number(row.updated_at ?? 0))),
+    }
+  }
+
+  reconcileGlobalUsageTotals(now = Date.now()) {
+    const current =
+      this.db
+        .query<GlobalUsageTotalsRow, []>(
+          `
+            SELECT
+              prompt_tokens,
+              completion_tokens,
+              total_tokens,
+              cached_input_tokens,
+              reasoning_output_tokens,
+              priced_tokens,
+              estimated_cost_usd,
+              updated_at
+            FROM global_usage_totals
+            WHERE id = 1
+            LIMIT 1
+          `,
+        )
+        .get() ?? null
+    if (!current) return
+
+    const requestStatsTotals = this.getRequestTokenStatsTotals()
+    const nextCachedInputTokens = Math.max(
+      0,
+      Math.max(
+        Math.floor(Number(current.cached_input_tokens ?? 0)),
+        requestStatsTotals.cachedInputTokens,
+      ),
+    )
+    const nextReasoningOutputTokens = Math.max(
+      0,
+      Math.max(
+        Math.floor(Number(current.reasoning_output_tokens ?? 0)),
+        requestStatsTotals.reasoningOutputTokens,
+      ),
+    )
+    const nextPricedTokens = Math.max(
+      0,
+      Math.max(
+        Math.floor(Number(current.priced_tokens ?? 0)),
+        requestStatsTotals.pricedTokens,
+      ),
+    )
+    const nextEstimatedCostUsd = Math.max(
+      0,
+      Math.max(Number(current.estimated_cost_usd ?? 0), requestStatsTotals.estimatedCostUsd),
+    )
+    const currentUpdatedAt = Math.max(0, Math.floor(Number(current.updated_at ?? 0)))
+    const nextUpdatedAt = Math.max(currentUpdatedAt, requestStatsTotals.updatedAt, now)
+
+    if (
+      nextCachedInputTokens === Math.max(0, Math.floor(Number(current.cached_input_tokens ?? 0))) &&
+      nextReasoningOutputTokens === Math.max(0, Math.floor(Number(current.reasoning_output_tokens ?? 0))) &&
+      nextPricedTokens === Math.max(0, Math.floor(Number(current.priced_tokens ?? 0))) &&
+      nextEstimatedCostUsd === Math.max(0, Number(current.estimated_cost_usd ?? 0))
+    ) {
+      return
+    }
+
+    this.db
+      .query(
+        `
+          UPDATE global_usage_totals
+          SET
+            cached_input_tokens = ?,
+            reasoning_output_tokens = ?,
+            priced_tokens = ?,
+            estimated_cost_usd = ?,
+            updated_at = ?
+          WHERE id = 1
+        `,
+      )
+      .run(
+        nextCachedInputTokens,
+        nextReasoningOutputTokens,
+        nextPricedTokens,
+        nextEstimatedCostUsd,
+        nextUpdatedAt,
       )
   }
 
@@ -1138,6 +1351,7 @@ export class AccountStore {
     name?: string | null
     providerId?: string
     routingMode?: VirtualKeyRoutingMode
+    accountScope?: VirtualKeyAccountScope | string | null
     clientMode?: VirtualKeyClientMode
     wireApi?: VirtualKeyWireAPI
     fixedModel?: string | null
@@ -1146,6 +1360,7 @@ export class AccountStore {
   }) {
     const providerId = input.providerId ?? "chatgpt"
     const routingMode = input.routingMode ?? "single"
+    const accountScope = normalizeVirtualKeyAccountScope(input.accountScope)
     const clientMode = input.clientMode === "cursor" ? "cursor" : "codex"
     const wireApi =
       input.wireApi === "chat_completions" ? "chat_completions" : clientMode === "cursor" ? "chat_completions" : "responses"
@@ -1157,17 +1372,8 @@ export class AccountStore {
       clientMode,
       fixedModel,
       fixedReasoningEffort,
+      accountScope,
     })
-    const fixedModelRequiresPaidPool =
-      providerId === "chatgpt" && Boolean(fixedModel && (fixedModel === "gpt-5.5" || fixedModel.startsWith("gpt-5.5-")))
-
-    const assertFixedModelEligibleForAccount = (account: StoredAccount) => {
-      if (!fixedModelRequiresPaidPool) return
-      if (resolveAccountPlanCohort(account) !== "paid") {
-        throw new Error("Fixed gpt-5.5 key requires a Plus/Pro/Business ChatGPT account")
-      }
-    }
-
     if (routingMode === "single") {
       if (!accountId) throw new Error("Account is required for single-route virtual key")
       const account = this.get(accountId)
@@ -1175,20 +1381,23 @@ export class AccountStore {
       if (account.providerId !== providerId) {
         throw new Error("Account provider does not match virtual key provider")
       }
-      assertFixedModelEligibleForAccount(account)
-    } else {
-      const accounts = this.getAvailableAccountsForProvider(providerId)
-      if (accounts.length === 0) throw new Error("No available accounts for pool routing")
-      if (fixedModelRequiresPaidPool && !accounts.some((account) => resolveAccountPlanCohort(account) === "paid")) {
-        throw new Error("No paid ChatGPT accounts available for fixed gpt-5.5 key")
+      if (!virtualKeyScopeMatchesAccount(account, accountScope)) {
+        throw new Error(`Selected account does not match ${accountScope} virtual key scope`)
       }
+    } else {
+      const accounts = this.getAvailableAccountsForProvider(providerId).filter((account) =>
+        virtualKeyScopeMatchesAccount(account, accountScope),
+      )
+      if (accounts.length === 0) throw new Error("No available accounts for pool routing")
       if (accountId) {
         const account = this.get(accountId)
         if (!account) throw new Error("Account not found")
         if (account.providerId !== providerId) {
           throw new Error("Account provider does not match virtual key provider")
         }
-        assertFixedModelEligibleForAccount(account)
+        if (!virtualKeyScopeMatchesAccount(account, accountScope)) {
+          throw new Error(`Selected account does not match ${accountScope} virtual key scope`)
+        }
       }
     }
 
@@ -1208,6 +1417,7 @@ export class AccountStore {
             account_id,
             provider_id,
             routing_mode,
+            account_scope,
             client_mode,
             wire_api,
             name,
@@ -1224,7 +1434,7 @@ export class AccountStore {
             last_used_at,
             created_at,
             updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 0, ?, NULL, ?, ?)
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 0, ?, NULL, ?, ?)
         `,
       )
       .run(
@@ -1232,6 +1442,7 @@ export class AccountStore {
         accountId,
         providerId,
         routingMode,
+        accountScope,
         clientMode,
         wireApi,
         resolvedName,
@@ -1365,7 +1576,7 @@ export class AccountStore {
       headroomByAccountId?: Map<string, number>
       pressureScoreByAccountId?: Map<string, number>
       routeOptionsFactory?: (
-        key: Pick<VirtualApiKeyRecord, "id" | "providerId" | "routingMode">,
+        key: Pick<VirtualApiKeyRecord, "id" | "providerId" | "routingMode" | "accountScope">,
       ) =>
         | {
             excludeAccountIds?: string[]
@@ -1436,7 +1647,7 @@ export class AccountStore {
     const account =
       key.routingMode === "pool"
         ? this.pickPoolAccountForKey(key.id, key.providerId, sessionId, routeOptions)
-        : this.getSingleRouteAccount(key.providerId, key.accountId)
+        : this.getSingleRouteAccount(key.providerId, key.accountId, key.accountScope)
 
     if (!account) return null
     return {
@@ -1454,7 +1665,7 @@ export class AccountStore {
       headroomByAccountId?: Map<string, number>
       pressureScoreByAccountId?: Map<string, number>
       routeOptionsFactory?: (
-        key: Pick<VirtualApiKeyRecord, "id" | "providerId" | "routingMode">,
+        key: Pick<VirtualApiKeyRecord, "id" | "providerId" | "routingMode" | "accountScope">,
       ) =>
         | {
             excludeAccountIds?: string[]
@@ -1525,7 +1736,7 @@ export class AccountStore {
     const account =
       key.routingMode === "pool"
         ? this.pickPoolAccountForKey(key.id, key.providerId, sessionId, routeOptions)
-        : this.getSingleRouteAccount(key.providerId, key.accountId)
+        : this.getSingleRouteAccount(key.providerId, key.accountId, key.accountScope)
 
     if (!account) return null
     return {
@@ -1534,11 +1745,12 @@ export class AccountStore {
     }
   }
 
-  private getSingleRouteAccount(providerId: string, accountID: string | null) {
+  private getSingleRouteAccount(providerId: string, accountID: string | null, accountScope: VirtualKeyAccountScope = "all") {
     if (!accountID) return null
     const account = this.get(accountID)
     if (!account) return null
     if (account.providerId !== providerId) return null
+    if (!virtualKeyScopeMatchesAccount(account, accountScope)) return null
     return account
   }
 
@@ -1560,7 +1772,13 @@ export class AccountStore {
     this.pruneExpiredVirtualKeySessions()
     if (sessionId) {
       const sticky = this.pickSessionStickyAccount(keyID, providerId, sessionId)
-      if (sticky && !options?.excludeAccountIds?.has(sticky.id)) return sticky
+      if (
+        sticky &&
+        !options?.excludeAccountIds?.has(sticky.id) &&
+        !options?.deprioritizedAccountIds?.has(sticky.id)
+      ) {
+        return sticky
+      }
     }
 
     const selected = this.pickPoolAccountCandidate(keyID, providerId, options)
@@ -1892,7 +2110,15 @@ export class AccountStore {
     const row = this.db
       .query<GlobalUsageTotalsRow, []>(
         `
-          SELECT prompt_tokens, completion_tokens, total_tokens, updated_at
+          SELECT
+            prompt_tokens,
+            completion_tokens,
+            total_tokens,
+            cached_input_tokens,
+            reasoning_output_tokens,
+            priced_tokens,
+            estimated_cost_usd,
+            updated_at
           FROM global_usage_totals
           WHERE id = 1
           LIMIT 1
@@ -1903,35 +2129,101 @@ export class AccountStore {
       promptTokens: Math.max(0, Math.floor(Number(row?.prompt_tokens ?? 0))),
       completionTokens: Math.max(0, Math.floor(Number(row?.completion_tokens ?? 0))),
       totalTokens: Math.max(0, Math.floor(Number(row?.total_tokens ?? 0))),
+      cachedInputTokens: Math.max(0, Math.floor(Number(row?.cached_input_tokens ?? 0))),
+      reasoningOutputTokens: Math.max(0, Math.floor(Number(row?.reasoning_output_tokens ?? 0))),
+      pricedTokens: Math.max(0, Math.floor(Number(row?.priced_tokens ?? 0))),
+      estimatedCostUsd: Math.max(0, Number(row?.estimated_cost_usd ?? 0)),
       updatedAt: Math.max(0, Math.floor(Number(row?.updated_at ?? 0))),
     }
   }
 
-  private addGlobalUsageDelta(input: { promptTokens: number; completionTokens: number; totalTokens: number }, now = Date.now()) {
-    if (input.promptTokens === 0 && input.completionTokens === 0 && input.totalTokens === 0) return
+  private addGlobalUsageDelta(
+    input: {
+      promptTokens: number
+      completionTokens: number
+      totalTokens: number
+      cachedInputTokens?: number
+      reasoningOutputTokens?: number
+      pricedTokens?: number
+      estimatedCostUsd?: number
+    },
+    now = Date.now(),
+  ) {
+    const promptTokens = Math.trunc(Number(input.promptTokens ?? 0))
+    const completionTokens = Math.trunc(Number(input.completionTokens ?? 0))
+    const totalTokens = Math.trunc(Number(input.totalTokens ?? 0))
+    const cachedInputTokens = Math.trunc(Number(input.cachedInputTokens ?? 0))
+    const reasoningOutputTokens = Math.trunc(Number(input.reasoningOutputTokens ?? 0))
+    const pricedTokens = Math.trunc(Number(input.pricedTokens ?? 0))
+    const estimatedCostUsd = Number(input.estimatedCostUsd ?? 0)
+    if (
+      promptTokens === 0 &&
+      completionTokens === 0 &&
+      totalTokens === 0 &&
+      cachedInputTokens === 0 &&
+      reasoningOutputTokens === 0 &&
+      pricedTokens === 0 &&
+      estimatedCostUsd === 0
+    ) {
+      return
+    }
     this.ensureGlobalUsageTotals()
     this.db
       .query(
         `
           UPDATE global_usage_totals
           SET
-            prompt_tokens = prompt_tokens + ?,
-            completion_tokens = completion_tokens + ?,
-            total_tokens = total_tokens + ?,
+            prompt_tokens = MAX(0, prompt_tokens + ?),
+            completion_tokens = MAX(0, completion_tokens + ?),
+            total_tokens = MAX(0, total_tokens + ?),
+            cached_input_tokens = MAX(0, cached_input_tokens + ?),
+            reasoning_output_tokens = MAX(0, reasoning_output_tokens + ?),
+            priced_tokens = MAX(0, priced_tokens + ?),
+            estimated_cost_usd = MAX(0, estimated_cost_usd + ?),
             updated_at = ?
           WHERE id = 1
         `,
       )
-      .run(input.promptTokens, input.completionTokens, input.totalTokens, now)
+      .run(
+        promptTokens,
+        completionTokens,
+        totalTokens,
+        cachedInputTokens,
+        reasoningOutputTokens,
+        pricedTokens,
+        estimatedCostUsd,
+        now,
+      )
   }
 
-  addUsage(input: { id: string; promptTokens?: number; completionTokens?: number; totalTokens?: number }) {
+  addUsage(input: {
+    id: string
+    promptTokens?: number
+    completionTokens?: number
+    totalTokens?: number
+    cachedInputTokens?: number | null
+    reasoningOutputTokens?: number | null
+    estimatedCostUsd?: number | null
+  }) {
     const row = this.get(input.id)
     if (!row) throw new Error("Account not found")
     const promptTokens = Math.max(0, Math.floor(input.promptTokens ?? 0))
     const completionTokens = Math.max(0, Math.floor(input.completionTokens ?? 0))
     const totalTokens = Math.max(0, Math.floor(input.totalTokens ?? promptTokens + completionTokens))
-    if (promptTokens === 0 && completionTokens === 0 && totalTokens === 0) return
+    const cachedInputTokens = Math.max(0, Math.floor(Number(input.cachedInputTokens ?? 0)))
+    const reasoningOutputTokens = Math.max(0, Math.floor(Number(input.reasoningOutputTokens ?? 0)))
+    const estimatedCostUsd = input.estimatedCostUsd == null ? null : Math.max(0, Number(input.estimatedCostUsd ?? 0))
+    const pricedTokens = estimatedCostUsd !== null && totalTokens > 0 ? totalTokens : 0
+    if (
+      promptTokens === 0 &&
+      completionTokens === 0 &&
+      totalTokens === 0 &&
+      cachedInputTokens === 0 &&
+      reasoningOutputTokens === 0 &&
+      estimatedCostUsd === null
+    ) {
+      return
+    }
     const now = Date.now()
     const tx = this.db.transaction(() => {
       this.db
@@ -1952,6 +2244,10 @@ export class AccountStore {
           promptTokens,
           completionTokens,
           totalTokens,
+          cachedInputTokens,
+          reasoningOutputTokens,
+          pricedTokens,
+          estimatedCostUsd: estimatedCostUsd ?? 0,
         },
         now,
       )
@@ -2027,6 +2323,7 @@ export class AccountStore {
     )
     const reasoningOutputTokens = normalizeNonNegativeInteger(input.reasoningOutputTokens)
     const estimatedCostUsd = normalizeNonNegativeNumber(input.estimatedCostUsd)
+    const pricedTokens = estimatedCostUsd != null && totalTokens != null && totalTokens > 0 ? totalTokens : 0
     const reasoningEffort = String(input.reasoningEffort ?? "").trim() || null
     const requestHash = hashRequestPayload(input.requestBody ?? new Uint8Array(0))
     const successCount = statusCode >= 200 && statusCode <= 299 ? 1 : 0
@@ -2110,11 +2407,12 @@ export class AccountStore {
               output_tokens,
               total_tokens,
               billable_tokens,
+              priced_tokens,
               reasoning_output_tokens,
               estimated_cost_usd,
               unpriced_request_count,
               updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(day_key) DO UPDATE SET
               request_count = request_token_stats.request_count + excluded.request_count,
               success_count = request_token_stats.success_count + excluded.success_count,
@@ -2124,6 +2422,7 @@ export class AccountStore {
               output_tokens = request_token_stats.output_tokens + excluded.output_tokens,
               total_tokens = request_token_stats.total_tokens + excluded.total_tokens,
               billable_tokens = request_token_stats.billable_tokens + excluded.billable_tokens,
+              priced_tokens = request_token_stats.priced_tokens + excluded.priced_tokens,
               reasoning_output_tokens = request_token_stats.reasoning_output_tokens + excluded.reasoning_output_tokens,
               estimated_cost_usd = request_token_stats.estimated_cost_usd + excluded.estimated_cost_usd,
               unpriced_request_count = request_token_stats.unpriced_request_count + excluded.unpriced_request_count,
@@ -2140,11 +2439,24 @@ export class AccountStore {
           outputTokens ?? 0,
           totalTokens ?? 0,
           billableTokens ?? 0,
+          pricedTokens,
           reasoningOutputTokens ?? 0,
           estimatedCostUsd ?? 0,
           unpricedRequestCount,
           Date.now(),
         )
+      this.addGlobalUsageDelta(
+        {
+          promptTokens: 0,
+          completionTokens: 0,
+          totalTokens: 0,
+          cachedInputTokens: cachedInputTokens ?? 0,
+          reasoningOutputTokens: reasoningOutputTokens ?? 0,
+          pricedTokens,
+          estimatedCostUsd: estimatedCostUsd ?? 0,
+        },
+        now,
+      )
     })
     tx()
     return id
@@ -2231,10 +2543,14 @@ export class AccountStore {
     const deltaBillableTokens = (resolvedBillableTokens ?? 0) - (currentBillableTokens ?? 0)
     const deltaReasoningOutputTokens = (resolvedReasoningOutputTokens ?? 0) - (currentReasoningOutputTokens ?? 0)
     const deltaEstimatedCostUsd = (resolvedEstimatedCostUsd ?? 0) - (currentEstimatedCostUsd ?? 0)
+    const deltaPricedTokens =
+      (resolvedEstimatedCostUsd != null && (resolvedTotalTokens ?? 0) > 0 ? resolvedTotalTokens ?? 0 : 0) -
+      (currentEstimatedCostUsd != null && (currentTotalTokens ?? 0) > 0 ? currentTotalTokens ?? 0 : 0)
     const deltaUnpricedRequestCount =
       (resolvedTotalTokens != null && resolvedTotalTokens > 0 && resolvedEstimatedCostUsd == null ? 1 : 0) -
       (currentTotalTokens != null && currentTotalTokens > 0 && currentEstimatedCostUsd == null ? 1 : 0)
     const dayKey = toLocalDayKey(existing.at)
+    const now = Date.now()
     const tx = this.db.transaction(() => {
       this.db
         .query(
@@ -2273,9 +2589,10 @@ export class AccountStore {
               output_tokens = output_tokens + ?,
               total_tokens = total_tokens + ?,
               billable_tokens = billable_tokens + ?,
+              priced_tokens = MAX(0, priced_tokens + ?),
               reasoning_output_tokens = reasoning_output_tokens + ?,
-              estimated_cost_usd = estimated_cost_usd + ?,
-              unpriced_request_count = unpriced_request_count + ?,
+              estimated_cost_usd = MAX(0, estimated_cost_usd + ?),
+              unpriced_request_count = MAX(0, unpriced_request_count + ?),
               updated_at = ?
             WHERE day_key = ?
           `,
@@ -2286,12 +2603,25 @@ export class AccountStore {
           deltaOutputTokens,
           deltaTotalTokens,
           deltaBillableTokens,
+          deltaPricedTokens,
           deltaReasoningOutputTokens,
           deltaEstimatedCostUsd,
           deltaUnpricedRequestCount,
-          Date.now(),
+          now,
           dayKey,
         )
+      this.addGlobalUsageDelta(
+        {
+          promptTokens: 0,
+          completionTokens: 0,
+          totalTokens: 0,
+          cachedInputTokens: deltaCachedInputTokens,
+          reasoningOutputTokens: deltaReasoningOutputTokens,
+          pricedTokens: deltaPricedTokens,
+          estimatedCostUsd: deltaEstimatedCostUsd,
+        },
+        now,
+      )
     })
     tx()
   }
@@ -2311,6 +2641,7 @@ export class AccountStore {
         `
           SELECT
             id,
+            at,
             model,
             input_tokens,
             cached_input_tokens,
@@ -2331,8 +2662,20 @@ export class AccountStore {
     }
 
     let updatedCount = 0
+    const dayDeltas = new Map<string, { pricedTokens: number; estimatedCostUsd: number; unpricedRequestCount: number }>()
     const tx = this.db.transaction(() => {
       const updateStatement = this.db.query(`UPDATE request_audits SET estimated_cost_usd = ? WHERE id = ?`)
+      const updateDayStatement = this.db.query(
+        `
+          UPDATE request_token_stats
+          SET
+            priced_tokens = MAX(0, priced_tokens + ?),
+            estimated_cost_usd = MAX(0, estimated_cost_usd + ?),
+            unpriced_request_count = MAX(0, unpriced_request_count + ?),
+            updated_at = ?
+          WHERE day_key = ?
+        `,
+      )
       for (const row of rows) {
         const estimatedCostUsd = normalizeNonNegativeNumber(
           estimateCostUsd({
@@ -2346,10 +2689,25 @@ export class AccountStore {
         )
         if (estimatedCostUsd == null) continue
         updateStatement.run(estimatedCostUsd, row.id)
+        const dayKey = toLocalDayKey(row.at)
+        const current = dayDeltas.get(dayKey) ?? { pricedTokens: 0, estimatedCostUsd: 0, unpricedRequestCount: 0 }
+        current.pricedTokens += Math.max(0, Math.floor(Number(row.total_tokens ?? 0)))
+        current.estimatedCostUsd += estimatedCostUsd
+        current.unpricedRequestCount -= row.total_tokens != null && row.total_tokens > 0 ? 1 : 0
+        dayDeltas.set(dayKey, current)
         updatedCount += 1
       }
       if (updatedCount > 0) {
-        this.rebuildRequestTokenStatsFromAudits()
+        const now = Date.now()
+        for (const [dayKey, delta] of dayDeltas.entries()) {
+          updateDayStatement.run(
+            delta.pricedTokens,
+            delta.estimatedCostUsd,
+            delta.unpricedRequestCount,
+            now,
+            dayKey,
+          )
+        }
       }
     })
     tx()

@@ -4,7 +4,7 @@ import os from "node:os"
 import path from "node:path"
 import * as zlib from "node:zlib"
 import { createHash } from "node:crypto"
-import { spawnSync } from "node:child_process"
+import { spawn, spawnSync } from "node:child_process"
 import { existsSync, statSync } from "node:fs"
 import { readFile, writeFile } from "node:fs/promises"
 import { AppConfig, ensureAppDirs } from "./config"
@@ -362,6 +362,148 @@ const FORWARD_PROXY_ENFORCE_ALLOWLIST =
 let forwardProxy: RestrictedForwardProxy | null = null
 let server: ReturnType<typeof Bun.serve> | null = null
 let fatalShutdown = false
+
+function parseIntegerEnvValue(name: string, fallback: number, min: number, max: number) {
+  const rawValue = String(process.env[name] ?? "").trim()
+  if (!rawValue) return fallback
+  const raw = Number(rawValue)
+  if (!Number.isFinite(raw)) return fallback
+  return Math.min(max, Math.max(min, Math.floor(raw)))
+}
+
+const PROXY_MAX_REQUEST_BODY_BYTES = parseIntegerEnvValue(
+  "OAUTH_PROXY_MAX_REQUEST_BODY_BYTES",
+  64 * 1024 * 1024,
+  1024 * 1024,
+  512 * 1024 * 1024,
+)
+const PROXY_HEAVY_BODY_BYTES = parseIntegerEnvValue("OAUTH_PROXY_HEAVY_BODY_BYTES", 1024 * 1024, 0, 128 * 1024 * 1024)
+const PROXY_MAX_IN_FLIGHT = parseIntegerEnvValue("OAUTH_PROXY_MAX_IN_FLIGHT", 12, 1, 128)
+const PROXY_MAX_HEAVY_IN_FLIGHT = parseIntegerEnvValue("OAUTH_PROXY_MAX_HEAVY_IN_FLIGHT", 2, 1, 32)
+const PROXY_QUEUE_WAIT_MS = parseIntegerEnvValue("OAUTH_PROXY_QUEUE_WAIT_MS", 45_000, 0, 10 * 60 * 1000)
+const PROXY_MAX_QUEUE = parseIntegerEnvValue("OAUTH_PROXY_MAX_QUEUE", 256, 0, 5000)
+const STRICT_PRIVACY_SANITIZED_LOG_INTERVAL_MS = parseIntegerEnvValue(
+  "OAUTH_STRICT_PRIVACY_SANITIZED_LOG_INTERVAL_MS",
+  60_000,
+  1000,
+  10 * 60 * 1000,
+)
+const USAGE_TRACK_MAX_TEXT_CHARS = parseIntegerEnvValue(
+  "OAUTH_USAGE_TRACK_MAX_TEXT_CHARS",
+  4 * 1024 * 1024,
+  64 * 1024,
+  64 * 1024 * 1024,
+)
+
+type ProxyPressureLease = {
+  release: () => void
+}
+
+type ProxyPressureQueueItem = {
+  heavy: boolean
+  label: string
+  resolve: (lease: ProxyPressureLease) => void
+  reject: (error: Error) => void
+  timer?: ReturnType<typeof setTimeout>
+  signal?: AbortSignal
+  onAbort?: () => void
+}
+
+class ProxyRequestPressureLimiter {
+  private globalInFlight = 0
+  private heavyInFlight = 0
+  private queue: ProxyPressureQueueItem[] = []
+
+  constructor(
+    private readonly maxInFlight: number,
+    private readonly maxHeavyInFlight: number,
+    private readonly maxQueue: number,
+    private readonly queueWaitMs: number,
+  ) {}
+
+  async acquire(input: { heavy: boolean; label: string; signal?: AbortSignal | null }): Promise<ProxyPressureLease> {
+    if (input.signal?.aborted) {
+      throw makeStatusError(499, "Client cancelled request before it entered the gateway queue")
+    }
+    if (this.canAcquire(input.heavy)) {
+      return this.reserve(input.heavy)
+    }
+    if (this.queue.length >= this.maxQueue) {
+      throw makeStatusError(429, "Gateway is busy; too many requests are queued")
+    }
+    if (this.queueWaitMs <= 0) {
+      throw makeStatusError(429, "Gateway is busy; request concurrency limit reached")
+    }
+
+    return await new Promise<ProxyPressureLease>((resolve, reject) => {
+      const item: ProxyPressureQueueItem = {
+        heavy: input.heavy,
+        label: input.label,
+        resolve,
+        reject,
+        signal: input.signal ?? undefined,
+      }
+      item.timer = setTimeout(() => {
+        this.removeQueued(item)
+        reject(makeStatusError(429, "Gateway is busy; request waited too long in queue"))
+      }, this.queueWaitMs)
+      item.onAbort = () => {
+        this.removeQueued(item)
+        reject(makeStatusError(499, "Client cancelled request while it was queued"))
+      }
+      item.signal?.addEventListener("abort", item.onAbort, { once: true })
+      this.queue.push(item)
+      this.drain()
+    })
+  }
+
+  private canAcquire(heavy: boolean) {
+    return this.globalInFlight < this.maxInFlight && (!heavy || this.heavyInFlight < this.maxHeavyInFlight)
+  }
+
+  private reserve(heavy: boolean): ProxyPressureLease {
+    this.globalInFlight += 1
+    if (heavy) this.heavyInFlight += 1
+    let released = false
+    return {
+      release: () => {
+        if (released) return
+        released = true
+        this.globalInFlight = Math.max(0, this.globalInFlight - 1)
+        if (heavy) this.heavyInFlight = Math.max(0, this.heavyInFlight - 1)
+        this.drain()
+      },
+    }
+  }
+
+  private removeQueued(item: ProxyPressureQueueItem) {
+    const index = this.queue.indexOf(item)
+    if (index >= 0) this.queue.splice(index, 1)
+    if (item.timer) clearTimeout(item.timer)
+    if (item.onAbort) item.signal?.removeEventListener("abort", item.onAbort)
+  }
+
+  private drain() {
+    for (let index = 0; index < this.queue.length; ) {
+      const item = this.queue[index]
+      if (!item || !this.canAcquire(item.heavy)) {
+        index += 1
+        continue
+      }
+      this.queue.splice(index, 1)
+      if (item.timer) clearTimeout(item.timer)
+      if (item.onAbort) item.signal?.removeEventListener("abort", item.onAbort)
+      item.resolve(this.reserve(item.heavy))
+    }
+  }
+}
+
+const proxyRequestPressureLimiter = new ProxyRequestPressureLimiter(
+  PROXY_MAX_IN_FLIGHT,
+  PROXY_MAX_HEAVY_IN_FLIGHT,
+  PROXY_MAX_QUEUE,
+  PROXY_QUEUE_WAIT_MS,
+)
 
 type UpstreamProfile = {
   providerMode: "chatgpt" | "openai"
@@ -1081,16 +1223,12 @@ function toSerializableAssetSource(source: CodexOfficialAssetSource) {
 }
 
 function buildOfficialAssetsStatus() {
-  const modelSource =
-    CODEX_RUNTIME_ASSETS.modelsSource.kind === "env_override"
-      ? CODEX_RUNTIME_ASSETS.modelsSource
-      : ({ kind: "fallback", path: null } satisfies CodexOfficialAssetSource)
   return {
     clientVersion: CODEX_RUNTIME_ASSETS.clientVersion,
     clientVersionSource: toSerializableAssetSource(CODEX_RUNTIME_ASSETS.clientVersionSource),
     promptSource: toSerializableAssetSource(CHAT_INSTRUCTIONS_SOURCE),
-    modelsSource: toSerializableAssetSource(modelSource),
-    modelsFile: modelSource.kind === "env_override" ? CODEX_RUNTIME_ASSETS.modelsFile : null,
+    modelsSource: toSerializableAssetSource(CODEX_RUNTIME_ASSETS.modelsSource),
+    modelsFile: CODEX_RUNTIME_ASSETS.modelsFile,
   }
 }
 
@@ -1180,6 +1318,30 @@ const OFFICIAL_CODEX_REASONING_LEVELS = [
 
 const OFFICIAL_CODEX_REASONING_LEVEL_IDS = OFFICIAL_CODEX_REASONING_LEVELS.map((level) => level.effort)
 
+const OFFICIAL_CODEX_ALL_PLAN_IDS = [
+  "business",
+  "edu",
+  "education",
+  "enterprise",
+  "enterprise_cbp_usage_based",
+  "finserv",
+  "free",
+  "free_workspace",
+  "go",
+  "hc",
+  "k12",
+  "plus",
+  "pro",
+  "prolite",
+  "quorum",
+  "self_serve_business_usage_based",
+  "team",
+] as const
+
+const OFFICIAL_CODEX_PAID_PLAN_IDS = OFFICIAL_CODEX_ALL_PLAN_IDS.filter(
+  (plan) => plan !== "free" && plan !== "free_workspace" && plan !== "k12",
+)
+
 function createFallbackModelCatalogEntry(input: {
   id: string
   displayName?: string
@@ -1252,14 +1414,16 @@ const FALLBACK_MODEL_CATALOG: CodexModelCatalogEntry[] = [
     id: "gpt-5.5",
     displayName: "GPT-5.5",
     description: "Frontier model for complex coding, research, and real-world work.",
-    defaultReasoningLevel: "xhigh",
+    defaultReasoningLevel: "medium",
     supportedReasoningLevels: [...OFFICIAL_CODEX_REASONING_LEVEL_IDS],
     supportsParallelToolCalls: true,
     supportsReasoningSummaries: true,
     supportVerbosity: true,
     defaultVerbosity: "low",
     defaultReasoningSummary: "none",
+    reasoningSummaryFormat: "experimental",
     preferWebsockets: true,
+    minimalClientVersion: "0.124.0",
     contextWindow: 272000,
     maxContextWindow: 272000,
     apiMetadata: {
@@ -1267,6 +1431,7 @@ const FALLBACK_MODEL_CATALOG: CodexModelCatalogEntry[] = [
       shell_type: "shell_command",
       priority: 0,
       additional_speed_tiers: ["fast"],
+      available_in_plans: [...OFFICIAL_CODEX_ALL_PLAN_IDS],
       apply_patch_tool_type: "freeform",
       web_search_tool_type: "text_and_image",
       truncation_policy: { mode: "tokens", limit: 10000 },
@@ -1281,7 +1446,7 @@ const FALLBACK_MODEL_CATALOG: CodexModelCatalogEntry[] = [
     id: "gpt-5.4",
     displayName: "gpt-5.4",
     description: "Strong model for everyday coding.",
-    defaultReasoningLevel: "medium",
+    defaultReasoningLevel: "xhigh",
     supportedReasoningLevels: [...OFFICIAL_CODEX_REASONING_LEVEL_IDS],
     supportsParallelToolCalls: true,
     supportsReasoningSummaries: true,
@@ -1296,8 +1461,9 @@ const FALLBACK_MODEL_CATALOG: CodexModelCatalogEntry[] = [
     apiMetadata: {
       supported_reasoning_levels: [...OFFICIAL_CODEX_REASONING_LEVELS],
       shell_type: "shell_command",
-      priority: -1,
+      priority: 2,
       additional_speed_tiers: ["fast"],
+      available_in_plans: [...OFFICIAL_CODEX_PAID_PLAN_IDS],
       apply_patch_tool_type: "freeform",
       web_search_tool_type: "text_and_image",
       truncation_policy: { mode: "tokens", limit: 10000 },
@@ -1311,7 +1477,7 @@ const FALLBACK_MODEL_CATALOG: CodexModelCatalogEntry[] = [
   createFallbackModelCatalogEntry({
     id: "gpt-5.4-mini",
     displayName: "GPT-5.4-Mini",
-    description: "Smaller frontier agentic coding model.",
+    description: "Small, fast, and cost-efficient model for simpler coding tasks.",
     defaultReasoningLevel: "medium",
     supportedReasoningLevels: ["low", "medium", "high", "xhigh"],
     supportsParallelToolCalls: true,
@@ -1324,11 +1490,25 @@ const FALLBACK_MODEL_CATALOG: CodexModelCatalogEntry[] = [
     minimalClientVersion: "0.98.0",
     contextWindow: 272000,
     maxContextWindow: 272000,
+    apiMetadata: {
+      supported_reasoning_levels: [...OFFICIAL_CODEX_REASONING_LEVELS],
+      shell_type: "shell_command",
+      priority: 4,
+      additional_speed_tiers: [],
+      available_in_plans: [...OFFICIAL_CODEX_ALL_PLAN_IDS],
+      apply_patch_tool_type: "freeform",
+      web_search_tool_type: "text_and_image",
+      truncation_policy: { mode: "tokens", limit: 10000 },
+      supports_image_detail_original: true,
+      experimental_supported_tools: [],
+      input_modalities: ["text", "image"],
+      supports_search_tool: true,
+    },
   }),
   createFallbackModelCatalogEntry({
     id: "gpt-5.3-codex",
     displayName: "gpt-5.3-codex",
-    description: "Frontier Codex-optimized agentic coding model.",
+    description: "Coding-optimized model.",
     defaultReasoningLevel: "medium",
     supportedReasoningLevels: ["low", "medium", "high", "xhigh"],
     supportsParallelToolCalls: true,
@@ -1341,6 +1521,25 @@ const FALLBACK_MODEL_CATALOG: CodexModelCatalogEntry[] = [
     minimalClientVersion: "0.98.0",
     contextWindow: 272000,
     maxContextWindow: 272000,
+    apiMetadata: {
+      supported_reasoning_levels: [...OFFICIAL_CODEX_REASONING_LEVELS],
+      shell_type: "shell_command",
+      priority: 6,
+      additional_speed_tiers: [],
+      available_in_plans: [...OFFICIAL_CODEX_PAID_PLAN_IDS],
+      apply_patch_tool_type: "freeform",
+      web_search_tool_type: "text",
+      truncation_policy: { mode: "tokens", limit: 10000 },
+      supports_image_detail_original: true,
+      experimental_supported_tools: [],
+      input_modalities: ["text", "image"],
+      supports_search_tool: true,
+      upgrade: {
+        model: "gpt-5.4",
+        migration_markdown:
+          "Introducing GPT-5.4\n\nCodex just got an upgrade with GPT-5.4, our most capable model for professional work. It outperforms prior models while being more token efficient, with notable improvements on long-running tasks, tool calling, computer use, and frontend development.\n\nLearn more: https://openai.com/index/introducing-gpt-5-4\n\nYou can always keep using GPT-5.3-Codex if you prefer.\n",
+      },
+    },
   }),
   createFallbackModelCatalogEntry({
     id: "gpt-5.2",
@@ -1358,74 +1557,25 @@ const FALLBACK_MODEL_CATALOG: CodexModelCatalogEntry[] = [
     minimalClientVersion: "0.0.1",
     contextWindow: 272000,
     maxContextWindow: 272000,
-  }),
-  createFallbackModelCatalogEntry({
-    id: "gpt-5.2-codex",
-    displayName: "gpt-5.2-codex",
-    description: "Codex-optimized agentic coding model.",
-    defaultReasoningLevel: "medium",
-    supportedReasoningLevels: ["low", "medium", "high", "xhigh"],
-    supportsParallelToolCalls: true,
-    supportsReasoningSummaries: true,
-    supportVerbosity: true,
-    defaultVerbosity: "low",
-    defaultReasoningSummary: "none",
-    reasoningSummaryFormat: "experimental",
-    preferWebsockets: true,
-    minimalClientVersion: "0.98.0",
-    contextWindow: 272000,
-    maxContextWindow: 272000,
-  }),
-  createFallbackModelCatalogEntry({
-    id: "gpt-5.1-codex-max",
-    displayName: "gpt-5.1-codex-max",
-    description: "Large Codex-optimized agentic coding model.",
-    defaultReasoningLevel: "medium",
-    supportedReasoningLevels: ["low", "medium", "high", "xhigh"],
-    supportsParallelToolCalls: true,
-    supportsReasoningSummaries: true,
-    supportVerbosity: true,
-    defaultVerbosity: "low",
-    defaultReasoningSummary: "none",
-    reasoningSummaryFormat: "experimental",
-    preferWebsockets: true,
-    minimalClientVersion: "0.98.0",
-    contextWindow: 272000,
-    maxContextWindow: 1000000,
-  }),
-  createFallbackModelCatalogEntry({
-    id: "gpt-5.1-codex-mini",
-    displayName: "gpt-5.1-codex-mini",
-    description: "Small Codex-optimized agentic coding model.",
-    defaultReasoningLevel: "medium",
-    supportedReasoningLevels: ["low", "medium", "high", "xhigh"],
-    supportsParallelToolCalls: true,
-    supportsReasoningSummaries: true,
-    supportVerbosity: true,
-    defaultVerbosity: "medium",
-    defaultReasoningSummary: "none",
-    reasoningSummaryFormat: "experimental",
-    preferWebsockets: true,
-    minimalClientVersion: "0.98.0",
-    contextWindow: 272000,
-    maxContextWindow: 272000,
-  }),
-  createFallbackModelCatalogEntry({
-    id: "gpt-5.1-codex",
-    displayName: "gpt-5.1-codex",
-    description: "Codex-optimized agentic coding model.",
-    defaultReasoningLevel: "medium",
-    supportedReasoningLevels: ["low", "medium", "high", "xhigh"],
-    supportsParallelToolCalls: true,
-    supportsReasoningSummaries: true,
-    supportVerbosity: true,
-    defaultVerbosity: "low",
-    defaultReasoningSummary: "none",
-    reasoningSummaryFormat: "experimental",
-    preferWebsockets: true,
-    minimalClientVersion: "0.98.0",
-    contextWindow: 272000,
-    maxContextWindow: 272000,
+    apiMetadata: {
+      supported_reasoning_levels: [...OFFICIAL_CODEX_REASONING_LEVELS],
+      shell_type: "shell_command",
+      priority: 10,
+      additional_speed_tiers: [],
+      available_in_plans: [...OFFICIAL_CODEX_ALL_PLAN_IDS],
+      apply_patch_tool_type: "freeform",
+      web_search_tool_type: "text",
+      truncation_policy: { mode: "bytes", limit: 10000 },
+      supports_image_detail_original: false,
+      experimental_supported_tools: [],
+      input_modalities: ["text", "image"],
+      supports_search_tool: true,
+      upgrade: {
+        model: "gpt-5.4",
+        migration_markdown:
+          "Introducing GPT-5.4\n\nCodex just got an upgrade with GPT-5.4, our most capable model for professional work. It outperforms prior models while being more token efficient, with notable improvements on long-running tasks, tool calling, computer use, and frontend development.\n\nLearn more: https://openai.com/index/introducing-gpt-5-4\n\nYou can always keep using GPT-5.3-Codex if you prefer.\n",
+      },
+    },
   }),
   createFallbackModelCatalogEntry({
     id: "codex-auto-review",
@@ -1444,12 +1594,26 @@ const FALLBACK_MODEL_CATALOG: CodexModelCatalogEntry[] = [
     minimalClientVersion: "0.98.0",
     contextWindow: 272000,
     maxContextWindow: 1000000,
+    apiMetadata: {
+      supported_reasoning_levels: [...OFFICIAL_CODEX_REASONING_LEVELS],
+      shell_type: "shell_command",
+      priority: 29,
+      additional_speed_tiers: [],
+      available_in_plans: [...OFFICIAL_CODEX_PAID_PLAN_IDS],
+      apply_patch_tool_type: "freeform",
+      web_search_tool_type: "text_and_image",
+      truncation_policy: { mode: "tokens", limit: 10000 },
+      supports_image_detail_original: true,
+      experimental_supported_tools: [],
+      input_modalities: ["text", "image"],
+      supports_search_tool: true,
+    },
   }),
 ]
 
 async function loadCodexModelCatalog(): Promise<CodexModelCatalogEntry[]> {
   const modelsFilePath =
-    OFFICIAL_ASSETS_STATUS.modelsSource.kind === "env_override" ? OFFICIAL_ASSETS_STATUS.modelsFile : null
+    OFFICIAL_ASSETS_STATUS.modelsSource.kind !== "fallback" ? OFFICIAL_ASSETS_STATUS.modelsFile : null
   if (modelsFilePath && existsSync(modelsFilePath)) {
     try {
       const raw = await readFile(modelsFilePath, "utf8")
@@ -1863,6 +2027,7 @@ const IssueVirtualKeySchema = z.object({
   accountId: z.string().min(1).optional(),
   providerId: z.string().trim().min(1).optional().default("chatgpt"),
   routingMode: z.enum(["single", "pool"]).optional().default("pool"),
+  accountScope: z.enum(["all", "member", "free"]).optional().default("all"),
   clientMode: z.enum(["codex", "cursor"]).optional().default("codex"),
   wireApi: z.enum(["responses", "chat_completions"]).optional(),
   name: z.string().trim().max(120).optional(),
@@ -2468,6 +2633,90 @@ function makeStatusError(statusCode: number, message: string) {
   return error
 }
 
+async function readRequestBodyBytesWithLimit(request: Request, options?: { maxBytes?: number }) {
+  const maxBytes = Math.max(1, Math.floor(options?.maxBytes ?? PROXY_MAX_REQUEST_BODY_BYTES))
+  const declaredLength = parseHeaderNumber(request.headers.get("content-length"))
+  if (declaredLength > maxBytes) {
+    throw makeStatusError(413, `Request body is too large (${declaredLength} bytes, limit ${maxBytes} bytes)`)
+  }
+
+  const body = request.body
+  if (!body) return undefined
+
+  const reader = body.getReader()
+  const chunks: Uint8Array[] = []
+  let total = 0
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      if (!value || value.byteLength === 0) continue
+      total += value.byteLength
+      if (total > maxBytes) {
+        try {
+          await reader.cancel()
+        } catch {
+          // ignore cancellation errors
+        }
+        throw makeStatusError(413, `Request body is too large (limit ${maxBytes} bytes)`)
+      }
+      chunks.push(value)
+    }
+  } finally {
+    try {
+      reader.releaseLock()
+    } catch {
+      // ignore release errors
+    }
+  }
+
+  if (total <= 0) return undefined
+  if (chunks.length === 1) return chunks[0]
+  const merged = new Uint8Array(total)
+  let offset = 0
+  for (const chunk of chunks) {
+    merged.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+  return merged
+}
+
+async function readResponsePreviewText(response: Response, maxBytes = 8192) {
+  const clone = response.clone()
+  const reader = clone.body?.getReader()
+  if (!reader) {
+    return (await clone.text().catch(() => "")).slice(0, maxBytes)
+  }
+  const decoder = new TextDecoder()
+  let text = ""
+  let total = 0
+  try {
+    while (total < maxBytes) {
+      const { done, value } = await reader.read()
+      if (done) break
+      if (!value || value.byteLength === 0) continue
+      const slice = value.byteLength > maxBytes - total ? value.slice(0, maxBytes - total) : value
+      text += decoder.decode(slice, { stream: total + slice.byteLength < maxBytes })
+      total += slice.byteLength
+      if (slice.byteLength < value.byteLength) break
+    }
+    if (total >= maxBytes) {
+      try {
+        await reader.cancel()
+      } catch {
+        // ignore cancellation errors
+      }
+    }
+  } finally {
+    try {
+      reader.releaseLock()
+    } catch {
+      // ignore release errors
+    }
+  }
+  return text
+}
+
 function hasUsageDelta(usage: UsageMetrics) {
   return (
     usage.totalTokens > 0 ||
@@ -2614,14 +2863,15 @@ function recordUsageMetrics(input: {
   if (!hasUsageDelta(usage)) return
 
   if (hasLegacyUsageDelta(usage)) {
+    const shouldPersistExtendedUsageWithAccount = !input.auditId
     accountStore.addUsage({
       id: input.accountId,
       promptTokens: usage.promptTokens,
       completionTokens: usage.completionTokens,
       totalTokens: usage.totalTokens,
-      cachedInputTokens: usage.cachedInputTokens,
-      reasoningOutputTokens: usage.reasoningOutputTokens,
-      estimatedCostUsd: usage.estimatedCostUsd,
+      cachedInputTokens: shouldPersistExtendedUsageWithAccount ? usage.cachedInputTokens : 0,
+      reasoningOutputTokens: shouldPersistExtendedUsageWithAccount ? usage.reasoningOutputTokens : 0,
+      estimatedCostUsd: shouldPersistExtendedUsageWithAccount ? usage.estimatedCostUsd : null,
       reasoningEffort: input.reasoningEffort ?? usage.reasoningEffort ?? null,
     } as any)
     if (input.keyId) {
@@ -3394,7 +3644,7 @@ function resolveVirtualApiKeyFromCodexOAuthBridge(
       sessionId,
       routeOptionsFactory: (virtualKey) =>
         virtualKey.routingMode === "pool"
-          ? buildProviderRoutingHintsForRequestedModel(virtualKey.providerId, requestedModel)
+          ? buildProviderRoutingHintsForVirtualKey(virtualKey, requestedModel)
           : undefined,
     })
     if (resolved) return resolved
@@ -3402,7 +3652,7 @@ function resolveVirtualApiKeyFromCodexOAuthBridge(
       sessionId,
       routeOptionsFactory: (virtualKey) =>
         virtualKey.routingMode === "pool"
-          ? buildRelaxedProviderRoutingHintsForRequestedModel(virtualKey.providerId, requestedModel)
+          ? buildRelaxedProviderRoutingHintsForVirtualKey(virtualKey, requestedModel)
           : undefined,
     })
     if (relaxed) return relaxed
@@ -3410,7 +3660,7 @@ function resolveVirtualApiKeyFromCodexOAuthBridge(
       const fallback = accountStore.resolveVirtualApiKeyByID(binding.virtualKeyId, {
         sessionId,
         routeOptionsFactory: (virtualKey) =>
-          virtualKey.routingMode === "pool" ? buildRelaxedProviderRoutingHints(virtualKey.providerId) : undefined,
+          virtualKey.routingMode === "pool" ? buildRelaxedProviderRoutingHintsForVirtualKey(virtualKey, requestedModel) : undefined,
       })
       if (fallback) return fallback
     }
@@ -3425,6 +3675,7 @@ function buildOAuthBridgeVirtualKey(account: StoredAccount): VirtualApiKeyRecord
     accountId: account.id,
     providerId: account.providerId,
     routingMode: "single",
+    accountScope: "all",
     clientMode: "codex",
     wireApi: "responses",
     name: "Codex OAuth Bridge",
@@ -3576,6 +3827,7 @@ function buildProviderRoutingHints(
     }),
     deprioritizedAccountIds: quotaHints.deprioritizedAccountIds,
     preferredPlanCohort: options?.preferredPlanCohort ?? null,
+    allowedPlanCohorts: options?.allowedPlanCohorts ?? null,
     cohortMode: options?.cohortMode ?? "prefer",
   }
   const baseHints = buildProviderRoutingHintsFromState(baseInput)
@@ -3611,22 +3863,55 @@ function buildRelaxedProviderRoutingHints(
     }),
     deprioritizedAccountIds: quotaHints.deprioritizedAccountIds,
     preferredPlanCohort: options?.preferredPlanCohort ?? null,
+    allowedPlanCohorts: options?.allowedPlanCohorts ?? null,
   })
 }
 
-function modelRequiresPaidChatgptAccount(model?: string | null) {
+function modelPrefersBusinessChatgptAccount(model?: string | null) {
   const normalized = extractModelID(model)?.toLowerCase()
   return Boolean(normalized && (normalized === "gpt-5.5" || normalized.startsWith("gpt-5.5-")))
 }
 
 function resolveRequestedModelPlanCohort(model?: string | null): AccountPlanCohort | null {
-  return modelRequiresPaidChatgptAccount(model) ? "paid" : null
+  return modelPrefersBusinessChatgptAccount(model) ? "business" : null
+}
+
+function normalizeAllowedPlanCohorts(value?: Iterable<AccountPlanCohort> | null): AccountPlanCohort[] | null {
+  if (!value) return null
+  const cohorts = [...new Set([...value].filter(Boolean))]
+  return cohorts.length > 0 ? cohorts : null
+}
+
+function allowedPlanCohortsInclude(cohorts: AccountPlanCohort[] | null | undefined, cohort?: AccountPlanCohort | null) {
+  return !cohorts || !cohort || cohorts.includes(cohort)
+}
+
+function resolveVirtualKeyAllowedPlanCohorts(key?: { accountScope?: VirtualApiKeyRecord["accountScope"] | null } | null): AccountPlanCohort[] | null {
+  const scope = key?.accountScope ?? "all"
+  if (scope === "free") return ["free"]
+  if (scope === "member") return ["business", "paid"]
+  return null
+}
+
+function resolvePreferredPlanCohortForVirtualKey(input: {
+  key?: { accountScope?: VirtualApiKeyRecord["accountScope"] | null } | null
+  requestedModel?: string | null
+  account?: StoredAccount | null
+  routingHints?: ProviderRoutingHints | null
+}) {
+  const allowedPlanCohorts = resolveVirtualKeyAllowedPlanCohorts(input.key)
+  const modelPreferredPlanCohort = resolveRequestedModelPlanCohort(input.requestedModel)
+  if (allowedPlanCohortsInclude(allowedPlanCohorts, modelPreferredPlanCohort)) return modelPreferredPlanCohort
+  if (allowedPlanCohortsInclude(allowedPlanCohorts, input.routingHints?.preferredPlanCohort)) {
+    return input.routingHints?.preferredPlanCohort ?? null
+  }
+  const accountPlanCohort = input.account ? resolveAccountPlanCohort(input.account) : null
+  if (allowedPlanCohortsInclude(allowedPlanCohorts, accountPlanCohort)) return accountPlanCohort
+  return allowedPlanCohorts?.[0] ?? null
 }
 
 function accountCanUseRequestedModel(account: StoredAccount, model?: string | null) {
-  if (!modelRequiresPaidChatgptAccount(model)) return true
-  if (String(account.providerId ?? "").trim().toLowerCase() !== "chatgpt") return true
-  return resolveAccountPlanCohort(account) === "paid"
+  return true
 }
 
 function buildProviderRoutingHintsForRequestedModel(
@@ -3635,11 +3920,19 @@ function buildProviderRoutingHintsForRequestedModel(
   now = Date.now(),
   options?: ProviderRoutingHintsOptions,
 ) {
-  const requiredPlanCohort = resolveRequestedModelPlanCohort(model)
+  const allowedPlanCohorts = normalizeAllowedPlanCohorts(options?.allowedPlanCohorts)
+  const modelPreferredPlanCohort = resolveRequestedModelPlanCohort(model)
+  const preferredPlanCohort = allowedPlanCohortsInclude(allowedPlanCohorts, modelPreferredPlanCohort)
+    ? modelPreferredPlanCohort
+    : null
+  const fallbackPreferredPlanCohort = allowedPlanCohortsInclude(allowedPlanCohorts, options?.preferredPlanCohort)
+    ? options?.preferredPlanCohort
+    : null
   return buildProviderRoutingHints(providerId, now, {
     ...options,
-    preferredPlanCohort: requiredPlanCohort ?? options?.preferredPlanCohort ?? null,
-    cohortMode: requiredPlanCohort ? "strict" : options?.cohortMode,
+    allowedPlanCohorts,
+    preferredPlanCohort: preferredPlanCohort ?? fallbackPreferredPlanCohort ?? null,
+    cohortMode: preferredPlanCohort ? "prefer" : options?.cohortMode,
   })
 }
 
@@ -3649,15 +3942,33 @@ function buildRelaxedProviderRoutingHintsForRequestedModel(
   now = Date.now(),
   options?: ProviderRoutingHintsOptions,
 ) {
-  const requiredPlanCohort = resolveRequestedModelPlanCohort(model)
-  if (requiredPlanCohort) {
-    return buildProviderRoutingHints(providerId, now, {
-      ...options,
-      preferredPlanCohort: requiredPlanCohort,
-      cohortMode: "strict",
-    })
-  }
   return buildRelaxedProviderRoutingHints(providerId, now, options)
+}
+
+function buildProviderRoutingHintsForVirtualKey(
+  key: Pick<VirtualApiKeyRecord, "providerId"> & { accountScope?: VirtualApiKeyRecord["accountScope"] | null },
+  model?: string | null,
+  now = Date.now(),
+  options?: ProviderRoutingHintsOptions,
+) {
+  const allowedPlanCohorts = resolveVirtualKeyAllowedPlanCohorts(key)
+  return buildProviderRoutingHintsForRequestedModel(key.providerId, model, now, {
+    ...options,
+    allowedPlanCohorts: allowedPlanCohorts ?? options?.allowedPlanCohorts ?? null,
+  })
+}
+
+function buildRelaxedProviderRoutingHintsForVirtualKey(
+  key: Pick<VirtualApiKeyRecord, "providerId"> & { accountScope?: VirtualApiKeyRecord["accountScope"] | null },
+  model?: string | null,
+  now = Date.now(),
+  options?: ProviderRoutingHintsOptions,
+) {
+  const allowedPlanCohorts = resolveVirtualKeyAllowedPlanCohorts(key)
+  return buildRelaxedProviderRoutingHintsForRequestedModel(key.providerId, model, now, {
+    ...options,
+    allowedPlanCohorts: allowedPlanCohorts ?? options?.allowedPlanCohorts ?? null,
+  })
 }
 
 function resolveAccountRoutingState(accountId: string, quota?: AccountQuotaSnapshot | null, now = Date.now()): AccountRoutingState {
@@ -4311,11 +4622,12 @@ function ensureForcedWorkspaceAllowed(accountId?: string | null) {
   }
 }
 
-function runOpenCommand(command: string, args: string[]) {
+function runOpenCommand(command: string, args: string[], timeoutMs = 5000) {
   const result = spawnSync(command, args, {
     windowsHide: true,
     stdio: "pipe",
     encoding: "utf8",
+    timeout: timeoutMs,
   })
   return {
     command,
@@ -4324,6 +4636,61 @@ function runOpenCommand(command: string, args: string[]) {
     error: result.error ? String(result.error.message || result.error) : "",
     stdout: String(result.stdout || "").trim(),
     stderr: String(result.stderr || "").trim(),
+  }
+}
+
+function quotePowerShellLiteral(value: string) {
+  return `'${String(value ?? "").replace(/'/g, "''")}'`
+}
+
+function getWindowsChromeCommandCandidates() {
+  const candidates = [
+    process.env.ProgramFiles ? path.join(process.env.ProgramFiles, "Google", "Chrome", "Application", "chrome.exe") : "",
+    process.env["ProgramFiles(x86)"]
+      ? path.join(process.env["ProgramFiles(x86)"] ?? "", "Google", "Chrome", "Application", "chrome.exe")
+      : "",
+    process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, "Google", "Chrome", "Application", "chrome.exe") : "",
+    "chrome.exe",
+  ]
+  const seen = new Set<string>()
+  return candidates.filter((candidate) => {
+    const value = String(candidate ?? "").trim()
+    if (!value) return false
+    const key = value.toLowerCase()
+    if (seen.has(key)) return false
+    if (value.toLowerCase() !== "chrome.exe" && !existsSync(value)) return false
+    seen.add(key)
+    return true
+  })
+}
+
+function runDetachedOpenCommand(command: string, args: string[]) {
+  try {
+    const child = spawn(command, args, {
+      detached: true,
+      stdio: "ignore",
+      windowsHide: false,
+    })
+    child.unref()
+    return {
+      command,
+      args,
+      status: 0,
+      error: "",
+      stdout: "",
+      stderr: "",
+      detached: true,
+    }
+  } catch (error) {
+    return {
+      command,
+      args,
+      status: null,
+      error: error instanceof Error ? error.message : String(error),
+      stdout: "",
+      stderr: "",
+      detached: true,
+    }
   }
 }
 
@@ -4337,17 +4704,30 @@ function openExternalUrl(url: string) {
   const strategies: Array<{ command: string; args: string[] }> = []
 
   if (process.platform === "win32") {
-    strategies.push({ command: "explorer", args: [url] })
+    for (const chrome of getWindowsChromeCommandCandidates()) {
+      const attempt = runDetachedOpenCommand(chrome, ["--incognito", url])
+      attempts.push(attempt)
+      if (attempt.status === 0 && !attempt.error) {
+        console.log(`[oauth-multi-login] open-url success via chrome incognito: ${chrome}`)
+        return {
+          strategy: chrome,
+          detail: `${chrome} --incognito detached`,
+        }
+      }
+    }
+    strategies.push({ command: "cmd", args: ["/c", "start", "", "chrome.exe", "--incognito", url] })
     strategies.push({
       command: "powershell",
       args: [
         "-NoProfile",
+        "-NonInteractive",
         "-ExecutionPolicy",
         "Bypass",
         "-Command",
-        `$p = Start-Process -FilePath '${url}' -PassThru; if ($p) { Write-Output $p.Id }`,
+        `Start-Process -FilePath ${quotePowerShellLiteral(url)}`,
       ],
     })
+    strategies.push({ command: "explorer", args: [url] })
     strategies.push({ command: "cmd", args: ["/c", "start", "", url] })
     strategies.push({ command: "rundll32", args: ["url.dll,FileProtocolHandler", url] })
   } else if (process.platform === "darwin") {
@@ -4449,12 +4829,31 @@ function extractSessionRouteIDFromRequestUrl(requestUrl?: string | null) {
   return undefined
 }
 
+function extractSessionRouteShardFromHeaders(headers?: Headers) {
+  if (!headers) return undefined
+  const candidates = [
+    headers.get("x-openai-subagent"),
+    headers.get("x-codex-parent-thread-id"),
+    headers.get("x-codex-window-id"),
+  ]
+  const parts = candidates
+    .map((candidate) => normalizeNullableString(candidate, 240))
+    .filter((candidate): candidate is string => Boolean(candidate))
+  if (parts.length === 0) return undefined
+  return createHash("sha256")
+    .update(parts.join("|"))
+    .digest("hex")
+    .slice(0, 16)
+}
+
 function resolveSessionRouteID(input: { headers?: Headers; requestUrl?: string | null; bodySessionId?: string | null }) {
-  return (
+  const baseSessionId =
     normalizeSessionRouteID(input.bodySessionId) ??
     extractSessionRouteIDFromHeaders(input.headers) ??
     extractSessionRouteIDFromRequestUrl(input.requestUrl)
-  )
+  if (!baseSessionId) return undefined
+  const shard = extractSessionRouteShardFromHeaders(input.headers)
+  return shard ? normalizeSessionRouteID(`${baseSessionId}:shard:${shard}`) : baseSessionId
 }
 
 function resolveVirtualKeyContext(
@@ -4518,14 +4917,14 @@ function resolveVirtualApiKeyWithPoolFallback(
   const primary = accountStore.resolveVirtualApiKey(secret, {
     sessionId,
     routeOptionsFactory: (key) =>
-      key.routingMode === "pool" ? buildProviderRoutingHintsForRequestedModel(key.providerId, requestedModel) : undefined,
+      key.routingMode === "pool" ? buildProviderRoutingHintsForVirtualKey(key, requestedModel) : undefined,
   })
   if (primary) return primary
   const relaxed = accountStore.resolveVirtualApiKey(secret, {
     sessionId,
     routeOptionsFactory: (key) =>
       key.routingMode === "pool"
-        ? buildRelaxedProviderRoutingHintsForRequestedModel(key.providerId, requestedModel)
+        ? buildRelaxedProviderRoutingHintsForVirtualKey(key, requestedModel)
         : undefined,
   })
   if (relaxed) return relaxed
@@ -4533,7 +4932,7 @@ function resolveVirtualApiKeyWithPoolFallback(
     const fallback = accountStore.resolveVirtualApiKey(secret, {
       sessionId,
       routeOptionsFactory: (key) =>
-        key.routingMode === "pool" ? buildRelaxedProviderRoutingHints(key.providerId) : undefined,
+        key.routingMode === "pool" ? buildRelaxedProviderRoutingHintsForVirtualKey(key, requestedModel) : undefined,
     })
     if (fallback) return fallback
   }
@@ -4555,6 +4954,7 @@ function rerouteResolvedPoolAccount(input: {
       id: string
       providerId: string
       routingMode: string
+      accountScope?: VirtualApiKeyRecord["accountScope"] | null
     }
     account: StoredAccount
   }
@@ -4590,6 +4990,7 @@ function ensureResolvedPoolAccountEligible(input: {
       id: string
       providerId: string
       routingMode: string
+      accountScope?: VirtualApiKeyRecord["accountScope"] | null
     }
     account: StoredAccount
   }
@@ -4603,15 +5004,20 @@ function ensureResolvedPoolAccountEligible(input: {
     return availability.ok && modelEligible ? input.resolved : null
   }
 
-  const requiredPlanCohort = resolveRequestedModelPlanCohort(input.requestedModel)
-  const preferredPlanCohort = requiredPlanCohort ?? resolveAccountPlanCohort(input.resolved.account)
+  const preferredPlanCohort = resolvePreferredPlanCohortForVirtualKey({
+    key: input.resolved.key,
+    requestedModel: input.requestedModel,
+    account: input.resolved.account,
+    routingHints: input.routingHints ?? null,
+  })
   const routingHints =
     input.routingHints ??
-    buildProviderRoutingHintsForRequestedModel(input.resolved.key.providerId, input.requestedModel, Date.now(), {
+    buildProviderRoutingHintsForVirtualKey(input.resolved.key, input.requestedModel, Date.now(), {
       preferredPlanCohort,
     })
   const excluded = new Set<string>(routingHints.excludeAccountIds)
-  if (!availability.ok || !modelEligible) {
+  const currentAccountIsDeprioritized = routingHints.deprioritizedAccountIds.includes(input.resolved.account.id)
+  if (!availability.ok || !modelEligible || currentAccountIsDeprioritized) {
     excluded.add(input.resolved.account.id)
   }
   if (!excluded.has(input.resolved.account.id)) {
@@ -4628,14 +5034,16 @@ function ensureResolvedPoolAccountEligible(input: {
       headroomByAccountId: routingHints.headroomByAccountId,
       pressureScoreByAccountId: routingHints.pressureScoreByAccountId,
       preferredPlanCohort,
+      allowedPlanCohorts: routingHints.allowedPlanCohorts,
     },
   })
   if (!reroutedAccount) {
-    const relaxedHints = buildRelaxedProviderRoutingHintsForRequestedModel(input.resolved.key.providerId, input.requestedModel, Date.now(), {
+    const relaxedHints = buildRelaxedProviderRoutingHintsForVirtualKey(input.resolved.key, input.requestedModel, Date.now(), {
       preferredPlanCohort,
     })
     const relaxedExcluded = new Set(relaxedHints.excludeAccountIds)
-    if (!availability.ok || !modelEligible) {
+    const currentAccountIsRelaxedDeprioritized = relaxedHints.deprioritizedAccountIds.includes(input.resolved.account.id)
+    if (!availability.ok || !modelEligible || currentAccountIsRelaxedDeprioritized) {
       relaxedExcluded.add(input.resolved.account.id)
     }
     if (!relaxedExcluded.has(input.resolved.account.id)) {
@@ -4670,6 +5078,7 @@ async function ensureResolvedPoolAccountConsistent(input: {
       id: string
       providerId: string
       routingMode: string
+      accountScope?: VirtualApiKeyRecord["accountScope"] | null
     }
     account: StoredAccount
   }
@@ -4682,14 +5091,18 @@ async function ensureResolvedPoolAccountConsistent(input: {
       : { ok: false as const, type: "noHealthy" as const }
   }
   const stickySessionId = normalizeSessionRouteID(input.sessionId)
-  const currentRoutingHints = buildProviderRoutingHintsForRequestedModel(
-    input.resolved.key.providerId,
+  const currentRoutingHints = buildProviderRoutingHintsForVirtualKey(
+    input.resolved.key,
     input.requestedModel,
     Date.now(),
   )
   const resolvedPlanCohort = resolveAccountPlanCohort(input.resolved.account)
-  const preferredPlanCohort =
-    resolveRequestedModelPlanCohort(input.requestedModel) ?? currentRoutingHints.preferredPlanCohort ?? resolvedPlanCohort
+  const preferredPlanCohort = resolvePreferredPlanCohortForVirtualKey({
+    key: input.resolved.key,
+    requestedModel: input.requestedModel,
+    account: input.resolved.account,
+    routingHints: currentRoutingHints,
+  })
   if (
     stickySessionId &&
     accountStore.hasEstablishedVirtualKeySessionRoute({
@@ -4713,7 +5126,7 @@ async function ensureResolvedPoolAccountConsistent(input: {
       requestedModel: input.requestedModel,
       routingHints: currentRoutingHints.preferredPlanCohort === preferredPlanCohort
         ? currentRoutingHints
-        : buildProviderRoutingHintsForRequestedModel(input.resolved.key.providerId, input.requestedModel, Date.now(), {
+        : buildProviderRoutingHintsForVirtualKey(input.resolved.key, input.requestedModel, Date.now(), {
             preferredPlanCohort,
           }),
     })
@@ -4729,7 +5142,7 @@ async function ensureResolvedPoolAccountConsistent(input: {
     requestedModel: input.requestedModel,
     routingHints: currentRoutingHints.preferredPlanCohort === preferredPlanCohort
       ? currentRoutingHints
-      : buildProviderRoutingHintsForRequestedModel(input.resolved.key.providerId, input.requestedModel, Date.now(), {
+      : buildProviderRoutingHintsForVirtualKey(input.resolved.key, input.requestedModel, Date.now(), {
           preferredPlanCohort,
         }),
   })
@@ -5643,13 +6056,25 @@ function buildDashboardMetrics() {
   })
 }
 
-function syncExtendedUsageTotalsStateFromAudits(now = Date.now()) {
-  const summary = accountStore.summarizeRequestAudits()
-  extendedUsageTotalsState.cachedInputTokens = Math.max(0, Math.floor(Number(summary.cachedInputTokens ?? 0)))
-  extendedUsageTotalsState.reasoningOutputTokens = Math.max(0, Math.floor(Number(summary.reasoningOutputTokens ?? 0)))
-  extendedUsageTotalsState.estimatedCostUsd = Math.max(0, Number(summary.estimatedCostUsd ?? 0))
-  extendedUsageTotalsState.pricedTokens = Math.max(0, Math.floor(Number(summary.pricedTokens ?? 0)))
-  extendedUsageTotalsState.updatedAt = now
+function syncExtendedUsageTotalsStateFromStore(now = Date.now()) {
+  const totals = asRecord(accountStore.getUsageTotals()) ?? {}
+  extendedUsageTotalsState.cachedInputTokens = normalizeNonNegativeInt(
+    pickFirstDefinedValue(totals.cachedInputTokens, totals.cached_input_tokens),
+  )
+  extendedUsageTotalsState.reasoningOutputTokens = normalizeNonNegativeInt(
+    pickFirstDefinedValue(totals.reasoningOutputTokens, totals.reasoning_output_tokens),
+  )
+  extendedUsageTotalsState.estimatedCostUsd =
+    normalizeNullableNonNegativeNumber(
+      pickFirstDefinedValue(totals.estimatedCostUsd, totals.estimated_cost_usd, totals.costUsd, totals.cost_usd),
+    ) ?? 0
+  extendedUsageTotalsState.pricedTokens = normalizeNonNegativeInt(
+    pickFirstDefinedValue(totals.pricedTokens, totals.priced_tokens),
+  )
+  extendedUsageTotalsState.updatedAt = Math.max(
+    now,
+    normalizeNonNegativeInt(pickFirstDefinedValue(totals.updatedAt, totals.updated_at)),
+  )
 }
 
 function bootstrapEstimatedUsageCosts() {
@@ -5661,8 +6086,10 @@ function bootstrapEstimatedUsageCosts() {
       completionTokens: audit.outputTokens,
     }),
   )
-  accountStore.rebuildRequestTokenStats()
-  syncExtendedUsageTotalsStateFromAudits()
+  if (typeof (accountStore as any).reconcileGlobalUsageTotals === "function") {
+    ;(accountStore as any).reconcileGlobalUsageTotals()
+  }
+  syncExtendedUsageTotalsStateFromStore()
   if (backfillResult.updatedCount > 0) {
     console.log(
       `[oauth-multi-login] backfilled estimated costs for ${backfillResult.updatedCount}/${backfillResult.scannedCount} request audits`,
@@ -6962,7 +7389,7 @@ async function detectQuotaExhaustedUpstreamResponse(response: Response) {
   let message = ""
   let rawText = ""
   try {
-    rawText = (await response.clone().text()).slice(0, 8192)
+    rawText = await readResponsePreviewText(response, 8192)
     if (rawText.trim()) {
       try {
         const parsed = JSON.parse(rawText) as Record<string, unknown>
@@ -7058,7 +7485,7 @@ async function detectRoutingBlockedUpstreamResponse(response: Response) {
   }
   let text = ""
   try {
-    text = (await response.clone().text()).slice(0, 8192)
+    text = await readResponsePreviewText(response, 8192)
   } catch {
     // ignore clone/parse failures
   }
@@ -7103,6 +7530,29 @@ const STRICT_PRIVACY_BODY_SESSION_FIELDS = [
 ]
 const STRICT_PRIVACY_METADATA_FIELD_PATTERN =
   /(^|_)(user|email|mail|phone|mobile|ip|account|workspace|org|organization|tenant|employee|device|machine|host|client)(_|$)/i
+const strictPrivacySanitizedLogState = new Map<string, { lastAt: number; suppressed: number }>()
+
+function logStrictPrivacySanitizedFields(input: {
+  route: string
+  keyId?: string | null
+  accountId?: string | null
+  fields: string[]
+}) {
+  if (input.fields.length === 0) return
+  const normalizedFields = input.fields.slice(0, 12).join(",")
+  const mapKey = `${input.route}|${input.keyId ?? "-"}|${input.accountId ?? "-"}|${normalizedFields}`
+  const now = Date.now()
+  const previous = strictPrivacySanitizedLogState.get(mapKey)
+  if (previous && now - previous.lastAt < STRICT_PRIVACY_SANITIZED_LOG_INTERVAL_MS) {
+    previous.suppressed += 1
+    return
+  }
+  const suppressed = previous?.suppressed ?? 0
+  strictPrivacySanitizedLogState.set(mapKey, { lastAt: now, suppressed: 0 })
+  console.log(
+    `[oauth-multi-login] strict-privacy sanitized request fields route=${input.route} key=${input.keyId ?? "-"} account=${input.accountId ?? "-"} fields=${normalizedFields}${suppressed > 0 ? ` suppressed=${suppressed}` : ""}`,
+  )
+}
 
 function sanitizeUpstreamJsonBody(input: {
   body?: Uint8Array
@@ -8664,6 +9114,78 @@ async function trackUsageFromJsonStream(input: {
   }
 }
 
+function createUsageTrackingProxyStream(input: {
+  stream: ReadableStream<Uint8Array>
+  accountId: string
+  keyId?: string
+  auditId?: string
+  providerId?: string | null
+  virtualKeyId?: string | null
+  model?: string | null
+  sessionId?: string | null
+  reasoningEffort?: string | null
+  source: "proxy-stream" | "proxy-json"
+}) {
+  const decoder = new TextDecoder()
+  let text = ""
+  let truncated = false
+
+  const finalizeUsage = async () => {
+    try {
+      if (truncated || !text) return
+      const parsed = await extractUsageFromStructuredResponseText(text)
+      const usage = parsed.usage
+      if (!hasUsageDelta(usage)) return
+      recordUsageMetrics({
+        accountId: input.accountId,
+        keyId: input.keyId,
+        usage,
+        source: input.source,
+        auditId: input.auditId,
+        providerId: input.providerId ?? null,
+        virtualKeyId: input.virtualKeyId ?? input.keyId ?? null,
+        model: input.model ?? null,
+        sessionId: input.sessionId ?? null,
+        reasoningEffort: input.reasoningEffort ?? null,
+      })
+    } catch (error) {
+      console.warn(
+        `[oauth-multi-login] usage track failed source=${input.source} account=${input.accountId} key=${input.keyId ?? "-"} reason=${errorMessage(error)}`,
+      )
+    }
+  }
+
+  return input.stream.pipeThrough(
+    new TransformStream<Uint8Array, Uint8Array>({
+      transform(chunk, controller) {
+        controller.enqueue(chunk)
+        if (truncated || chunk.byteLength === 0) return
+        const decoded = decoder.decode(chunk, { stream: true })
+        const remaining = USAGE_TRACK_MAX_TEXT_CHARS - text.length
+        if (decoded.length <= remaining) {
+          text += decoded
+          return
+        }
+        if (remaining > 0) text += decoded.slice(0, remaining)
+        truncated = true
+      },
+      flush() {
+        if (!truncated) {
+          const tail = decoder.decode()
+          const remaining = USAGE_TRACK_MAX_TEXT_CHARS - text.length
+          if (tail.length <= remaining) {
+            text += tail
+          } else {
+            if (remaining > 0) text += tail.slice(0, remaining)
+            truncated = true
+          }
+        }
+        handleBackgroundPromise(`trackUsageFromResponseStream:${input.source}`, finalizeUsage())
+      },
+    }),
+  )
+}
+
 async function refreshChatgptAccountAccess(account: StoredAccount) {
   if (account.providerId !== "chatgpt") {
     throw new Error("Only ChatGPT OAuth accounts are supported in this flow")
@@ -9041,6 +9563,7 @@ app.get("/api/health", () =>
     runtime: {
       instanceId: process.env.OAUTH_APP_INSTANCE_ID ?? null,
       serverExecutable: process.env.OAUTH_APP_SERVER_EXE ?? process.execPath,
+      serverBuildId: process.env.OAUTH_APP_SERVER_BUILD_ID ?? null,
       dataDir: process.env.OAUTH_APP_DATA_DIR ?? null,
       webDir: process.env.OAUTH_APP_WEB_DIR ?? null,
     },
@@ -9342,6 +9865,7 @@ async function proxyVirtualKeyCodexRequest(c: any, upstreamPath = "/responses") 
   let auditWireApi: "responses" | "chat_completions" | null = null
   let outgoingBody: Uint8Array | undefined = undefined
   let auditRoutingMode = "single"
+  let proxyPressureLease: ProxyPressureLease | null = null
   const writeAudit = buildResponsesAuditWriter(route, method, () => ({
     reasoningEffort: auditReasoningEffort,
     clientMode: auditClientMode,
@@ -9363,8 +9887,13 @@ async function proxyVirtualKeyCodexRequest(c: any, upstreamPath = "/responses") 
     const contentType = c.req.header("content-type")
     const contentEncoding = c.req.header("content-encoding")
     const strictUpstreamPrivacy = isStrictUpstreamPrivacyEnabled()
-    const outgoingBytes = await c.req.arrayBuffer()
-    outgoingBody = outgoingBytes.byteLength > 0 ? new Uint8Array(outgoingBytes) : undefined
+    const declaredRequestBytes = parseHeaderNumber(c.req.header("content-length"))
+    proxyPressureLease = await proxyRequestPressureLimiter.acquire({
+      heavy: upstreamPath === "/responses/compact" || declaredRequestBytes >= PROXY_HEAVY_BODY_BYTES,
+      label: route,
+      signal: c.req.raw.signal,
+    })
+    outgoingBody = await readRequestBodyBytesWithLimit(c.req.raw)
     const requestBodyAnalysis = analyzeJsonRequestBody({
       body: outgoingBody,
       contentType,
@@ -9550,8 +10079,12 @@ async function proxyVirtualKeyCodexRequest(c: any, upstreamPath = "/responses") 
         return null
       }
       const failedAccount = accountStore.get(failedAccountId)
-      const preferredPlanCohort = resolveRequestedModelPlanCohort(auditModel) ?? (failedAccount ? resolveAccountPlanCohort(failedAccount) : null)
-      const routingHints = buildProviderRoutingHintsForRequestedModel(key.providerId, auditModel, Date.now(), {
+      const preferredPlanCohort = resolvePreferredPlanCohortForVirtualKey({
+        key,
+        requestedModel: auditModel,
+        account: failedAccount ?? null,
+      })
+      const routingHints = buildProviderRoutingHintsForVirtualKey(key, auditModel, Date.now(), {
         preferredPlanCohort,
       })
       const excluded = new Set<string>([...routingHints.excludeAccountIds, ...rerouteTriedAccounts])
@@ -9578,7 +10111,7 @@ async function proxyVirtualKeyCodexRequest(c: any, upstreamPath = "/responses") 
         })
 
       if (!reRoutedAccount) {
-        const relaxedHints = buildRelaxedProviderRoutingHintsForRequestedModel(key.providerId, auditModel, Date.now(), {
+        const relaxedHints = buildRelaxedProviderRoutingHintsForVirtualKey(key, auditModel, Date.now(), {
           preferredPlanCohort,
         })
         const relaxedExcluded = new Set<string>([...relaxedHints.excludeAccountIds, ...rerouteTriedAccounts])
@@ -9632,9 +10165,12 @@ async function proxyVirtualKeyCodexRequest(c: any, upstreamPath = "/responses") 
         parsedRoot: effectiveRequestBodyBaseRoot,
       })
       if (bodySanitized.strippedFields.length > 0) {
-        console.log(
-          `[oauth-multi-login] strict-privacy sanitized request fields route=${route} key=${auditKeyId ?? "-"} account=${account.id} fields=${bodySanitized.strippedFields.join(",")}`,
-        )
+        logStrictPrivacySanitizedFields({
+          route,
+          keyId: auditKeyId,
+          accountId: account.id,
+          fields: bodySanitized.strippedFields,
+        })
       }
       requestBodyCache.set(cacheKey, bodySanitized.body)
       return bodySanitized.body
@@ -9932,7 +10468,6 @@ async function proxyVirtualKeyCodexRequest(c: any, upstreamPath = "/responses") 
       })
     }
 
-    const [clientStream, usageStream] = upstream.body.tee()
     const auditId = writeAudit({
       providerId: auditProviderId,
       accountId: auditAccountId,
@@ -9947,37 +10482,18 @@ async function proxyVirtualKeyCodexRequest(c: any, upstreamPath = "/responses") 
       upstreamRequestId,
       clientTag,
     })
-    if (isEventStreamContentType(upstream.headers.get("content-type"))) {
-      handleBackgroundPromise(
-        "trackUsageFromStream:responses",
-        trackUsageFromStream({
-          accountId: account.id,
-          keyId: key.id,
-          stream: usageStream,
-          auditId,
-          providerId: auditProviderId,
-          virtualKeyId: auditKeyId,
-          model: auditModel,
-          sessionId: auditSessionId,
-          reasoningEffort: auditReasoningEffort,
-        }),
-      )
-    } else {
-      handleBackgroundPromise(
-        "trackUsageFromJsonStream:responses",
-        trackUsageFromJsonStream({
-          accountId: account.id,
-          keyId: key.id,
-          stream: usageStream,
-          auditId,
-          providerId: auditProviderId,
-          virtualKeyId: auditKeyId,
-          model: auditModel,
-          sessionId: auditSessionId,
-          reasoningEffort: auditReasoningEffort,
-        }),
-      )
-    }
+    const clientStream = createUsageTrackingProxyStream({
+      accountId: account.id,
+      keyId: key.id,
+      stream: upstream.body,
+      auditId,
+      providerId: auditProviderId,
+      virtualKeyId: auditKeyId,
+      model: auditModel,
+      sessionId: auditSessionId,
+      reasoningEffort: auditReasoningEffort,
+      source: isEventStreamContentType(upstream.headers.get("content-type")) ? "proxy-stream" : "proxy-json",
+    })
 
     return new Response(clientStream, {
       status: upstream.status,
@@ -10023,6 +10539,8 @@ async function proxyVirtualKeyCodexRequest(c: any, upstreamPath = "/responses") 
       clientTag,
     })
     return c.json({ error: errorMessage(error) }, finalStatus)
+  } finally {
+    proxyPressureLease?.release()
   }
 }
 
@@ -10041,6 +10559,7 @@ async function proxyVirtualKeyCursorChatCompletions(c: any) {
   let auditReasoningEffort: string | null = null
   let outgoingBody: Uint8Array | undefined = undefined
   let auditRoutingMode = "single"
+  let proxyPressureLease: ProxyPressureLease | null = null
   const auditClientMode: "cursor" = "cursor"
   const auditWireApi: "chat_completions" = "chat_completions"
   const writeAudit = buildResponsesAuditWriter(route, method, () => ({
@@ -10050,8 +10569,13 @@ async function proxyVirtualKeyCursorChatCompletions(c: any) {
   }))
 
   try {
-    const outgoingBytes = await c.req.arrayBuffer()
-    outgoingBody = outgoingBytes.byteLength > 0 ? new Uint8Array(outgoingBytes) : undefined
+    const declaredRequestBytes = parseHeaderNumber(c.req.header("content-length"))
+    proxyPressureLease = await proxyRequestPressureLimiter.acquire({
+      heavy: declaredRequestBytes >= PROXY_HEAVY_BODY_BYTES,
+      label: route,
+      signal: c.req.raw.signal,
+    })
+    outgoingBody = await readRequestBodyBytesWithLimit(c.req.raw)
     const rawBodyText = outgoingBody ? new TextDecoder().decode(outgoingBody) : "{}"
     const parsedBody = CursorChatCompletionsSchema.parse(JSON.parse(rawBodyText))
     const auditFields = parseAuditRequestFields({
@@ -10231,9 +10755,12 @@ async function proxyVirtualKeyCursorChatCompletions(c: any) {
         return null
       }
       const failedAccount = accountStore.get(failedAccountId)
-      const preferredPlanCohort =
-        resolveRequestedModelPlanCohort(effectiveModelId) ?? (failedAccount ? resolveAccountPlanCohort(failedAccount) : null)
-      const routingHints = buildProviderRoutingHintsForRequestedModel(key.providerId, effectiveModelId, Date.now(), {
+      const preferredPlanCohort = resolvePreferredPlanCohortForVirtualKey({
+        key,
+        requestedModel: effectiveModelId,
+        account: failedAccount ?? null,
+      })
+      const routingHints = buildProviderRoutingHintsForVirtualKey(key, effectiveModelId, Date.now(), {
         preferredPlanCohort,
       })
       const excluded = new Set<string>([...routingHints.excludeAccountIds, ...rerouteTriedAccounts])
@@ -10260,7 +10787,7 @@ async function proxyVirtualKeyCursorChatCompletions(c: any) {
           })
 
       if (!reroutedAccount) {
-        const relaxedHints = buildRelaxedProviderRoutingHintsForRequestedModel(key.providerId, effectiveModelId, Date.now(), {
+        const relaxedHints = buildRelaxedProviderRoutingHintsForVirtualKey(key, effectiveModelId, Date.now(), {
           preferredPlanCohort,
         })
         const relaxedExcluded = new Set<string>([...relaxedHints.excludeAccountIds, ...rerouteTriedAccounts])
@@ -10713,6 +11240,8 @@ async function proxyVirtualKeyCursorChatCompletions(c: any) {
       clientTag,
     })
     return toOpenAICompatibleErrorResponse(message, statusCode, statusCode === 401 ? "authentication_error" : "invalid_request_error")
+  } finally {
+    proxyPressureLease?.release()
   }
 }
 
@@ -11214,8 +11743,12 @@ app.post("/api/chat/virtual-key", async (c) => {
           })
         }
 
-        const preferredPlanCohort = resolveRequestedModelPlanCohort(input.model) ?? resolveAccountPlanCohort(activeAccount)
-        const routingHints = buildProviderRoutingHintsForRequestedModel(eligibleResolved.key.providerId, input.model, Date.now(), {
+        const preferredPlanCohort = resolvePreferredPlanCohortForVirtualKey({
+          key: eligibleResolved.key,
+          requestedModel: effectiveModel,
+          account: activeAccount,
+        })
+        const routingHints = buildProviderRoutingHintsForVirtualKey(eligibleResolved.key, effectiveModel, Date.now(), {
           preferredPlanCohort,
         })
         const excluded = new Set<string>([...routingHints.excludeAccountIds, ...rerouteTriedAccounts])
@@ -11242,7 +11775,7 @@ app.post("/api/chat/virtual-key", async (c) => {
           })
 
         if (!reRoutedAccount) {
-          const relaxedHints = buildRelaxedProviderRoutingHintsForRequestedModel(eligibleResolved.key.providerId, input.model, Date.now(), {
+          const relaxedHints = buildRelaxedProviderRoutingHintsForVirtualKey(eligibleResolved.key, effectiveModel, Date.now(), {
             preferredPlanCohort,
           })
           const relaxedExcluded = new Set<string>([...relaxedHints.excludeAccountIds, ...rerouteTriedAccounts])
@@ -11336,7 +11869,7 @@ try {
   bootstrapEstimatedUsageCosts()
 } catch (error) {
   console.warn(`[oauth-multi-login] estimated cost bootstrap failed: ${errorMessage(error)}`)
-  syncExtendedUsageTotalsStateFromAudits()
+  syncExtendedUsageTotalsStateFromStore()
 }
 
 server = Bun.serve({

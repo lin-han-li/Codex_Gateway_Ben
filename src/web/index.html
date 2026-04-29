@@ -2291,6 +2291,124 @@
         gap: 7px;
       }
 
+      .account-plan-sections {
+        display: grid;
+        gap: 22px;
+      }
+
+      .account-plan-section {
+        --section-accent: rgba(148, 163, 184, 0.45);
+        --section-glow: rgba(148, 163, 184, 0.12);
+        position: relative;
+        padding: 18px;
+        border: 1px solid color-mix(in oklab, var(--section-accent) 64%, var(--line) 36%);
+        border-radius: 24px;
+        background:
+          radial-gradient(circle at top left, var(--section-glow), transparent 34%),
+          linear-gradient(135deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.018));
+        box-shadow: var(--shadow-sm);
+        overflow: hidden;
+      }
+
+      .account-plan-section::before {
+        content: "";
+        position: absolute;
+        inset: 0 auto 0 0;
+        width: 4px;
+        background: linear-gradient(180deg, transparent, var(--section-accent), transparent);
+        opacity: 0.88;
+      }
+
+      .account-plan-section-free {
+        --section-accent: rgba(148, 163, 184, 0.58);
+        --section-glow: rgba(148, 163, 184, 0.13);
+      }
+
+      .account-plan-section-plus {
+        --section-accent: rgba(91, 141, 255, 0.72);
+        --section-glow: rgba(73, 128, 255, 0.18);
+      }
+
+      .account-plan-section-business {
+        --section-accent: rgba(255, 213, 95, 0.78);
+        --section-glow: rgba(255, 189, 60, 0.18);
+      }
+
+      .account-plan-section-head {
+        position: relative;
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-end;
+        gap: 16px;
+        margin-bottom: 16px;
+      }
+
+      .account-plan-section-kicker {
+        color: var(--section-accent);
+        font-size: 12px;
+        font-weight: 800;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+      }
+
+      .account-plan-section-head h3 {
+        margin: 4px 0 0;
+        color: var(--text);
+        font-size: 24px;
+        line-height: 1.1;
+      }
+
+      .account-plan-section-head p {
+        margin: 7px 0 0;
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .account-plan-section-count {
+        min-width: 46px;
+        padding: 8px 13px;
+        border: 1px solid color-mix(in oklab, var(--section-accent) 54%, transparent);
+        border-radius: 999px;
+        background: color-mix(in oklab, var(--section-glow) 74%, rgba(255, 255, 255, 0.04));
+        color: var(--text);
+        font-size: 18px;
+        font-weight: 900;
+        text-align: center;
+      }
+
+      .account-plan-section-actions {
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+
+      .account-plan-refresh {
+        min-height: 34px;
+        padding-inline: 14px;
+        border-color: color-mix(in oklab, var(--section-accent) 46%, transparent);
+        background:
+          linear-gradient(135deg, color-mix(in oklab, var(--section-accent) 34%, rgba(255, 255, 255, 0.08)), rgba(255, 255, 255, 0.055));
+        color: var(--text);
+        box-shadow: 0 10px 24px color-mix(in oklab, var(--section-glow) 72%, transparent);
+      }
+
+      .account-plan-refresh:not(:disabled):hover {
+        transform: translateY(-1px);
+        filter: brightness(1.08);
+      }
+
+      .account-plan-section-empty {
+        position: relative;
+        padding: 18px;
+        border: 1px dashed color-mix(in oklab, var(--section-accent) 42%, var(--line) 58%);
+        border-radius: 18px;
+        color: var(--muted);
+        background: rgba(255, 255, 255, 0.025);
+        text-align: center;
+      }
+
       .account-card-grid {
         display: grid;
         grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
@@ -3295,6 +3413,28 @@
           min-width: 480px;
         }
 
+        .account-plan-section {
+          padding: 14px;
+          border-radius: 20px;
+        }
+
+        .account-plan-section-head {
+          flex-direction: column;
+          align-items: flex-start;
+        }
+
+        .account-plan-section-count {
+          align-self: flex-start;
+        }
+
+        .account-plan-section-actions {
+          justify-content: flex-start;
+        }
+
+        .account-card-grid {
+          grid-template-columns: 1fr;
+        }
+
         .auth-shell {
           padding: 12px;
         }
@@ -3541,7 +3681,7 @@
       <aside class="sidebar">
         <div class="brand">
           <h1>Codex Gateway</h1>
-          <div class="ver">v1.2.0</div>
+          <div class="ver">v1.2.3</div>
         </div>
         <nav class="nav">
           <button class="nav-btn active" data-view="dashboard"><span>📊</span><span>仪表盘</span></button>
@@ -3684,13 +3824,18 @@
                 <option value="standard">标准路由</option>
                 <option value="gpt55_xhigh">固定 GPT-5.5 XHigh</option>
               </select>
+              <select id="keyAccountScope">
+                <option value="member">会员账号 Key</option>
+                <option value="free">Free 账号 Key</option>
+                <option value="all">兼容：全部账号 Key</option>
+              </select>
               <select id="keyAccount"></select>
               <input id="keyName" placeholder="Key 名称（可选）" />
               <input id="keyValidityDays" type="number" min="1" max="3650" step="1" value="30" placeholder="有效期天数（留空=永久）" />
               <button id="issueKey" class="btn primary">生成 Key</button>
             </div>
             <div id="keyAccountStateHint" class="muted" style="margin-top: 8px"></div>
-            <div class="key-note">默认自动均流到全部可用账号；可手动输入有效期天数（1-3650），留空表示永久有效。</div>
+            <div class="key-note">这里的“会员/Free Key”控制网关后端账号池；Codex 前端仍可固定显示当前登录账号，请用“直接配置 Codex App/CLI”把该前端账号映射到此 Key。下拉账号仅是高级后端强制路由选项，通常保持“网关池路由”。</div>
             <div id="issuedKeyBox" class="key-secret" style="margin-top: 10px">暂无新生成 Key</div>
           </div>
           <div class="panel" style="margin-top: 12px">
@@ -4157,6 +4302,7 @@
           keyIssueAccountId: "",
           keyIssueClientMode: "codex",
           keyIssuePolicy: "standard",
+          keyIssueAccountScope: "member",
           adminToken: "",
           encryptionKey: "",
         },
@@ -4240,6 +4386,7 @@
         ["keyAccountSelection", "draft.keyIssueAccountId"],
         ["keyClientMode", "draft.keyIssueClientMode"],
         ["keyPolicy", "draft.keyIssuePolicy"],
+        ["keyAccountScope", "draft.keyIssueAccountScope"],
         ["adminToken", "draft.adminToken"],
         ["encryptionKey", "draft.encryptionKey"],
       ].forEach(([alias, path]) => defineStateAlias(S, alias, path));
@@ -4758,7 +4905,7 @@
         hint.classList.remove("is-error");
         if (keyPolicy === "gpt55_xhigh") {
           if (routingMode !== "single") {
-            hint.textContent = "当前为自动均流模式，请求会固定转发到 gpt-5.5 xhigh，并且仅使用可用的 Plus/Business 账号。";
+            hint.textContent = "当前为自动均流模式，请求会固定转发到 gpt-5.5 xhigh；Business 优先，Free 账号也可路由。";
             return;
           }
           const fixedPolicyAccount = S.accounts.find((item) => item.id === accountId);
@@ -4788,18 +4935,26 @@
         const hint = document.getElementById("keyAccountStateHint");
         if (!hint) return;
         const { routingMode, accountId } = getKeyIssueDraftSelection();
+        const accountScope = normalizeKeyAccountScope(S.draft.keyIssueAccountScope);
+        const scopeLabel = keyAccountScopeLabel(accountScope);
+        const keyPolicy = S.draft.keyIssuePolicy === "gpt55_xhigh" ? "gpt55_xhigh" : "standard";
         hint.classList.remove("is-error");
         if (routingMode !== "single") {
-          hint.textContent = "当前为自动均流模式，请求会在可用账号之间自动分配。";
+          if (keyPolicy === "gpt55_xhigh") {
+            hint.textContent = `当前为“前端固定账号 + 网关${scopeLabel}路由”：Codex 前端仍显示你当前登录的固定账号，实际请求进网关后固定转发到 gpt-5.5 xhigh；会员池内 Business 优先，Free 池仅使用 Free 后端账号。`;
+            return;
+          }
+          hint.textContent = `当前为“前端固定账号 + 网关${scopeLabel}路由”：Codex 前端仍显示你当前登录的固定账号，实际请求进网关后只在该范围内的可用后端账号之间自动分配。`;
           return;
         }
         const account = S.accounts.find((item) => item.id === accountId);
         if (account) {
           const name = account.displayName || account.email || account.accountId || account.id;
-          hint.textContent = `当前绑定单账号：${name}`;
+          const planLabel = normalizeAccountPlanDisplayLabel(getAccountPlanLabel(account)) || getAccountPlanCohortForRouting(account);
+          hint.textContent = `高级后端强制路由：该 Key 只使用后端账号 ${name}（${planLabel}）。这不是 Codex 前端显示的固定账号。`;
           return;
         }
-        hint.textContent = accountId ? "已选账号不可用，请重新选择或切回自动均流。" : "请选择要绑定的单账号。";
+        hint.textContent = accountId ? `已选后端账号不可用于${scopeLabel} Key，请重新选择或切回网关池路由。` : `请选择要强制使用的${scopeLabel}后端账号，或切回网关池路由。`;
         hint.classList.add("is-error");
       }
 
@@ -4907,7 +5062,7 @@
         const key = String(actionKey || "");
         if (!key) return task();
         if (S.ui.busyActions[key]) {
-          showToast(options.busyToast || "濮濓絽婀径鍕倞閿涘矁顕粙宥呮倵", "info");
+          showToast(options.busyToast || "当前操作正在进行中，请稍候", "info");
           return null;
         }
         S.ui.busyActions[key] = true;
@@ -5577,6 +5732,40 @@
         return "other";
       }
 
+      function getAccountPlanCohortForRouting(account) {
+        const normalized = getAccountPlanLabel(account).toLowerCase();
+        if (normalized.includes("team") || normalized.includes("business") || normalized.includes("enterprise")) return "business";
+        if (normalized.includes("pro") || normalized.includes("plus") || normalized.includes("premium") || normalized.includes("paid")) return "paid";
+        if (normalized.includes("free") || normalized.includes("trial") || normalized.includes("starter")) return "free";
+        return "unknown";
+      }
+
+      function normalizeKeyAccountScope(value) {
+        const normalized = String(value || "").trim().toLowerCase();
+        if (normalized === "free") return "free";
+        if (normalized === "member" || normalized === "paid" || normalized === "paid_member") return "member";
+        return "all";
+      }
+
+      function keyAccountScopeLabel(value) {
+        const scope = normalizeKeyAccountScope(value);
+        if (scope === "free") return "Free 后端账号池";
+        if (scope === "member") return "会员后端账号池";
+        return "全部后端账号池";
+      }
+
+      function accountMatchesKeyScope(account, scopeValue) {
+        const scope = normalizeKeyAccountScope(scopeValue);
+        if (scope === "all") return true;
+        const cohort = getAccountPlanCohortForRouting(account);
+        if (scope === "free") return cohort === "free";
+        return cohort === "paid" || cohort === "business";
+      }
+
+      function getVirtualKeyAccountScope(row) {
+        return normalizeKeyAccountScope(row?.accountScope ?? row?.account_scope);
+      }
+
       function coerceDashboardMetrics(metrics) {
         const pool = metrics?.poolRemaining || {};
         return {
@@ -6137,23 +6326,27 @@
         const accountSelect = document.getElementById("keyAccount");
         if (!accountSelect) return;
         const { routingMode, accountId } = getKeyIssueDraftSelection();
-        const oauthAccounts = S.accounts.filter((account) => isAccountSelectable(account));
+        const accountScope = normalizeKeyAccountScope(S.draft.keyIssueAccountScope);
+        const scopeSelect = document.getElementById("keyAccountScope");
+        if (scopeSelect && scopeSelect.value !== accountScope) scopeSelect.value = accountScope;
+        const oauthAccounts = S.accounts.filter((account) => isAccountSelectable(account) && accountMatchesKeyScope(account, accountScope));
         const accountIds = oauthAccounts.map((account) => String(account.id || ""));
-        const signature = buildOptionSignature(accountIds);
+        const signature = buildOptionSignature([accountScope, ...accountIds]);
         const focused = shouldSkipSelectRebuild(accountSelect);
         const invalidSelected = routingMode === "single" && accountId && !accountIds.includes(accountId);
 
         if (!focused && accountSelect.dataset.optionSignature !== signature) {
-          const options = ['<option value="">自动均流（所有可用账号）</option>'];
+          const options = [`<option value="">网关池路由（不绑定后端单账号 · ${esc(keyAccountScopeLabel(accountScope))}）</option>`];
           for (const account of oauthAccounts) {
+            const planLabel = normalizeAccountPlanDisplayLabel(getAccountPlanLabel(account)) || getAccountPlanCohortForRouting(account);
             options.push(
-              `<option value="${esc(account.id)}">绑定单账号：${esc(account.displayName || account.email || account.accountId)} (${esc(
+              `<option value="${esc(account.id)}">高级：强制后端账号 ${esc(account.displayName || account.email || account.accountId)} · ${esc(planLabel)} (${esc(
                 providerDisplayName(account),
               )})</option>`,
             );
           }
           if (invalidSelected) {
-            options.push(`<option value="${esc(accountId)}">已选账号不可用：${esc(accountId)}</option>`);
+            options.push(`<option value="${esc(accountId)}">已选后端账号不可用：${esc(accountId)}</option>`);
           }
           accountSelect.innerHTML = options.join("");
           accountSelect.dataset.optionSignature = signature;
@@ -7158,11 +7351,13 @@
       }
 
       function keyAccountLabel(row) {
-        if (row.routingMode === "pool") return "自动均流（多账号）";
+        const scopeLabel = keyAccountScopeLabel(getVirtualKeyAccountScope(row));
+        if (row.routingMode === "pool") return `前端固定账号 → 网关池路由（${scopeLabel}）`;
         const account = row.account || S.accounts.find((item) => item.id === row.accountId);
         if (!account) return row.accountId || "-";
         const name = account.displayName || account.email || account.accountId || account.id;
-        return `${name} (${providerDisplayName(account)})`;
+        const planLabel = normalizeAccountPlanDisplayLabel(getAccountPlanLabel(account)) || getAccountPlanCohortForRouting(account);
+        return `高级后端单账号：${name} · ${planLabel} (${providerDisplayName(account)})`;
       }
 
       function isVirtualKeyExpired(row) {
@@ -7193,6 +7388,7 @@
         const fields = [
           row.name,
           keyAccountLabel(row),
+          keyAccountScopeLabel(getVirtualKeyAccountScope(row)),
           getVirtualKeyClientModeLabel(row),
           row.clientMode,
           row.keyPrefix,
@@ -7387,6 +7583,7 @@
                 ...row,
                 clientMode: row?.clientMode ?? row?.client_mode ?? "codex",
                 wireApi: row?.wireApi ?? row?.wire_api ?? (row?.clientMode === "cursor" || row?.client_mode === "cursor" ? "chat_completions" : "responses"),
+                accountScope: normalizeKeyAccountScope(row?.accountScope ?? row?.account_scope),
                 fixedModel: row?.fixedModel ?? row?.fixed_model ?? null,
                 fixedReasoningEffort: row?.fixedReasoningEffort ?? row?.fixed_reasoning_effort ?? null,
               }))
@@ -7542,11 +7739,11 @@
       }
 
       const CODEX_GATEWAY_MODEL_CATALOG = {
-        "gpt-5.5": buildCodexGatewayModelInfo("gpt-5.5", "GPT-5.5", 0, "xhigh", ["fast"]),
-        "gpt-5.4": buildCodexGatewayModelInfo("gpt-5.4", "GPT-5.4", 1, "medium", ["fast"]),
-        "gpt-5.4-mini": buildCodexGatewayModelInfo("gpt-5.4-mini", "GPT-5.4-Mini", 2, "medium", []),
-        "gpt-5.3-codex": buildCodexGatewayModelInfo("gpt-5.3-codex", "GPT-5.3 Codex", 3, "medium", []),
-        "gpt-5.2": buildCodexGatewayModelInfo("gpt-5.2", "GPT-5.2", 4, "medium", []),
+        "gpt-5.5": buildCodexGatewayModelInfo("gpt-5.5", "GPT-5.5", 0, "medium", ["fast"]),
+        "gpt-5.4": buildCodexGatewayModelInfo("gpt-5.4", "GPT-5.4", 2, "xhigh", ["fast"]),
+        "gpt-5.4-mini": buildCodexGatewayModelInfo("gpt-5.4-mini", "GPT-5.4-Mini", 4, "medium", []),
+        "gpt-5.3-codex": buildCodexGatewayModelInfo("gpt-5.3-codex", "GPT-5.3 Codex", 6, "medium", []),
+        "gpt-5.2": buildCodexGatewayModelInfo("gpt-5.2", "GPT-5.2", 10, "medium", []),
       };
 
       function buildCodexGatewayModelCatalog(row) {
@@ -7885,8 +8082,9 @@
 
       function getVirtualKeyClientModeLabel(row) {
         const base = row?.clientMode === "cursor" ? "Cursor Key" : "Codex Key";
+        const scopeLabel = keyAccountScopeLabel(getVirtualKeyAccountScope(row));
         const fixedPolicy = getVirtualKeyFixedPolicyLabel(row);
-        return fixedPolicy ? `${base} · ${fixedPolicy}` : base;
+        return [base, scopeLabel, fixedPolicy].filter(Boolean).join(" · ");
       }
 
       function buildKeyUsageText(mode, row, key) {
@@ -8286,12 +8484,15 @@
         const issueButton = document.getElementById("issueKey");
         const keyClientModeInput = document.getElementById("keyClientMode");
         const keyPolicyInput = document.getElementById("keyPolicy");
-        const keyPolicyLabel = keyPolicy === "gpt55_xhigh" ? "gpt-5.5 XHigh" : "";
-        const keyName = keyNameInput?.value?.trim() || (keyPolicyLabel ? `Codex fixed ${keyPolicyLabel}` : undefined);
+        const keyAccountScopeInput = document.getElementById("keyAccountScope");
         const clientMode = keyClientModeInput?.value === "cursor" ? "cursor" : "codex";
         const keyPolicy = keyPolicyInput?.value === "gpt55_xhigh" ? "gpt55_xhigh" : "standard";
+        const accountScope = normalizeKeyAccountScope(keyAccountScopeInput?.value || S.draft.keyIssueAccountScope);
+        const keyPolicyLabel = keyPolicy === "gpt55_xhigh" ? "gpt-5.5 XHigh" : "";
+        const scopeLabel = keyAccountScopeLabel(accountScope);
+        const keyName = keyNameInput?.value?.trim() || (keyPolicyLabel ? `Gateway ${scopeLabel} fixed ${keyPolicyLabel}` : `Gateway ${scopeLabel} Key`);
         const wireApi = clientMode === "cursor" ? "chat_completions" : "responses";
-        const routeLabel = clientMode === "cursor" ? "Cursor 兼容链路" : "Codex 官方链路";
+        const routeLabel = `${clientMode === "cursor" ? "Cursor 兼容链路" : "Codex 官方链路"} · ${scopeLabel}`;
         const validityDaysRaw = keyValidityInput?.value?.trim() ?? "30";
         let validityDays = null;
         if (validityDaysRaw !== "") {
@@ -8305,7 +8506,12 @@
 
         const selectedAccount = accountId ? S.accounts.find((account) => account.id === accountId) : null;
         if (routingMode === "single" && !selectedAccount) {
-          showToast("当前绑定账号不可用，请重新选择或切回自动均流。", "error");
+          showToast("当前强制后端账号不可用，请重新选择或切回网关池路由。", "error");
+          renderKeyAccountStateHint();
+          return;
+        }
+        if (selectedAccount && !accountMatchesKeyScope(selectedAccount, accountScope)) {
+          showToast(`当前强制后端账号不属于${scopeLabel}，请重新选择或切回网关池路由。`, "error");
           renderKeyAccountStateHint();
           return;
         }
@@ -8323,6 +8529,7 @@
                 accountId: routingMode === "single" ? accountId || undefined : undefined,
                 providerId,
                 routingMode,
+                accountScope,
                 clientMode,
                 wireApi,
                 name: keyName,
@@ -8337,7 +8544,7 @@
             const issuedBox = document.getElementById("issuedKeyBox");
             if (issuedBox) {
               issuedBox.innerHTML = output?.key
-                ? `${keyPolicyLabel ? `<div class="muted">Fixed: ${esc(keyPolicyLabel)}</div>` : ""}<code>${esc(output.key)}</code>`
+                ? `<div class="muted">${esc(scopeLabel)}${keyPolicyLabel ? ` · Fixed: ${esc(keyPolicyLabel)}` : ""}</div><code>${esc(output.key)}</code>`
                 : "生成成功，但没有返回完整 Key。";
             }
             if (keyNameInput) keyNameInput.value = "";
@@ -8529,19 +8736,35 @@
             if (session.authorizationUrl) {
               log(`授权地址已生成: ${session.authorizationUrl.slice(0, 120)}...`);
               if (isElectronRuntime()) {
-                try {
-                  const output = await api("/api/system/open-url", {
-                    method: "POST",
-                    body: JSON.stringify({ url: session.authorizationUrl }),
-                  });
-                  const strategy = output?.opened?.strategy ? ` (${output.opened.strategy})` : "";
-                  log(`已请求系统浏览器打开授权地址${strategy}`);
-                } catch (error) {
+                let openUrlCompleted = false;
+                const fallbackTimer = setTimeout(() => {
+                  if (openUrlCompleted) return;
+                  log("后端打开 Chrome 无痕窗口仍未返回，尝试走 Electron 外部浏览器兜底", "warn");
                   const fallback = window.open(session.authorizationUrl, "_blank", "noopener,noreferrer");
                   if (!fallback) {
-                    throw new Error(`无法自动拉起浏览器，请手动打开以下授权地址：\n${session.authorizationUrl}`);
+                    showToast("无法自动打开浏览器，请复制授权地址手动打开", "error", 6000);
                   }
-                }
+                }, 3200);
+                void api("/api/system/open-url", {
+                  method: "POST",
+                  body: JSON.stringify({ url: session.authorizationUrl }),
+                })
+                  .then((output) => {
+                    openUrlCompleted = true;
+                    clearTimeout(fallbackTimer);
+                    const strategy = output?.opened?.strategy ? ` (${output.opened.strategy})` : "";
+                    log(`已请求系统浏览器打开授权地址${strategy}`);
+                  })
+                  .catch((error) => {
+                    openUrlCompleted = true;
+                    clearTimeout(fallbackTimer);
+                    log(`自动打开授权地址失败: ${toErrorMessage(error)}`, "warn");
+                    const fallback = window.open(session.authorizationUrl, "_blank", "noopener,noreferrer");
+                    if (!fallback) {
+                      showToast("无法自动打开 Chrome 无痕窗口，请复制授权地址手动打开", "error", 6000);
+                    }
+                  });
+                showToast("正在以 Chrome 无痕模式打开授权页", "info", 2600);
               } else {
                 const popup = window.open(session.authorizationUrl, "_blank", "noopener,noreferrer");
                 if (!popup) {
@@ -8552,7 +8775,7 @@
             showToast("授权流程已开始", "success");
           },
           {
-            button: triggerButton,
+            button: triggerButton || document.getElementById("btnAddOauth") || document.getElementById("goAcc"),
             busyLabel: "开始连接中...",
             errorToast: "发起授权失败",
             rethrow: false,
@@ -9430,6 +9653,8 @@
           renderBulkDeleteButton,
           openRefreshTokenModal,
           refreshSingleAccountQuota,
+          applyRefreshedAccountQuota,
+          getAccountDisplayLabel,
           loadAccounts,
           loadVirtualKeys,
           matchesVirtualKeyQuery,
@@ -10107,8 +10332,9 @@
         }
       }
 
-      async function quickStartOauth() {
+      async function quickStartOauth(event = null) {
         switchView("accounts");
+        const triggerButton = event?.currentTarget || document.getElementById("btnAddOauth") || document.getElementById("goAcc");
         const chatgpt = S.providers.find((p) => p.id === "chatgpt");
         const provider = chatgpt || S.providers[0];
         if (!provider) return alert("未发现可用 OAuth Provider");
@@ -10118,7 +10344,7 @@
           log("该登录方式需要额外字段，请先在“可用登录方式”区域填写后再点击开始连接");
           return;
         }
-        await startLogin(provider.id, method.id, {});
+        await startLogin(provider.id, method.id, {}, triggerButton);
       }
 
       function openJsonAccountImport() {
@@ -11136,6 +11362,15 @@
         });
         document.getElementById("keyPolicy")?.addEventListener("change", (e) => {
           S.draft.keyIssuePolicy = e.target.value === "gpt55_xhigh" ? "gpt55_xhigh" : "standard";
+          renderKeyAccountStateHint();
+        });
+        document.getElementById("keyAccountScope")?.addEventListener("change", (e) => {
+          S.draft.keyIssueAccountScope = normalizeKeyAccountScope(e.target.value);
+          const current = S.accounts.find((account) => account.id === S.draft.keyIssueAccountId);
+          if (current && !accountMatchesKeyScope(current, S.draft.keyIssueAccountScope)) {
+            setKeyIssueDraft("pool", "");
+          }
+          fillKeyAccountSelector();
           renderKeyAccountStateHint();
         });
         document.getElementById("testInput")?.addEventListener("keydown", (e) => {

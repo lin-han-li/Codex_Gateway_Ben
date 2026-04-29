@@ -107,7 +107,8 @@ export function createKeysView(deps) {
     if (subtitle) subtitle.textContent = `${keyAccountLabel(row)} · ${clientModeLabel}`
     if (secret) secret.textContent = revealed || `${row.keyPrefix || "ocsk_live"}********`
     if (meta) {
-      meta.textContent = `类型：${clientModeLabel} | 状态：${statusText} | 剩余时间：${formatRemainingTime(row.expiresAt)} | Token：${Number(row.totalTokens || 0).toLocaleString()} | 最近使用：${dt(row.lastUsedAt)}`
+      const routeModeText = row.routingMode === "pool" ? "前端固定账号经网关路由" : "高级：强制后端单账号"
+      meta.textContent = `类型：${clientModeLabel} | 运行形式：${routeModeText} | 状态：${statusText} | 剩余时间：${formatRemainingTime(row.expiresAt)} | Token：${Number(row.totalTokens || 0).toLocaleString()} | 最近使用：${dt(row.lastUsedAt)}`
     }
 
     renderKeyUsageButtons(row)

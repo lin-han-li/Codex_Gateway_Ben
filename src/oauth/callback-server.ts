@@ -1,3 +1,5 @@
+import net from "node:net"
+
 const HTML_SUCCESS = `<!DOCTYPE html>
 <html lang="en">
   <head>
@@ -374,12 +376,12 @@ export class LocalCallbackServer {
   private pending: PendingAuthorization | undefined
 
   constructor(
-    private readonly port: number,
+    private readonly preferredPort: number,
     private readonly callbackPath: string,
   ) {}
 
   get redirectUrl() {
-    return `http://localhost:${this.port}${this.callbackPath}`
+    return `http://localhost:${this.preferredPort}${this.callbackPath}`
   }
 
   createState() {
@@ -389,11 +391,35 @@ export class LocalCallbackServer {
   async ensureRunning() {
     if (this.server) return
 
-    this.server = Bun.serve({
-      hostname: "127.0.0.1",
-      port: this.port,
-      fetch: (req) => this.handleRequest(req),
-    })
+    let cancelAttempted = false
+    const maxAttempts = 10
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      try {
+        this.server = Bun.serve({
+          hostname: "127.0.0.1",
+          port: this.preferredPort,
+          fetch: (req) => this.handleRequest(req),
+        })
+        return
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        const addressInUse = /EADDRINUSE|address already in use|Failed to start server/i.test(message)
+        if (!addressInUse) throw error
+        if (!cancelAttempted) {
+          cancelAttempted = true
+          await this.sendCancelRequest().catch((cancelError) => {
+            const detail = cancelError instanceof Error ? cancelError.message : String(cancelError)
+            console.warn(`[oauth-callback] failed to cancel previous login server on ${this.preferredPort}: ${detail}`)
+          })
+        }
+        if (attempt >= maxAttempts) {
+          throw new Error(
+            `OAuth callback port ${this.preferredPort} is already in use. OpenAI Codex OAuth requires http://localhost:${this.preferredPort}${this.callbackPath}; close the old Codex Gateway/oauth-server process and try again.`,
+          )
+        }
+        await new Promise((resolve) => setTimeout(resolve, 200))
+      }
+    }
   }
 
   waitForCode(state: string) {
@@ -438,7 +464,17 @@ export class LocalCallbackServer {
     if (url.pathname === "/cancel") {
       this.pending?.reject(new Error("Login cancelled"))
       this.pending = undefined
-      return new Response("Login cancelled", { status: 200 })
+      const server = this.server
+      queueMicrotask(() => {
+        if (this.server === server) {
+          this.server?.stop()
+          this.server = undefined
+        }
+      })
+      return new Response("Login cancelled", {
+        status: 200,
+        headers: { Connection: "close" },
+      })
     }
 
     if (url.pathname !== this.callbackPath) {
@@ -482,6 +518,30 @@ export class LocalCallbackServer {
 
     return new Response(HTML_SUCCESS, {
       headers: { "Content-Type": "text/html; charset=utf-8" },
+    })
+  }
+
+  private async sendCancelRequest() {
+    await new Promise<void>((resolve, reject) => {
+      const socket = net.createConnection({ host: "127.0.0.1", port: this.preferredPort })
+      const timeout = setTimeout(() => {
+        socket.destroy(new Error("cancel request timeout"))
+      }, 2000)
+      const finish = (error?: Error) => {
+        clearTimeout(timeout)
+        socket.removeAllListeners()
+        if (error) reject(error)
+        else resolve()
+      }
+      socket.once("connect", () => {
+        socket.write(`GET /cancel HTTP/1.1\r\nHost: 127.0.0.1:${this.preferredPort}\r\nConnection: close\r\n\r\n`)
+      })
+      socket.once("data", () => {
+        socket.end()
+      })
+      socket.once("end", () => finish())
+      socket.once("close", () => finish())
+      socket.once("error", (error) => finish(error))
     })
   }
 }

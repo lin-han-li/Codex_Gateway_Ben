@@ -22,8 +22,9 @@ function buildCodexGatewayModelInfo(
   priority: number,
   defaultReasoningLevel: string,
   additionalSpeedTiers: string[] = [],
+  overrides: Record<string, unknown> = {},
 ) {
-  return {
+  const model = {
     slug: id,
     id,
     object: "model",
@@ -52,9 +53,12 @@ function buildCodexGatewayModelInfo(
     default_reasoning_summary: "none",
     support_verbosity: true,
     default_verbosity: "low",
+    reasoning_summary_format: "experimental",
+    minimal_client_version: "0.98.0",
     apply_patch_tool_type: "freeform",
     web_search_tool_type: "text_and_image",
     truncation_policy: { mode: "tokens", limit: 10000 },
+    auto_compact_token_limit: null,
     supports_parallel_tool_calls: true,
     supports_image_detail_original: true,
     context_window: 272000,
@@ -66,15 +70,87 @@ function buildCodexGatewayModelInfo(
     supports_search_tool: true,
     supportsPersonality: true,
     isDefault: id === "gpt-5.5",
+    ...overrides,
+  }
+  const defaultEffort = String(model.default_reasoning_level || defaultReasoningLevel)
+  return {
+    ...model,
+    defaultReasoningEffort: defaultEffort,
+    hidden: String(model.visibility || "list").toLowerCase() === "hide",
+    additionalSpeedTiers: Array.isArray(model.additional_speed_tiers) ? model.additional_speed_tiers : additionalSpeedTiers,
+    inputModalities: Array.isArray(model.input_modalities) ? model.input_modalities : ["text", "image"],
   }
 }
 
+const CODEX_GATEWAY_ALL_PLANS = [
+  "business",
+  "edu",
+  "education",
+  "enterprise",
+  "enterprise_cbp_usage_based",
+  "finserv",
+  "free",
+  "free_workspace",
+  "go",
+  "hc",
+  "k12",
+  "plus",
+  "pro",
+  "prolite",
+  "quorum",
+  "self_serve_business_usage_based",
+  "team",
+]
+
+const CODEX_GATEWAY_PAID_PLANS = CODEX_GATEWAY_ALL_PLANS.filter((plan) => plan !== "free" && plan !== "free_workspace" && plan !== "k12")
+
 const CODEX_GATEWAY_MODEL_CATALOG: Record<string, Record<string, unknown>> = {
-  "gpt-5.5": buildCodexGatewayModelInfo("gpt-5.5", "GPT-5.5", 0, "xhigh", ["fast"]),
-  "gpt-5.4": buildCodexGatewayModelInfo("gpt-5.4", "GPT-5.4", 1, "medium", ["fast"]),
-  "gpt-5.4-mini": buildCodexGatewayModelInfo("gpt-5.4-mini", "GPT-5.4-Mini", 2, "medium", []),
-  "gpt-5.3-codex": buildCodexGatewayModelInfo("gpt-5.3-codex", "GPT-5.3 Codex", 3, "medium", []),
-  "gpt-5.2": buildCodexGatewayModelInfo("gpt-5.2", "GPT-5.2", 4, "medium", []),
+  "gpt-5.5": buildCodexGatewayModelInfo("gpt-5.5", "GPT-5.5", 0, "medium", ["fast"], {
+    description: "Frontier model for complex coding, research, and real-world work.",
+    minimal_client_version: "0.124.0",
+    available_in_plans: CODEX_GATEWAY_ALL_PLANS,
+  }),
+  "gpt-5.4": buildCodexGatewayModelInfo("gpt-5.4", "gpt-5.4", 2, "xhigh", ["fast"], {
+    description: "Strong model for everyday coding.",
+    max_context_window: 1000000,
+    available_in_plans: CODEX_GATEWAY_PAID_PLANS,
+  }),
+  "gpt-5.4-mini": buildCodexGatewayModelInfo("gpt-5.4-mini", "GPT-5.4-Mini", 4, "medium", [], {
+    description: "Small, fast, and cost-efficient model for simpler coding tasks.",
+    default_verbosity: "medium",
+    available_in_plans: CODEX_GATEWAY_ALL_PLANS,
+  }),
+  "gpt-5.3-codex": buildCodexGatewayModelInfo("gpt-5.3-codex", "gpt-5.3-codex", 6, "medium", [], {
+    description: "Coding-optimized model.",
+    web_search_tool_type: "text",
+    available_in_plans: CODEX_GATEWAY_PAID_PLANS,
+    upgrade: {
+      model: "gpt-5.4",
+      migration_markdown:
+        "Introducing GPT-5.4\n\nCodex just got an upgrade with GPT-5.4, our most capable model for professional work. It outperforms prior models while being more token efficient, with notable improvements on long-running tasks, tool calling, computer use, and frontend development.\n\nLearn more: https://openai.com/index/introducing-gpt-5-4\n\nYou can always keep using GPT-5.3-Codex if you prefer.\n",
+    },
+  }),
+  "gpt-5.2": buildCodexGatewayModelInfo("gpt-5.2", "gpt-5.2", 10, "medium", [], {
+    description: "Optimized for professional work and long-running agents.",
+    minimal_client_version: "0.0.1",
+    default_reasoning_summary: "auto",
+    reasoning_summary_format: "none",
+    web_search_tool_type: "text",
+    truncation_policy: { mode: "bytes", limit: 10000 },
+    supports_image_detail_original: false,
+    available_in_plans: CODEX_GATEWAY_ALL_PLANS,
+    upgrade: {
+      model: "gpt-5.4",
+      migration_markdown:
+        "Introducing GPT-5.4\n\nCodex just got an upgrade with GPT-5.4, our most capable model for professional work. It outperforms prior models while being more token efficient, with notable improvements on long-running tasks, tool calling, computer use, and frontend development.\n\nLearn more: https://openai.com/index/introducing-gpt-5-4\n\nYou can always keep using GPT-5.3-Codex if you prefer.\n",
+    },
+  }),
+  "codex-auto-review": buildCodexGatewayModelInfo("codex-auto-review", "Codex Auto Review", 29, "medium", [], {
+    description: "Automatic approval review model for Codex.",
+    visibility: "hide",
+    max_context_window: 1000000,
+    available_in_plans: CODEX_GATEWAY_PAID_PLANS,
+  }),
 }
 
 function timestampForFilename() {
@@ -247,7 +323,7 @@ export type VirtualKeysRouteDeps = {
   IssueVirtualKeySchema: { parse: (raw: unknown) => any }
   RenameVirtualKeySchema: { parse: (raw: unknown) => any }
   RenewVirtualKeySchema: { parse: (raw: unknown) => any }
-  getCachedPoolConsistencyResult: (providerId: string) => any
+  getCachedPoolConsistencyResult: (providerId: string, now?: number, options?: { preferredPlanCohort?: "free" | "paid" | "business" | "unknown" | null }) => any
   hasSensitiveActionConfirmation: (c: any) => boolean
   errorMessage: (error: unknown) => string
   setCodexOAuthBridgeBinding?: (input: {
@@ -305,7 +381,11 @@ export function registerVirtualKeysRoutes(app: Hono, deps: VirtualKeysRouteDeps)
         )
       }
       if (input.routingMode === "pool") {
-        const cachedPoolConsistency = deps.getCachedPoolConsistencyResult(input.providerId)
+        const preferredPlanCohort =
+          input.accountScope === "free" ? "free" : input.accountScope === "member" ? "paid" : null
+        const cachedPoolConsistency = deps.getCachedPoolConsistencyResult(input.providerId, Date.now(), {
+          preferredPlanCohort,
+        })
         if (cachedPoolConsistency && !cachedPoolConsistency.ok) {
           return c.json(
             {
@@ -321,6 +401,7 @@ export function registerVirtualKeysRoutes(app: Hono, deps: VirtualKeysRouteDeps)
         accountId: input.accountId,
         providerId: input.providerId,
         routingMode: input.routingMode,
+        accountScope: input.accountScope,
         clientMode: normalizedClientMode,
         wireApi: normalizedWireApi,
         name: input.name,
