@@ -323,6 +323,7 @@ export type VirtualKeysRouteDeps = {
   IssueVirtualKeySchema: { parse: (raw: unknown) => any }
   RenameVirtualKeySchema: { parse: (raw: unknown) => any }
   RenewVirtualKeySchema: { parse: (raw: unknown) => any }
+  UpdateVirtualKeySchema: { parse: (raw: unknown) => any }
   getCachedPoolConsistencyResult: (providerId: string, now?: number, options?: { preferredPlanCohort?: "free" | "paid" | "business" | "unknown" | null }) => any
   hasSensitiveActionConfirmation: (c: any) => boolean
   errorMessage: (error: unknown) => string
@@ -439,6 +440,66 @@ export function registerVirtualKeysRoutes(app: Hono, deps: VirtualKeysRouteDeps)
       return c.json({ error: deps.errorMessage(error) }, 400)
     }
   })
+
+  const updateVirtualKeySettings = async (c: any) => {
+    try {
+      const id = c.req.param("id")
+      const current = deps.accountStore.getVirtualApiKeyByID(id)
+      if (!current) return c.json({ error: "Virtual API key not found" }, 404)
+      const raw = await c.req.json()
+      const input = deps.UpdateVirtualKeySchema.parse(raw)
+      const normalizedClientMode = input.clientMode ?? current.clientMode ?? "codex"
+      const normalizedWireApi =
+        input.wireApi ??
+        (normalizedClientMode === "cursor" ? "chat_completions" : "responses")
+      const isValidCombo =
+        (normalizedClientMode === "codex" && normalizedWireApi === "responses") ||
+        (normalizedClientMode === "cursor" && normalizedWireApi === "chat_completions")
+      if (!isValidCombo) {
+        return c.json(
+          {
+            error:
+              "Invalid virtual key mode. Codex keys must use responses, and Cursor keys must use chat_completions.",
+          },
+          400,
+        )
+      }
+      const nextProviderId = input.providerId ?? current.providerId
+      const nextRoutingMode = input.routingMode ?? current.routingMode
+      const nextAccountScope = input.accountScope ?? current.accountScope
+      if (nextRoutingMode === "pool") {
+        const preferredPlanCohort =
+          nextAccountScope === "free" ? "free" : nextAccountScope === "member" ? "paid" : null
+        const cachedPoolConsistency = deps.getCachedPoolConsistencyResult(nextProviderId, Date.now(), {
+          preferredPlanCohort,
+        })
+        if (cachedPoolConsistency && !cachedPoolConsistency.ok) {
+          return c.json(
+            {
+              error: cachedPoolConsistency.message,
+              code: cachedPoolConsistency.code,
+              details: cachedPoolConsistency.details,
+            },
+            409,
+          )
+        }
+      }
+      const record = deps.accountStore.updateVirtualApiKeySettings(id, {
+        ...input,
+        providerId: nextProviderId,
+        routingMode: nextRoutingMode,
+        accountScope: nextAccountScope,
+        clientMode: normalizedClientMode,
+        wireApi: normalizedWireApi,
+      })
+      return c.json({ success: true, record })
+    } catch (error) {
+      return c.json({ error: deps.errorMessage(error) }, 400)
+    }
+  }
+
+  app.post("/api/virtual-keys/:id/settings", updateVirtualKeySettings)
+  app.patch("/api/virtual-keys/:id", updateVirtualKeySettings)
 
   app.post("/api/virtual-keys/:id/revoke", (c) => {
     try {

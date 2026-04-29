@@ -10,6 +10,24 @@ type SyncResponse = {
   }
 }
 
+type IssueKeyResponse = {
+  key: string
+  record?: {
+    id: string
+    accountId?: string | null
+    routingMode?: string | null
+    accountScope?: string | null
+    clientMode?: string | null
+    wireApi?: string | null
+    fixedModel?: string | null
+    fixedReasoningEffort?: string | null
+  } | null
+}
+
+type UpdateKeyResponse = {
+  record?: IssueKeyResponse["record"]
+}
+
 function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message)
 }
@@ -163,7 +181,7 @@ async function main() {
   try {
     await waitForHealth(bridgeOrigin, 20_000)
 
-    await requestJSON<SyncResponse>(`${bridgeOrigin}/api/bridge/oauth/sync`, {
+    const accountA = await requestJSON<SyncResponse>(`${bridgeOrigin}/api/bridge/oauth/sync`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -200,7 +218,7 @@ async function main() {
 
     capturedRequests.length = 0
 
-    const issued = (await requestJSON(`${bridgeOrigin}/api/virtual-keys/issue`, {
+    const issued = await requestJSON<IssueKeyResponse>(`${bridgeOrigin}/api/virtual-keys/issue`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -208,9 +226,53 @@ async function main() {
         routingMode: "pool",
         name: "Key Issue Audit Pool Key",
       }),
-    })) as { key: string }
+    })
 
     assertCondition(issued.key?.startsWith("ocsk_live_"), "pool key issue failed")
+    assertCondition(issued.record?.id, "pool key issue did not return record id")
+
+    const cursorUpdated = await requestJSON<UpdateKeyResponse>(
+      `${bridgeOrigin}/api/virtual-keys/${encodeURIComponent(issued.record.id)}/settings`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          routingMode: "pool",
+          accountScope: "all",
+          clientMode: "cursor",
+          wireApi: "chat_completions",
+          fixedModel: "gpt-5.5",
+          fixedReasoningEffort: "xhigh",
+        }),
+      },
+    )
+    assertCondition(cursorUpdated.record?.routingMode === "pool", "settings update should keep pool routing")
+    assertCondition(cursorUpdated.record?.clientMode === "cursor", "settings update should switch key to cursor mode")
+    assertCondition(cursorUpdated.record?.wireApi === "chat_completions", "settings update should switch wire API")
+    assertCondition(cursorUpdated.record?.fixedModel === "gpt-5.5", "settings update should persist fixed model")
+    assertCondition(cursorUpdated.record?.fixedReasoningEffort === "xhigh", "settings update should persist fixed reasoning")
+
+    const singleUpdated = await requestJSON<UpdateKeyResponse>(
+      `${bridgeOrigin}/api/virtual-keys/${encodeURIComponent(issued.record.id)}/settings`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          accountId: accountA.account.id,
+          routingMode: "single",
+          accountScope: "all",
+          clientMode: "codex",
+          wireApi: "responses",
+          fixedModel: null,
+          fixedReasoningEffort: null,
+        }),
+      },
+    )
+    assertCondition(singleUpdated.record?.routingMode === "single", "settings update should switch key to single routing")
+    assertCondition(singleUpdated.record?.accountId === accountA.account.id, "settings update should bind selected account")
+    assertCondition(singleUpdated.record?.clientMode === "codex", "settings update should switch key back to codex mode")
+    assertCondition(singleUpdated.record?.wireApi === "responses", "settings update should switch wire API back to responses")
+    assertCondition(!singleUpdated.record?.fixedModel, "settings update should clear fixed model")
     await Bun.sleep(250)
 
     const modelFetchCount = capturedRequests.filter((item) => item.path === "/v1/models").length

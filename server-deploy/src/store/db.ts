@@ -1550,8 +1550,125 @@ export class AccountStore {
     return this.getVirtualApiKeyByID(id)
   }
 
+  updateVirtualApiKeySettings(
+    id: string,
+    input: {
+      accountId?: string | null
+      providerId?: string | null
+      routingMode?: VirtualKeyRoutingMode | string | null
+      accountScope?: VirtualKeyAccountScope | string | null
+      clientMode?: VirtualKeyClientMode | string | null
+      wireApi?: VirtualKeyWireAPI | string | null
+      name?: string | null
+      fixedModel?: string | null
+      fixedReasoningEffort?: string | null
+    },
+  ) {
+    const row = this.getVirtualApiKeyByID(id)
+    if (!row) throw new Error("Virtual API key not found")
+
+    const providerId = String(input.providerId ?? row.providerId ?? "chatgpt").trim() || "chatgpt"
+    const routingMode = input.routingMode === "pool" ? "pool" : input.routingMode === "single" ? "single" : row.routingMode
+    const accountScope =
+      Object.prototype.hasOwnProperty.call(input, "accountScope")
+        ? normalizeVirtualKeyAccountScope(input.accountScope)
+        : row.accountScope
+    const clientMode =
+      input.clientMode === "cursor" ? "cursor" : input.clientMode === "codex" ? "codex" : row.clientMode
+    const wireApi =
+      input.wireApi === "chat_completions"
+        ? "chat_completions"
+        : input.wireApi === "responses"
+          ? "responses"
+          : clientMode === "cursor"
+            ? "chat_completions"
+            : "responses"
+    const name = Object.prototype.hasOwnProperty.call(input, "name")
+      ? normalizeVirtualKeyDisplayName(input.name)
+      : row.name
+    const fixedModel = Object.prototype.hasOwnProperty.call(input, "fixedModel")
+      ? normalizeVirtualKeyOverrideValue(input.fixedModel)
+      : row.fixedModel
+    const fixedReasoningEffort = Object.prototype.hasOwnProperty.call(input, "fixedReasoningEffort")
+      ? normalizeVirtualKeyOverrideValue(input.fixedReasoningEffort)
+      : row.fixedReasoningEffort
+
+    const isValidCombo =
+      (clientMode === "codex" && wireApi === "responses") ||
+      (clientMode === "cursor" && wireApi === "chat_completions")
+    if (!isValidCombo) {
+      throw new Error("Invalid virtual key mode. Codex keys must use responses, and Cursor keys must use chat_completions.")
+    }
+
+    const rawAccountId = String(input.accountId ?? row.accountId ?? "").trim()
+    const accountId = routingMode === "single" ? rawAccountId : null
+    if (routingMode === "single") {
+      if (!accountId) throw new Error("Account is required for single-route virtual key")
+      const account = this.get(accountId)
+      if (!account) throw new Error("Account not found")
+      if (account.providerId !== providerId) {
+        throw new Error("Account provider does not match virtual key provider")
+      }
+      if (!virtualKeyScopeMatchesAccount(account, accountScope)) {
+        throw new Error(`Selected account does not match ${accountScope} virtual key scope`)
+      }
+    } else {
+      const accounts = this.getAvailableAccountsForProvider(providerId).filter((account) =>
+        virtualKeyScopeMatchesAccount(account, accountScope),
+      )
+      if (accounts.length === 0) throw new Error("No available accounts for pool routing")
+    }
+
+    const routeStateChanged =
+      row.providerId !== providerId ||
+      row.routingMode !== routingMode ||
+      row.accountScope !== accountScope ||
+      row.accountId !== accountId
+    const now = Date.now()
+    this.db
+      .query(
+        `
+          UPDATE virtual_api_keys
+          SET
+            account_id = ?,
+            provider_id = ?,
+            routing_mode = ?,
+            account_scope = ?,
+            client_mode = ?,
+            wire_api = ?,
+            name = ?,
+            fixed_model = ?,
+            fixed_reasoning_effort = ?,
+            updated_at = ?
+          WHERE id = ?
+        `,
+      )
+      .run(
+        accountId,
+        providerId,
+        routingMode,
+        accountScope,
+        clientMode,
+        wireApi,
+        name,
+        fixedModel,
+        fixedReasoningEffort,
+        now,
+        id,
+      )
+    if (routeStateChanged) {
+      this.clearVirtualKeyRouteState(id)
+    }
+    return this.getVirtualApiKeyByID(id)
+  }
+
   deleteVirtualApiKey(id: string) {
     this.db.query(`DELETE FROM virtual_api_keys WHERE id = ?`).run(id)
+  }
+
+  private clearVirtualKeyRouteState(keyID: string) {
+    this.db.query(`DELETE FROM virtual_key_sessions WHERE key_id = ?`).run(keyID)
+    this.db.query(`DELETE FROM virtual_key_routes WHERE key_id = ?`).run(keyID)
   }
 
   getVirtualApiKeyByID(id: string) {
@@ -1643,6 +1760,7 @@ export class AccountStore {
       deprioritizedAccountIds,
       headroomByAccountId,
       pressureScoreByAccountId,
+      accountScope: key.accountScope,
     }
     const account =
       key.routingMode === "pool"
@@ -1732,6 +1850,7 @@ export class AccountStore {
       deprioritizedAccountIds,
       headroomByAccountId,
       pressureScoreByAccountId,
+      accountScope: key.accountScope,
     }
     const account =
       key.routingMode === "pool"
@@ -1767,11 +1886,12 @@ export class AccountStore {
       deprioritizedAccountIds?: Set<string>
       headroomByAccountId?: Map<string, number>
       pressureScoreByAccountId?: Map<string, number>
+      accountScope?: VirtualKeyAccountScope
     },
   ) {
     this.pruneExpiredVirtualKeySessions()
     if (sessionId) {
-      const sticky = this.pickSessionStickyAccount(keyID, providerId, sessionId)
+      const sticky = this.pickSessionStickyAccount(keyID, providerId, sessionId, options?.accountScope)
       if (
         sticky &&
         !options?.excludeAccountIds?.has(sticky.id) &&
@@ -1791,7 +1911,12 @@ export class AccountStore {
     return selected
   }
 
-  private pickSessionStickyAccount(keyID: string, providerId: string, sessionId: string) {
+  private pickSessionStickyAccount(
+    keyID: string,
+    providerId: string,
+    sessionId: string,
+    accountScope: VirtualKeyAccountScope = "all",
+  ) {
     this.pruneExpiredVirtualKeySessions()
     const row = this.db
       .query<VirtualKeySessionRow, [string, string]>(
@@ -1809,7 +1934,7 @@ export class AccountStore {
       return null
     }
 
-    const account = this.getSingleRouteAccount(providerId, row.account_id)
+    const account = this.getSingleRouteAccount(providerId, row.account_id, accountScope)
     if (!account) return null
 
     this.touchVirtualKeyRoute(keyID, account.id)
@@ -1825,13 +1950,16 @@ export class AccountStore {
       deprioritizedAccountIds?: Set<string>
       headroomByAccountId?: Map<string, number>
       pressureScoreByAccountId?: Map<string, number>
+      accountScope?: VirtualKeyAccountScope
     },
   ) {
     const excluded = options?.excludeAccountIds ?? new Set<string>()
     const deprioritized = options?.deprioritizedAccountIds ?? new Set<string>()
     const headroomByAccountId = options?.headroomByAccountId ?? new Map<string, number>()
     const pressureScoreByAccountId = options?.pressureScoreByAccountId ?? new Map<string, number>()
-    const candidates = this.getAvailableAccountsForProvider(providerId).filter((account) => !excluded.has(account.id))
+    const candidates = this.getAvailableAccountsForProvider(providerId).filter(
+      (account) => !excluded.has(account.id) && virtualKeyScopeMatchesAccount(account, options?.accountScope ?? "all"),
+    )
     if (candidates.length === 0) return null
 
     const routeRows = this.db
@@ -1901,6 +2029,7 @@ export class AccountStore {
     providerId: string
     sessionId: string
     failedAccountId: string
+    accountScope?: VirtualKeyAccountScope
     excludeAccountIds?: string[]
     deprioritizedAccountIds?: string[]
     headroomByAccountId?: Map<string, number>
@@ -1916,6 +2045,7 @@ export class AccountStore {
       deprioritizedAccountIds: new Set(input.deprioritizedAccountIds ?? []),
       headroomByAccountId: input.headroomByAccountId,
       pressureScoreByAccountId: input.pressureScoreByAccountId,
+      accountScope: input.accountScope,
     })
     if (!selected) return null
 
@@ -1928,6 +2058,7 @@ export class AccountStore {
     keyId: string
     providerId: string
     failedAccountId: string
+    accountScope?: VirtualKeyAccountScope
     excludeAccountIds?: string[]
     deprioritizedAccountIds?: string[]
     headroomByAccountId?: Map<string, number>
@@ -1939,6 +2070,7 @@ export class AccountStore {
       deprioritizedAccountIds: new Set(input.deprioritizedAccountIds ?? []),
       headroomByAccountId: input.headroomByAccountId,
       pressureScoreByAccountId: input.pressureScoreByAccountId,
+      accountScope: input.accountScope,
     })
     if (!selected) return null
 
