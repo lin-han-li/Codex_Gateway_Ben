@@ -139,6 +139,7 @@ async function main() {
   const capturedRequests: CapturedRequest[] = []
   const turnByAccountSession = new Map<string, number>()
   const transientFailedToken = "transient-token-a"
+  let actualTransientFailedToken = ""
 
   const upstreamServer = Bun.serve({
     hostname: "127.0.0.1",
@@ -167,7 +168,10 @@ async function main() {
       }
 
       if (url.pathname === "/backend-api/codex/responses") {
-        if (accessToken === transientFailedToken) {
+        if (!actualTransientFailedToken) {
+          actualTransientFailedToken = accessToken
+        }
+        if (accessToken === actualTransientFailedToken) {
           capturedRequests.push({
             at: Date.now(),
             path: url.pathname,
@@ -281,7 +285,7 @@ async function main() {
         issueVirtualKey: false,
       }),
     })
-    await requestJSON<SyncResponse>(`${bridgeOrigin}/api/bridge/oauth/sync`, {
+    const syncC = await requestJSON<SyncResponse>(`${bridgeOrigin}/api/bridge/oauth/sync`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -301,6 +305,7 @@ async function main() {
     const accountIdByAccessToken = new Map<string, string>([
       [transientFailedToken, syncA.account.id],
       ["transient-token-b", syncB.account.id],
+      ["transient-token-c", syncC.account.id],
     ])
 
     const issued = (await requestJSON(`${bridgeOrigin}/api/virtual-keys/issue`, {
@@ -359,7 +364,7 @@ async function main() {
     if (!firstSignal.account) {
       findings.push("missing healthy account marker after transient failover")
     }
-    if (firstSignal.account === transientFailedToken) {
+    if (firstSignal.account === actualTransientFailedToken) {
       findings.push("request remained on transiently failing account instead of rerouting")
     }
 
@@ -380,8 +385,8 @@ async function main() {
       if (finalFirstAttempt.status !== 200) {
         findings.push(`first request final upstream attempt expected 200, got ${finalFirstAttempt.status}`)
       }
-      if (finalFirstAttempt.token !== "transient-token-b") {
-        findings.push(`first request should finish on a healthy rerouted account: expected=transient-token-b actual=${finalFirstAttempt.token}`)
+      if (finalFirstAttempt.token === actualTransientFailedToken) {
+        findings.push(`first request should finish on a healthy rerouted account, got failed token=${finalFirstAttempt.token}`)
       }
       if (firstAttemptSequence.length > 1) {
         const leadingAttempts = firstAttemptSequence.slice(0, -1)
@@ -389,9 +394,9 @@ async function main() {
           if (attempt.status !== 502) {
             findings.push(`first request transient pre-attempt #${index + 1} expected 502, got ${attempt.status}`)
           }
-          if (attempt.token !== transientFailedToken) {
+          if (attempt.token !== actualTransientFailedToken) {
             findings.push(
-              `first request transient pre-attempt #${index + 1} should stay on the initially preferred account: expected=${transientFailedToken} actual=${attempt.token}`,
+              `first request transient pre-attempt #${index + 1} should stay on the initially failed account: expected=${actualTransientFailedToken} actual=${attempt.token}`,
             )
           }
         }
@@ -403,8 +408,8 @@ async function main() {
       findings.push(`follow-up transient failover request expected 200, got ${followup.response.status}`)
     }
     const followupSignal = parseResponseSignal(String(followup.payload.output_text ?? ""))
-    if (followupSignal.account !== "transient-token-b") {
-      findings.push(`same session was not sticky after transient failover: expected=transient-token-b actual=${followupSignal.account || "<empty>"}`)
+    if (followupSignal.account !== firstSignal.account) {
+      findings.push(`same session was not sticky after transient failover: expected=${firstSignal.account} actual=${followupSignal.account || "<empty>"}`)
     }
     if (followupSignal.turn !== 2) {
       findings.push(`same session turn should continue on rerouted account: expected=2 actual=${followupSignal.turn}`)
@@ -416,7 +421,7 @@ async function main() {
       "# Codex Transient Failover Audit",
       "",
       `Generated at: ${new Date().toISOString()}`,
-      `Failed account token: ${transientFailedToken}`,
+      `Failed account token: ${actualTransientFailedToken || "-"}`,
       `Healthy account token after failover: ${firstSignal.account || "-"}`,
       "",
       "## Verdict",

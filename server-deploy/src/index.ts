@@ -3764,19 +3764,10 @@ function buildProviderQuotaRoutingHints(providerId: string, now = Date.now()) {
     }
   }
 
-  for (const account of accountStore.list()) {
-    if (account.providerId.toLowerCase() !== normalizedProviderId) continue
-    const headroom = resolveQuotaSnapshotHeadroomPercent(accountQuotaCache.get(account.id), now)
-    if (!Number.isFinite(headroom)) continue
-    headroomByAccountId.set(account.id, Number(headroom))
-    if (Number(headroom) <= 0) {
-      excludeAccountIds.push(account.id)
-      continue
-    }
-    if (Number(headroom) <= ACCOUNT_SOFT_DRAIN_REMAINING_PERCENT_THRESHOLD) {
-      deprioritizedAccountIds.push(account.id)
-    }
-  }
+  // Quota snapshots are informational only for routing. Do not pre-drain,
+  // pre-exclude, or headroom-rank accounts from cached remaining-percent data:
+  // keep using the selected account until an actual upstream quota failure is
+  // observed, then fail over that in-flight request.
 
   return {
     excludeAccountIds,
@@ -3913,7 +3904,7 @@ function canFailoverQuotaForVirtualKey(key?: { id?: string | null; routingMode?:
 }
 
 function isQuotaRoutingAvailabilityReason(reason?: string | null) {
-  return reason === "quota_exhausted_cooldown" || reason === "quota_headroom_exhausted" || reason === "quota_headroom_low"
+  return reason === "quota_exhausted_cooldown"
 }
 
 function resolvePreferredPlanCohortForVirtualKey(input: {
@@ -4021,25 +4012,6 @@ function resolveAccountRoutingState(accountId: string, quota?: AccountQuotaSnaps
       state: "excluded",
       reason: "quota_exhausted_cooldown",
       headroomPercent,
-      softDrainThresholdPercent: ACCOUNT_SOFT_DRAIN_REMAINING_PERCENT_THRESHOLD,
-    }
-  }
-  if (Number.isFinite(headroomPercent) && Number(headroomPercent) <= 0) {
-    return {
-      state: "excluded",
-      reason: "quota_headroom_exhausted",
-      headroomPercent: Number(headroomPercent),
-      softDrainThresholdPercent: ACCOUNT_SOFT_DRAIN_REMAINING_PERCENT_THRESHOLD,
-    }
-  }
-  if (
-    Number.isFinite(headroomPercent) &&
-    Number(headroomPercent) <= ACCOUNT_SOFT_DRAIN_REMAINING_PERCENT_THRESHOLD
-  ) {
-    return {
-      state: "soft_drained",
-      reason: "quota_headroom_low",
-      headroomPercent: Number(headroomPercent),
       softDrainThresholdPercent: ACCOUNT_SOFT_DRAIN_REMAINING_PERCENT_THRESHOLD,
     }
   }
@@ -7452,11 +7424,6 @@ function resolveAccountRoutingExclusionReason(accountId: string, now = Date.now(
     if (consistency?.excludedAccountIds.includes(normalizedAccountId)) {
       return "pool_consistency_excluded"
     }
-  }
-  const headroom = resolveQuotaSnapshotHeadroomPercent(accountQuotaCache.get(normalizedAccountId), now)
-  if (Number.isFinite(headroom) && Number(headroom) <= 0) return "quota_headroom_exhausted"
-  if (Number.isFinite(headroom) && Number(headroom) <= ACCOUNT_SOFT_DRAIN_REMAINING_PERCENT_THRESHOLD) {
-    return "quota_headroom_low"
   }
   return "routing_excluded"
 }

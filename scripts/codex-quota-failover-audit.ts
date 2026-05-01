@@ -43,6 +43,7 @@ type CapturedRequest = {
   token: string
   session: string
   status: number
+  caseId: string
 }
 
 type SendResult = {
@@ -181,6 +182,7 @@ async function main() {
           token: accessToken,
           session,
           status: 429,
+          caseId,
         })
         return new Response(
           JSON.stringify({
@@ -213,6 +215,7 @@ async function main() {
         token: accessToken,
         session,
         status: 200,
+        caseId,
       })
       return new Response(
         JSON.stringify({
@@ -323,9 +326,7 @@ async function main() {
     await Bun.sleep(500)
     child = startBridge()
     await waitForHealth(bridgeOrigin, 20_000)
-    const preferredAccessToken = "quota-token-a"
-    const softDrainedAccessToken = "quota-token-b"
-    const failoverAccessToken = "quota-token-c"
+    const lowHeadroomAccessToken = "quota-token-b"
 
     const issued = (await requestJSON(`${bridgeOrigin}/api/virtual-keys/issue`, {
       method: "POST",
@@ -338,6 +339,18 @@ async function main() {
     })) as { key: string }
     const virtualKey = issued.key
     assertCondition(virtualKey?.startsWith("ocsk_live_"), "pool key issue failed")
+    const lowHeadroomIssued = (await requestJSON(`${bridgeOrigin}/api/virtual-keys/issue`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        providerId: "chatgpt",
+        accountId: syncB.account.id,
+        routingMode: "single",
+        name: "Low Headroom Single Key",
+      }),
+    })) as { key: string }
+    const lowHeadroomSingleKey = lowHeadroomIssued.key
+    assertCondition(lowHeadroomSingleKey?.startsWith("ocsk_live_"), "low-headroom single key issue failed")
 
     const refreshedAccounts = await requestJSON<AccountsResponse>(`${bridgeOrigin}/api/accounts?refreshQuota=1&forceQuota=1`)
     const accountStateById = new Map(refreshedAccounts.accounts.map((account) => [account.id, account]))
@@ -347,14 +360,17 @@ async function main() {
     if (quotaA?.routing?.headroomPercent !== 80) {
       findings.push(`account A headroom expected=80 actual=${quotaA?.routing?.headroomPercent ?? "<missing>"}`)
     }
-    if (quotaB?.routing?.state !== "soft_drained") {
-      findings.push(`account B should be soft-drained after quota refresh: actual=${quotaB?.routing?.state ?? "<missing>"}`)
+    if (quotaB?.routing?.headroomPercent !== 5) {
+      findings.push(`account B headroom expected=5 actual=${quotaB?.routing?.headroomPercent ?? "<missing>"}`)
+    }
+    if (quotaB?.routing?.state !== "eligible") {
+      findings.push(`account B should remain eligible until an actual quota failure: actual=${quotaB?.routing?.state ?? "<missing>"}`)
     }
     if (quotaC?.routing?.headroomPercent !== 70) {
       findings.push(`account C headroom expected=70 actual=${quotaC?.routing?.headroomPercent ?? "<missing>"}`)
     }
 
-    const send = async (sessionId: string, caseId: string): Promise<SendResult> => {
+    const sendWithKey = async (secret: string, sessionId: string, caseId: string): Promise<SendResult> => {
       const body = JSON.stringify({
         model: "gpt-5.4",
         instructions: "quota failover continuity",
@@ -369,7 +385,7 @@ async function main() {
         headers: {
           "content-type": "application/json",
           accept: "application/json",
-          authorization: `Bearer ${virtualKey}`,
+          authorization: `Bearer ${secret}`,
           originator: CODEX_ORIGINATOR,
           "user-agent": userAgent,
           version: CODEX_CLIENT_VERSION,
@@ -385,6 +401,19 @@ async function main() {
         payload,
         elapsedMs: Number(process.hrtime.bigint() - startedAt) / 1_000_000,
       }
+    }
+    const send = async (sessionId: string, caseId: string): Promise<SendResult> =>
+      sendWithKey(virtualKey, sessionId, caseId)
+
+    const lowHeadroomSingle = await sendWithKey(lowHeadroomSingleKey, "sess-low-headroom-single", "low-headroom-single")
+    if (lowHeadroomSingle.response.status !== 200) {
+      findings.push(`low-headroom single key expected 200 before actual quota failure, got ${lowHeadroomSingle.response.status}`)
+    }
+    const lowHeadroomSignal = parseResponseSignal(String(lowHeadroomSingle.payload.output_text ?? ""))
+    if (lowHeadroomSignal.account !== lowHeadroomAccessToken) {
+      findings.push(
+        `low-headroom account should not be pre-drained before failure: expected=${lowHeadroomAccessToken} actual=${lowHeadroomSignal.account || "<empty>"}`,
+      )
     }
 
     const primarySession = "sess-quota-failover-001"
@@ -412,7 +441,9 @@ async function main() {
       findings.push(`first failover response session mismatch: expected=${expectedHealthySession} actual=${firstSignal.session || "<empty>"}`)
     }
 
-    const firstAttemptSequence = capturedRequests.filter((item) => item.path === "/backend-api/codex/responses").slice(0, 2)
+    const firstAttemptSequence = capturedRequests.filter(
+      (item) => item.path === "/backend-api/codex/responses" && item.caseId === "quota-failover",
+    )
     if (firstAttemptSequence.length !== 2) {
       findings.push(`first request expected 2 upstream attempts, got ${firstAttemptSequence.length}`)
     } else {
@@ -424,15 +455,6 @@ async function main() {
       }
       if (firstAttemptSequence[0].token === firstAttemptSequence[1].token) {
         findings.push("second upstream attempt reused the exhausted account instead of rerouting")
-      }
-      if (firstAttemptSequence[0].token !== preferredAccessToken) {
-        findings.push(`first upstream attempt should prefer healthiest account: expected=${preferredAccessToken} actual=${firstAttemptSequence[0].token}`)
-      }
-      if (firstAttemptSequence[1].token !== failoverAccessToken) {
-        findings.push(`failover should route to next healthiest account: expected=${failoverAccessToken} actual=${firstAttemptSequence[1].token}`)
-      }
-      if (firstAttemptSequence[1].token === softDrainedAccessToken) {
-        findings.push("failover incorrectly routed into a soft-drained account")
       }
     }
 
@@ -457,9 +479,6 @@ async function main() {
     if (thirdSignal.account === exhaustedAccessToken) {
       findings.push("new session incorrectly reused the exhausted account during cooldown")
     }
-    if (thirdSignal.account !== failoverAccessToken) {
-      findings.push(`new session should avoid soft-drained account during cooldown: expected=${failoverAccessToken} actual=${thirdSignal.account || "<empty>"}`)
-    }
     const expectedThirdSession = bindClientIdentifierToAccount({
       accountId: accountIdByAccessToken.get(thirdSignal.account),
       fieldKey: "session_id",
@@ -469,14 +488,6 @@ async function main() {
       findings.push(`new-session bound session mismatch: expected=${expectedThirdSession} actual=${thirdSignal.session || "<empty>"}`)
     }
 
-    if (
-      capturedRequests.some(
-        (item) => item.path === "/backend-api/codex/responses" && item.token === softDrainedAccessToken,
-      )
-    ) {
-      findings.push("soft-drained account should not receive responses traffic while healthier accounts exist")
-    }
-
     const reportDir = path.join(process.cwd(), "_tmp", "parity")
     await mkdir(reportDir, { recursive: true })
     const lines = [
@@ -484,17 +495,23 @@ async function main() {
       "",
       `Generated at: ${new Date().toISOString()}`,
       `Exhausted account token: ${exhaustedAccessToken || "-"}`,
-      `Soft-drained account token: ${softDrainedAccessToken}`,
+      `Low-headroom account token: ${lowHeadroomAccessToken}`,
       `Healthy account token after failover: ${healthyAccessToken || "-"}`,
+      `Low-headroom single-key latency: ${lowHeadroomSingle.elapsedMs.toFixed(2)} ms`,
       `Failover request latency: ${first.elapsedMs.toFixed(2)} ms`,
       `Sticky follow-up latency: ${second.elapsedMs.toFixed(2)} ms`,
       `Fresh-session latency: ${third.elapsedMs.toFixed(2)} ms`,
       "",
       "## Verdict",
-      findings.length === 0 ? "- PASS: quota exhaustion reroutes within-request and stays sticky on the new account." : `- FAIL: ${findings.join(" | ")}`,
+      findings.length === 0
+        ? "- PASS: low quota does not pre-drain; actual quota exhaustion reroutes within-request and stays sticky on the new account."
+        : `- FAIL: ${findings.join(" | ")}`,
       "",
       "## Captured Upstream Attempts",
-      ...capturedRequests.map((item, index) => `- #${index + 1} path=${item.path} status=${item.status} token=${item.token} session=${item.session}`),
+      ...capturedRequests.map(
+        (item, index) =>
+          `- #${index + 1} case=${item.caseId || "-"} path=${item.path} status=${item.status} token=${item.token} session=${item.session}`,
+      ),
       "",
     ]
     const reportContent = lines.join("\n")
