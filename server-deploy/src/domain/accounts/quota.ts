@@ -211,13 +211,37 @@ function resolveQuotaWindowResetAt(window: AccountQuotaWindow | null | undefined
   return Number.isFinite(resetAt) && resetAt > 0 ? Math.floor(resetAt) : null
 }
 
+function resolveQuotaWindowCycleMs(window: AccountQuotaWindow | null | undefined) {
+  const windowSeconds = Number(window?.windowSeconds ?? NaN)
+  if (Number.isFinite(windowSeconds) && windowSeconds > 0) {
+    return Math.floor(windowSeconds * 1000)
+  }
+  const windowMinutes = Number(window?.windowMinutes ?? NaN)
+  if (Number.isFinite(windowMinutes) && windowMinutes > 0) {
+    return Math.floor(windowMinutes * 60 * 1000)
+  }
+  return null
+}
+
+function resolveQuotaWindowNextResetAt(window: AccountQuotaWindow | null | undefined, now = Date.now()) {
+  const resetAt = resolveQuotaWindowResetAt(window)
+  if (resetAt === null) return null
+  const cycleMs = resolveQuotaWindowCycleMs(window)
+  if (!Number.isFinite(cycleMs) || cycleMs === null || cycleMs <= 0) return resetAt
+  if (resetAt > now) return resetAt
+  const elapsedMs = now - resetAt
+  const cyclesBehind = Math.floor(elapsedMs / cycleMs) + 1
+  return resetAt + cyclesBehind * cycleMs
+}
+
 function collectQuotaEntryResetCandidates(
   entry: AccountQuotaEntry | null | undefined,
   weeklyCandidates: number[],
   fallbackCandidates: number[],
+  now = Date.now(),
 ) {
   for (const window of [entry?.primary, entry?.secondary]) {
-    const resetAt = resolveQuotaWindowResetAt(window)
+    const resetAt = resolveQuotaWindowNextResetAt(window, now)
     if (resetAt === null) continue
     if (isWeeklyQuotaWindow(window)) {
       weeklyCandidates.push(resetAt)
@@ -239,14 +263,14 @@ function sortResetCandidatesBySoonestRefresh(resetsAt: number[], now: number) {
 export function resolveQuotaSnapshotWeeklyResetAt(
   snapshot: AccountQuotaSnapshot | null | undefined,
   now = Date.now(),
-  ttlMs = DEFAULT_ACCOUNT_QUOTA_CACHE_TTL_MS,
+  _ttlMs = DEFAULT_ACCOUNT_QUOTA_CACHE_TTL_MS,
 ) {
-  if (!snapshot || snapshot.status !== "ok" || !isQuotaCacheFresh(snapshot, now, ttlMs)) return null
+  if (!snapshot || snapshot.status !== "ok") return null
 
   const weeklyCandidates: number[] = []
   const fallbackCandidates: number[] = []
   for (const entry of [snapshot.primary, ...snapshot.additional]) {
-    collectQuotaEntryResetCandidates(entry, weeklyCandidates, fallbackCandidates)
+    collectQuotaEntryResetCandidates(entry, weeklyCandidates, fallbackCandidates, now)
   }
 
   const selectedCandidates = weeklyCandidates.length > 0 ? weeklyCandidates : fallbackCandidates

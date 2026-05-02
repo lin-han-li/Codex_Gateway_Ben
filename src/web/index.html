@@ -6835,7 +6835,15 @@
 
 
       function resolveFallbackWeeklyResetAt(account) {
+        const now = Date.now();
         const collectCandidates = [];
+        const resolveCycleMs = (window) => {
+          const windowSeconds = Number(window?.windowSeconds ?? NaN);
+          if (Number.isFinite(windowSeconds) && windowSeconds > 0) return Math.floor(windowSeconds * 1000);
+          const windowMinutes = Number(window?.windowMinutes ?? NaN);
+          if (Number.isFinite(windowMinutes) && windowMinutes > 0) return Math.floor(windowMinutes * 60 * 1000);
+          return null;
+        };
         const pushCandidate = (window) => {
           const resetAt = Number(window?.resetsAt ?? NaN);
           const windowSeconds = Number(window?.windowSeconds ?? NaN);
@@ -6843,7 +6851,14 @@
           const isWeekly =
             (Number.isFinite(windowSeconds) && windowSeconds >= 5 * 24 * 60 * 60 && windowSeconds <= 10 * 24 * 60 * 60) ||
             (Number.isFinite(windowMinutes) && windowMinutes >= 5 * 24 * 60 && windowMinutes <= 10 * 24 * 60);
-          if (Number.isFinite(resetAt) && resetAt > 0 && isWeekly) collectCandidates.push(resetAt);
+          if (!Number.isFinite(resetAt) || resetAt <= 0 || !isWeekly) return;
+          const cycleMs = resolveCycleMs(window);
+          if (Number.isFinite(cycleMs) && cycleMs > 0 && resetAt <= now) {
+            const cyclesBehind = Math.floor((now - resetAt) / cycleMs) + 1;
+            collectCandidates.push(resetAt + cyclesBehind * cycleMs);
+            return;
+          }
+          collectCandidates.push(resetAt);
         };
         for (const entry of [account?.quota?.primary, ...(account?.quota?.additional || [])]) {
           pushCandidate(entry?.primary);

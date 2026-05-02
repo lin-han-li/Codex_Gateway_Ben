@@ -137,6 +137,15 @@ assertCondition(
   "free-shape displayed weekly reset must come from primary weekly window",
 )
 
+const projectedWeeklyReset = __accountsViewTestHooks.resolveDisplayedWeeklyResetAt(
+  freeShapeAccount("free-stale-past", Date.UTC(2026, 4, 2, 8, 0), 97),
+  Date.UTC(2026, 4, 2, 15, 41),
+)
+assertCondition(
+  projectedWeeklyReset === Date.UTC(2026, 4, 9, 8, 0),
+  "past weekly reset must project to the next weekly cycle",
+)
+
 const displayedReset = __accountsViewTestHooks.resolveDisplayedWeeklyResetAt(input[0])
 assertCondition(displayedReset === input[0].quota.primary.secondary.resetsAt, "displayed weekly reset must match visible weekly row")
 

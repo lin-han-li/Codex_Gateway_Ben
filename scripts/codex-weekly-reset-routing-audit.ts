@@ -6,6 +6,7 @@ import path from "node:path"
 import { Database } from "bun:sqlite"
 import { resolveCodexClientVersion } from "../src/codex-version"
 import { buildCodexUserAgent } from "../src/codex-identity"
+import { resolveQuotaSnapshotWeeklyResetAt } from "../src/domain/accounts/quota"
 
 const CODEX_CLIENT_VERSION = resolveCodexClientVersion()
 const CODEX_ORIGINATOR = "codex_cli_rs"
@@ -148,6 +149,35 @@ function parseSelectedToken(payload: Record<string, unknown>) {
 }
 
 async function main() {
+  const staleNow = Date.UTC(2026, 4, 2, 12, 0, 0)
+  const staleResetAt = Date.UTC(2026, 4, 2, 8, 0, 0)
+  const projectedResetAt = resolveQuotaSnapshotWeeklyResetAt(
+    {
+      status: "ok",
+      fetchedAt: staleNow - 10 * 60 * 1000,
+      planType: "free",
+      primary: {
+        limitId: "codex",
+        limitName: null,
+        primary: {
+          usedPercent: 50,
+          remainingPercent: 50,
+          windowSeconds: 7 * 24 * 60 * 60,
+          windowMinutes: 7 * 24 * 60,
+          resetsAt: staleResetAt,
+        },
+        secondary: null,
+      },
+      additional: [],
+      error: null,
+    },
+    staleNow,
+  )
+  assertCondition(
+    projectedResetAt === staleResetAt + 7 * 24 * 60 * 60 * 1000,
+    `stale weekly reset must project to next cycle expected=${staleResetAt + 7 * 24 * 60 * 60 * 1000} actual=${projectedResetAt}`,
+  )
+
   const tempDataDir = await mkdtemp(path.join(os.tmpdir(), "oauth-weekly-reset-routing-"))
   const bridgePort = await reserveFreePort()
   let upstreamPort = await reserveFreePort()

@@ -81,9 +81,27 @@ function resolveWindowResetAt(window) {
   return Number.isFinite(resetAt) && resetAt > 0 ? resetAt : null
 }
 
-function collectQuotaEntryResetCandidates(entry, weeklyCandidates, fallbackCandidates) {
+function resolveWindowCycleMs(window) {
+  const seconds = Number(window?.windowSeconds ?? NaN)
+  if (Number.isFinite(seconds) && seconds > 0) return Math.floor(seconds * 1000)
+  const minutes = Number(window?.windowMinutes ?? NaN)
+  if (Number.isFinite(minutes) && minutes > 0) return Math.floor(minutes * 60 * 1000)
+  return null
+}
+
+function resolveWindowNextResetAt(window, now = Date.now()) {
+  const resetAt = resolveWindowResetAt(window)
+  if (!Number.isFinite(resetAt)) return null
+  const cycleMs = resolveWindowCycleMs(window)
+  if (!Number.isFinite(cycleMs) || cycleMs <= 0) return resetAt
+  if (resetAt > now) return resetAt
+  const cyclesBehind = Math.floor((now - resetAt) / cycleMs) + 1
+  return resetAt + cyclesBehind * cycleMs
+}
+
+function collectQuotaEntryResetCandidates(entry, weeklyCandidates, fallbackCandidates, now = Date.now()) {
   for (const window of [entry?.primary, entry?.secondary]) {
-    const resetAt = resolveWindowResetAt(window)
+    const resetAt = resolveWindowNextResetAt(window, now)
     if (!Number.isFinite(resetAt)) continue
     if (isWeeklyQuotaWindow(window)) {
       weeklyCandidates.push(resetAt)
@@ -103,7 +121,7 @@ function resolveAccountWeeklyResetAt(account, now = Date.now()) {
   const weeklyCandidates = []
   const fallbackCandidates = []
   for (const entry of [quota.primary, ...(quota.additional || [])]) {
-    collectQuotaEntryResetCandidates(entry, weeklyCandidates, fallbackCandidates)
+    collectQuotaEntryResetCandidates(entry, weeklyCandidates, fallbackCandidates, now)
   }
 
   const candidates = weeklyCandidates.length > 0 ? weeklyCandidates : fallbackCandidates
@@ -117,7 +135,7 @@ function resolveDisplayedWeeklyResetAt(account, now = Date.now()) {
     const weeklyCandidates = []
     const fallbackCandidates = []
     for (const entry of [quota.primary, ...(quota.additional || [])]) {
-      collectQuotaEntryResetCandidates(entry, weeklyCandidates, fallbackCandidates)
+      collectQuotaEntryResetCandidates(entry, weeklyCandidates, fallbackCandidates, now)
     }
     const candidates = weeklyCandidates.length > 0 ? weeklyCandidates : fallbackCandidates
     if (candidates.length > 0) return candidates.sort((left, right) => compareResetDistance(left, right, now))[0]
