@@ -128,20 +128,16 @@ function headersToObject(headers: Headers) {
 }
 
 function buildQuotaPayload(input: { usedPercent: number; weeklyResetMs: number }) {
-  const nowSeconds = Math.floor(Date.now() / 1000)
+  const resetAtSeconds = Math.floor((Date.now() + input.weeklyResetMs) / 1000)
   return {
-    plan_type: "team",
+    plan_type: "free",
     rate_limit: {
       primary_window: {
         used_percent: input.usedPercent,
-        limit_window_seconds: 5 * 60 * 60,
-        reset_at: nowSeconds + 5 * 60 * 60,
-      },
-      secondary_window: {
-        used_percent: input.usedPercent,
         limit_window_seconds: 7 * 24 * 60 * 60,
-        reset_at: Math.floor((Date.now() + input.weeklyResetMs) / 1000),
+        reset_at: resetAtSeconds,
       },
+      secondary_window: null,
     },
     additional_rate_limits: [],
   }

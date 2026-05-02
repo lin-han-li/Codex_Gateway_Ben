@@ -29,6 +29,29 @@ function account(id, resetAt, remainingPercent = 100) {
   }
 }
 
+function freeShapeAccount(id, resetAt, remainingPercent = 100) {
+  return {
+    id,
+    quotaWeeklyResetAt: null,
+    quota: {
+      status: "ok",
+      primary: {
+        limitId: "codex",
+        limitName: null,
+        primary: {
+          usedPercent: 100 - remainingPercent,
+          remainingPercent,
+          windowSeconds: 7 * 24 * 60 * 60,
+          windowMinutes: 7 * 24 * 60,
+          resetsAt: resetAt,
+        },
+        secondary: null,
+      },
+      additional: [],
+    },
+  }
+}
+
 const base = Date.UTC(2026, 4, 2, 0, 0, 0)
 const input = [
   account("plus-7d", base + 7 * 24 * 60 * 60 * 1000, 100),
@@ -87,6 +110,31 @@ const cardSorted = __accountsViewTestHooks
 assertCondition(
   cardSorted.join(",") === expectedSameDay.join(","),
   `final card order expected=${expectedSameDay.join(" > ")} actual=${cardSorted.join(" > ")}`,
+)
+
+const freeShapeSorted = __accountsViewTestHooks
+  .sortAccountEntriesByWeeklyReset(
+    [
+      freeShapeAccount("free-late", Date.UTC(2026, 4, 8, 22, 45), 64),
+      freeShapeAccount("free-soon", Date.UTC(2026, 4, 8, 19, 49), 97),
+      freeShapeAccount("free-mid", Date.UTC(2026, 4, 8, 22, 31), 10),
+    ].map((item, index) => ({ account: item, index })),
+    Date.UTC(2026, 4, 2, 15, 41),
+  )
+  .map((item) => item.account.id)
+const expectedFreeShape = ["free-soon", "free-mid", "free-late"]
+assertCondition(
+  freeShapeSorted.join(",") === expectedFreeShape.join(","),
+  `free-shape weekly UI sort expected=${expectedFreeShape.join(" > ")} actual=${freeShapeSorted.join(" > ")}`,
+)
+
+const freeShapeDisplayedReset = __accountsViewTestHooks.resolveDisplayedWeeklyResetAt(
+  freeShapeAccount("free-reset", Date.UTC(2026, 4, 8, 19, 49), 97),
+  Date.UTC(2026, 4, 2, 15, 41),
+)
+assertCondition(
+  freeShapeDisplayedReset === Date.UTC(2026, 4, 8, 19, 49),
+  "free-shape displayed weekly reset must come from primary weekly window",
 )
 
 const displayedReset = __accountsViewTestHooks.resolveDisplayedWeeklyResetAt(input[0])

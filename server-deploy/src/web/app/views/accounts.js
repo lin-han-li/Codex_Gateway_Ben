@@ -81,11 +81,16 @@ function resolveWindowResetAt(window) {
   return Number.isFinite(resetAt) && resetAt > 0 ? resetAt : null
 }
 
-function resolveQuotaEntryWeeklyResetAt(entry) {
-  const window = entry?.secondary
-  const resetAt = resolveWindowResetAt(window)
-  if (!Number.isFinite(resetAt)) return null
-  return isWeeklyQuotaWindow(window) ? resetAt : null
+function collectQuotaEntryResetCandidates(entry, weeklyCandidates, fallbackCandidates) {
+  for (const window of [entry?.primary, entry?.secondary]) {
+    const resetAt = resolveWindowResetAt(window)
+    if (!Number.isFinite(resetAt)) continue
+    if (isWeeklyQuotaWindow(window)) {
+      weeklyCandidates.push(resetAt)
+    } else {
+      fallbackCandidates.push(resetAt)
+    }
+  }
 }
 
 function resolveAccountWeeklyResetAt(account, now = Date.now()) {
@@ -98,14 +103,7 @@ function resolveAccountWeeklyResetAt(account, now = Date.now()) {
   const weeklyCandidates = []
   const fallbackCandidates = []
   for (const entry of [quota.primary, ...(quota.additional || [])]) {
-    const window = entry?.secondary
-    const resetAt = resolveWindowResetAt(window)
-    if (!Number.isFinite(resetAt)) continue
-    if (isWeeklyQuotaWindow(window)) {
-      weeklyCandidates.push(resetAt)
-    } else {
-      fallbackCandidates.push(resetAt)
-    }
+    collectQuotaEntryResetCandidates(entry, weeklyCandidates, fallbackCandidates)
   }
 
   const candidates = weeklyCandidates.length > 0 ? weeklyCandidates : fallbackCandidates
@@ -116,12 +114,13 @@ function resolveAccountWeeklyResetAt(account, now = Date.now()) {
 function resolveDisplayedWeeklyResetAt(account, now = Date.now()) {
   const quota = account?.quota
   if (quota?.status === "ok") {
-    const primaryResetAt = resolveQuotaEntryWeeklyResetAt(quota.primary)
-    if (Number.isFinite(Number(primaryResetAt ?? NaN))) return primaryResetAt
-    for (const entry of quota.additional || []) {
-      const resetAt = resolveQuotaEntryWeeklyResetAt(entry)
-      if (Number.isFinite(Number(resetAt ?? NaN))) return resetAt
+    const weeklyCandidates = []
+    const fallbackCandidates = []
+    for (const entry of [quota.primary, ...(quota.additional || [])]) {
+      collectQuotaEntryResetCandidates(entry, weeklyCandidates, fallbackCandidates)
     }
+    const candidates = weeklyCandidates.length > 0 ? weeklyCandidates : fallbackCandidates
+    if (candidates.length > 0) return candidates.sort((left, right) => compareResetDistance(left, right, now))[0]
   }
   return resolveAccountWeeklyResetAt(account, now)
 }

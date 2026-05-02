@@ -6835,8 +6835,21 @@
 
 
       function resolveFallbackWeeklyResetAt(account) {
-        const secondaryReset = Number(account?.quota?.primary?.secondary?.resetsAt ?? NaN);
-        if (Number.isFinite(secondaryReset) && secondaryReset > 0) return secondaryReset;
+        const collectCandidates = [];
+        const pushCandidate = (window) => {
+          const resetAt = Number(window?.resetsAt ?? NaN);
+          const windowSeconds = Number(window?.windowSeconds ?? NaN);
+          const windowMinutes = Number(window?.windowMinutes ?? NaN);
+          const isWeekly =
+            (Number.isFinite(windowSeconds) && windowSeconds >= 5 * 24 * 60 * 60 && windowSeconds <= 10 * 24 * 60 * 60) ||
+            (Number.isFinite(windowMinutes) && windowMinutes >= 5 * 24 * 60 && windowMinutes <= 10 * 24 * 60);
+          if (Number.isFinite(resetAt) && resetAt > 0 && isWeekly) collectCandidates.push(resetAt);
+        };
+        for (const entry of [account?.quota?.primary, ...(account?.quota?.additional || [])]) {
+          pushCandidate(entry?.primary);
+          pushCandidate(entry?.secondary);
+        }
+        if (collectCandidates.length > 0) return collectCandidates.sort((a, b) => a - b)[0];
         const direct = Number(account?.quotaWeeklyResetAt ?? NaN);
         return Number.isFinite(direct) && direct > 0 ? direct : null;
       }

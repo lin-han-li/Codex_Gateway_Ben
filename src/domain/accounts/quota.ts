@@ -211,6 +211,22 @@ function resolveQuotaWindowResetAt(window: AccountQuotaWindow | null | undefined
   return Number.isFinite(resetAt) && resetAt > 0 ? Math.floor(resetAt) : null
 }
 
+function collectQuotaEntryResetCandidates(
+  entry: AccountQuotaEntry | null | undefined,
+  weeklyCandidates: number[],
+  fallbackCandidates: number[],
+) {
+  for (const window of [entry?.primary, entry?.secondary]) {
+    const resetAt = resolveQuotaWindowResetAt(window)
+    if (resetAt === null) continue
+    if (isWeeklyQuotaWindow(window)) {
+      weeklyCandidates.push(resetAt)
+    } else {
+      fallbackCandidates.push(resetAt)
+    }
+  }
+}
+
 function sortResetCandidatesBySoonestRefresh(resetsAt: number[], now: number) {
   return [...resetsAt].sort((left, right) => {
     const leftMs = Math.max(0, left - now)
@@ -227,26 +243,13 @@ export function resolveQuotaSnapshotWeeklyResetAt(
 ) {
   if (!snapshot || snapshot.status !== "ok" || !isQuotaCacheFresh(snapshot, now, ttlMs)) return null
 
-  const primaryResetAt = resolveQuotaWindowResetAt(snapshot.primary?.secondary)
-  if (primaryResetAt !== null && isWeeklyQuotaWindow(snapshot.primary?.secondary)) {
-    return primaryResetAt
-  }
-
-  const secondaryFallbackCandidates: number[] = []
-  if (primaryResetAt !== null) secondaryFallbackCandidates.push(primaryResetAt)
-
   const weeklyCandidates: number[] = []
-  for (const entry of snapshot.additional) {
-    const resetAt = resolveQuotaWindowResetAt(entry?.secondary)
-    if (resetAt === null) continue
-    if (isWeeklyQuotaWindow(entry?.secondary)) {
-      weeklyCandidates.push(resetAt)
-    } else {
-      secondaryFallbackCandidates.push(resetAt)
-    }
+  const fallbackCandidates: number[] = []
+  for (const entry of [snapshot.primary, ...snapshot.additional]) {
+    collectQuotaEntryResetCandidates(entry, weeklyCandidates, fallbackCandidates)
   }
 
-  const selectedCandidates = weeklyCandidates.length > 0 ? weeklyCandidates : secondaryFallbackCandidates
+  const selectedCandidates = weeklyCandidates.length > 0 ? weeklyCandidates : fallbackCandidates
   return sortResetCandidatesBySoonestRefresh(selectedCandidates, now)[0] ?? null
 }
 
