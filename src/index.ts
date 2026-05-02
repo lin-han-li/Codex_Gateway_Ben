@@ -2978,18 +2978,6 @@ function resolveAccountAbnormalStateLegacy(input: {
       deleteEligible: false,
     }
   }
-  if (routingReason === "quota_headroom_low") {
-    return {
-      category: "soft_drained",
-      label: "额度低",
-      reason: routingReason,
-      source: "quota",
-      detectedAt: input.quota?.fetchedAt ?? null,
-      expiresAt: null,
-      confidence: "medium",
-      deleteEligible: false,
-    }
-  }
 
   const health = input.health
   if (!health) return null
@@ -3106,18 +3094,6 @@ function resolveAccountAbnormalState(input: {
       detectedAt: input.quota?.fetchedAt ?? null,
       expiresAt: null,
       confidence: "high",
-      deleteEligible: false,
-    })
-  }
-  if (routingReason === "quota_headroom_low") {
-    return buildAccountAbnormalState({
-      classification: "soft_drained",
-      label: "额度低",
-      reason: routingReason,
-      source: "quota",
-      detectedAt: input.quota?.fetchedAt ?? null,
-      expiresAt: null,
-      confidence: "medium",
       deleteEligible: false,
     })
   }

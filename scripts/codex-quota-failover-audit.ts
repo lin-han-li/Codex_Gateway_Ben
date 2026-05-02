@@ -34,6 +34,12 @@ type AccountsResponse = {
       state?: string
       headroomPercent?: number | null
     } | null
+    abnormalState?: {
+      category?: string | null
+      classification?: string | null
+      reason?: string | null
+      label?: string | null
+    } | null
   }>
 }
 
@@ -365,6 +371,11 @@ async function main() {
     }
     if (quotaB?.routing?.state !== "eligible") {
       findings.push(`account B should remain eligible until an actual quota failure: actual=${quotaB?.routing?.state ?? "<missing>"}`)
+    }
+    if (quotaB?.abnormalState) {
+      findings.push(
+        `low-headroom account should not expose a soft-drain abnormal state before failure: actual=${JSON.stringify(quotaB.abnormalState)}`,
+      )
     }
     if (quotaC?.routing?.headroomPercent !== 70) {
       findings.push(`account C headroom expected=70 actual=${quotaC?.routing?.headroomPercent ?? "<missing>"}`)

@@ -4648,8 +4648,6 @@
             return "额度已耗尽，账号正在冷却";
           case "quota_headroom_exhausted":
             return "额度已耗尽";
-          case "quota_headroom_low":
-            return "额度较低，已暂缓分流";
           case "pool_consistency_excluded":
             return "该账号当前未参与均流路由";
           case "routing_excluded":
@@ -4691,18 +4689,6 @@
             detectedAt: quota?.fetchedAt ?? null,
             expiresAt: null,
             confidence: "high",
-            deleteEligible: false,
-          });
-        }
-        if (routingReason === "quota_headroom_low") {
-          return buildAccountAbnormalMeta({
-            category: "soft_drained",
-            label: "额度低",
-            reason: routingReason,
-            source: "quota",
-            detectedAt: quota?.fetchedAt ?? null,
-            expiresAt: null,
-            confidence: "medium",
             deleteEligible: false,
           });
         }
@@ -4985,6 +4971,8 @@
         const abnormal = account.abnormalState ? buildAccountAbnormalMeta(account.abnormalState) : deriveFallbackAbnormalState(account);
         if (!abnormal) return null;
         const category = String(abnormal.category || abnormal.classification || "unknown");
+        const reason = String(abnormal.reason || "").trim();
+        if (reason === "quota_headroom_low" || category === "soft_drained") return null;
         if (!category || category === "normal") return null;
         return {
           ...abnormal,

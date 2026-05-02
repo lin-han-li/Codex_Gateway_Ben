@@ -1,4 +1,5 @@
 import { __accountsViewTestHooks } from "../src/web/app/views/accounts.js"
+import { readFile } from "node:fs/promises"
 
 function assertCondition(condition, message) {
   if (!condition) throw new Error(message)
@@ -49,5 +50,8 @@ assertCondition(
 
 const displayedReset = __accountsViewTestHooks.resolveDisplayedWeeklyResetAt(input[0])
 assertCondition(displayedReset === input[0].quota.primary.secondary.resetsAt, "displayed weekly reset must match visible weekly row")
+
+const webShell = await readFile(new URL("../src/web/index.html", import.meta.url), "utf8")
+assertCondition(!webShell.includes("已暂缓分流"), "web UI must not display legacy soft-drain wording")
 
 console.log(`Accounts weekly UI sort audit passed: ${sorted.join(" > ")}`)
