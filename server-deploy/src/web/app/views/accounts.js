@@ -81,11 +81,19 @@ function resolveWindowResetAt(window) {
   return Number.isFinite(resetAt) && resetAt > 0 ? resetAt : null
 }
 
+function resolveQuotaEntryWeeklyResetAt(entry) {
+  const window = entry?.secondary
+  const resetAt = resolveWindowResetAt(window)
+  if (!Number.isFinite(resetAt)) return null
+  return isWeeklyQuotaWindow(window) ? resetAt : null
+}
+
 function resolveAccountWeeklyResetAt(account) {
-  const direct = Number(account?.quotaWeeklyResetAt ?? NaN)
-  if (Number.isFinite(direct) && direct > 0) return direct
   const quota = account?.quota
-  if (!quota || quota.status !== "ok") return null
+  if (!quota || quota.status !== "ok") {
+    const direct = Number(account?.quotaWeeklyResetAt ?? NaN)
+    return Number.isFinite(direct) && direct > 0 ? direct : null
+  }
 
   const weeklyCandidates = []
   const fallbackCandidates = []
@@ -111,14 +119,32 @@ function resolveAccountWeeklyResetAt(account) {
   })[0]
 }
 
+function resolveDisplayedWeeklyResetAt(account) {
+  const quota = account?.quota
+  if (quota?.status === "ok") {
+    const primaryResetAt = resolveQuotaEntryWeeklyResetAt(quota.primary)
+    if (Number.isFinite(Number(primaryResetAt ?? NaN))) return primaryResetAt
+    for (const entry of quota.additional || []) {
+      const resetAt = resolveQuotaEntryWeeklyResetAt(entry)
+      if (Number.isFinite(Number(resetAt ?? NaN))) return resetAt
+    }
+  }
+  return resolveAccountWeeklyResetAt(account)
+}
+
 function compareWeeklyResetPriority(left, right) {
-  const leftReset = Number(resolveAccountWeeklyResetAt(left.account) ?? NaN)
-  const rightReset = Number(resolveAccountWeeklyResetAt(right.account) ?? NaN)
+  const leftReset = Number(resolveDisplayedWeeklyResetAt(left.account) ?? NaN)
+  const rightReset = Number(resolveDisplayedWeeklyResetAt(right.account) ?? NaN)
   const hasLeftReset = Number.isFinite(leftReset)
   const hasRightReset = Number.isFinite(rightReset)
   if (hasLeftReset !== hasRightReset) return hasLeftReset ? -1 : 1
   if (hasLeftReset && hasRightReset && leftReset !== rightReset) return leftReset - rightReset
   return left.index - right.index
+}
+
+export const __accountsViewTestHooks = {
+  resolveDisplayedWeeklyResetAt,
+  compareWeeklyResetPriority,
 }
 
 function buildQuotaRows(account) {
@@ -363,6 +389,8 @@ export function createAccountsView(deps) {
         return fields.some((field) => String(field ?? "").toLowerCase().includes(query))
       })
       .sort((left, right) => {
+        const resetRank = compareWeeklyResetPriority(left, right)
+        if (resetRank !== 0) return resetRank
         const leftAbnormal = normalizeAbnormalState(left.account)
         const rightAbnormal = normalizeAbnormalState(right.account)
         const rankFor = (abnormal) => {
@@ -373,8 +401,6 @@ export function createAccountsView(deps) {
         const leftRank = rankFor(leftAbnormal)
         const rightRank = rankFor(rightAbnormal)
         if (leftRank !== rightRank) return leftRank - rightRank
-        const resetRank = compareWeeklyResetPriority(left, right)
-        if (resetRank !== 0) return resetRank
         return left.index - right.index
       })
       .map(({ account }) => account)
@@ -393,7 +419,7 @@ export function createAccountsView(deps) {
         const quotaText = formatAccountQuota(account.quota)
         const quotaRows = buildQuotaRows(account)
         const planMeta = resolvePlanMeta(account)
-        const weeklyResetAt = resolveAccountWeeklyResetAt(account)
+        const weeklyResetAt = resolveDisplayedWeeklyResetAt(account)
         const weeklyResetMeta = Number.isFinite(Number(weeklyResetAt ?? NaN))
           ? `<span>周额度刷新 ${esc(formatQuotaResetStamp(weeklyResetAt))}</span>`
           : ""
@@ -438,6 +464,8 @@ export function createAccountsView(deps) {
           groupKey: accountPlanGroupKey(account),
           id: account.id,
           canRefreshQuota: canRefreshAccountQuota(account),
+          weeklyResetAt,
+          originalIndex: S.accounts.indexOf(account),
           html: `
           <article class="account-card ${abnormal ? "is-abnormal" : ""}">
             <div class="account-card-top">
@@ -475,7 +503,17 @@ export function createAccountsView(deps) {
 
     const groupedSections = ACCOUNT_PLAN_GROUPS
       .map((group) => {
-        const groupItems = cardItems.filter((item) => item.groupKey === group.key)
+        const groupItems = cardItems
+          .filter((item) => item.groupKey === group.key)
+          .sort((left, right) => {
+            const leftReset = Number(left.weeklyResetAt ?? NaN)
+            const rightReset = Number(right.weeklyResetAt ?? NaN)
+            const hasLeftReset = Number.isFinite(leftReset)
+            const hasRightReset = Number.isFinite(rightReset)
+            if (hasLeftReset !== hasRightReset) return hasLeftReset ? -1 : 1
+            if (hasLeftReset && hasRightReset && leftReset !== rightReset) return leftReset - rightReset
+            return Number(left.originalIndex ?? 0) - Number(right.originalIndex ?? 0)
+          })
         const groupCards = groupItems
           .map((item) => item.html)
           .join("")

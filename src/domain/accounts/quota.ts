@@ -227,9 +227,16 @@ export function resolveQuotaSnapshotWeeklyResetAt(
 ) {
   if (!snapshot || snapshot.status !== "ok" || !isQuotaCacheFresh(snapshot, now, ttlMs)) return null
 
-  const weeklyCandidates: number[] = []
+  const primaryResetAt = resolveQuotaWindowResetAt(snapshot.primary?.secondary)
+  if (primaryResetAt !== null && isWeeklyQuotaWindow(snapshot.primary?.secondary)) {
+    return primaryResetAt
+  }
+
   const secondaryFallbackCandidates: number[] = []
-  for (const entry of [snapshot.primary, ...snapshot.additional]) {
+  if (primaryResetAt !== null) secondaryFallbackCandidates.push(primaryResetAt)
+
+  const weeklyCandidates: number[] = []
+  for (const entry of snapshot.additional) {
     const resetAt = resolveQuotaWindowResetAt(entry?.secondary)
     if (resetAt === null) continue
     if (isWeeklyQuotaWindow(entry?.secondary)) {
