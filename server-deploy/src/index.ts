@@ -40,6 +40,7 @@ import {
   normalizeQuotaWindowRemainingPercent,
   resolveAccountPlanCohort,
   resolvePlanCohortPriority,
+  resolveQuotaSnapshotExhaustedWindow,
   resolveQuotaSnapshotHeadroomPercent,
   resolveQuotaSnapshotWeeklyResetAt,
   resolveQuotaSnapshotWeeklyResetMs,
@@ -2979,6 +2980,20 @@ function resolveAccountAbnormalStateLegacy(input: {
     }
   }
 
+  const quotaWindowExhausted = resolveQuotaSnapshotExhaustedWindow(input.quota ?? null)
+  if (quotaWindowExhausted) {
+    return buildAccountAbnormalState({
+      classification: "quota_exhausted",
+      label: "额度耗尽",
+      reason: "quota_window_exhausted",
+      source: "quota",
+      detectedAt: input.quota?.fetchedAt ?? null,
+      expiresAt: quotaWindowExhausted.resetsAt ?? null,
+      confidence: "high",
+      deleteEligible: false,
+    })
+  }
+
   const health = input.health
   if (!health) return null
   const reason = String(health.reason ?? "").trim() || "unknown"
@@ -3118,6 +3133,20 @@ function resolveAccountAbnormalState(input: {
       detectedAt: null,
       expiresAt: null,
       confidence: "low",
+      deleteEligible: false,
+    })
+  }
+
+  const quotaWindowExhausted = resolveQuotaSnapshotExhaustedWindow(input.quota ?? null)
+  if (quotaWindowExhausted) {
+    return buildAccountAbnormalState({
+      classification: "quota_exhausted",
+      label: "????",
+      reason: "quota_window_exhausted",
+      source: "quota",
+      detectedAt: input.quota?.fetchedAt ?? null,
+      expiresAt: quotaWindowExhausted.resetsAt ?? null,
+      confidence: "high",
       deleteEligible: false,
     })
   }
@@ -4175,6 +4204,10 @@ function resolvePublicAccountWeeklyResetAt(account: unknown, now = Date.now()) {
 
 function sortPublicAccountsForDisplay(accounts: unknown[]) {
   const now = Date.now()
+  const resetDistanceMs = (value: unknown) => {
+    const resetAt = Number(value ?? NaN)
+    return Number.isFinite(resetAt) ? Math.max(0, resetAt - now) : null
+  }
   const buckets = new Map<AccountPlanCohort, Array<{ account: unknown; index: number; weeklyResetAt: number | null }>>()
   accounts.forEach((account, index) => {
     const cohort = resolveAccountPlanCohort(account as StoredAccount)
@@ -4194,7 +4227,12 @@ function sortPublicAccountsForDisplay(accounts: unknown[]) {
       const hasLeftReset = Number.isFinite(leftReset)
       const hasRightReset = Number.isFinite(rightReset)
       if (hasLeftReset !== hasRightReset) return hasLeftReset ? -1 : 1
-      if (hasLeftReset && hasRightReset && leftReset !== rightReset) return leftReset - rightReset
+      if (hasLeftReset && hasRightReset && leftReset !== rightReset) {
+        const leftDistance = resetDistanceMs(leftReset) ?? Number.POSITIVE_INFINITY
+        const rightDistance = resetDistanceMs(rightReset) ?? Number.POSITIVE_INFINITY
+        if (leftDistance !== rightDistance) return leftDistance - rightDistance
+        return leftReset - rightReset
+      }
       return left.index - right.index
     })
   }

@@ -132,18 +132,28 @@ function resolveDisplayedWeeklyResetAt(account) {
   return resolveAccountWeeklyResetAt(account)
 }
 
+function compareResetDistance(leftReset, rightReset, now = Date.now()) {
+  const leftValue = Number(leftReset ?? NaN)
+  const rightValue = Number(rightReset ?? NaN)
+  const hasLeft = Number.isFinite(leftValue)
+  const hasRight = Number.isFinite(rightValue)
+  if (hasLeft !== hasRight) return hasLeft ? -1 : 1
+  if (!hasLeft || !hasRight) return 0
+  const leftDistance = Math.max(0, leftValue - now)
+  const rightDistance = Math.max(0, rightValue - now)
+  if (leftDistance !== rightDistance) return leftDistance - rightDistance
+  return leftValue - rightValue
+}
+
 function compareWeeklyResetPriority(left, right) {
-  const leftReset = Number(resolveDisplayedWeeklyResetAt(left.account) ?? NaN)
-  const rightReset = Number(resolveDisplayedWeeklyResetAt(right.account) ?? NaN)
-  const hasLeftReset = Number.isFinite(leftReset)
-  const hasRightReset = Number.isFinite(rightReset)
-  if (hasLeftReset !== hasRightReset) return hasLeftReset ? -1 : 1
-  if (hasLeftReset && hasRightReset && leftReset !== rightReset) return leftReset - rightReset
+  const resetDelta = compareResetDistance(resolveDisplayedWeeklyResetAt(left.account), resolveDisplayedWeeklyResetAt(right.account))
+  if (resetDelta !== 0) return resetDelta
   return left.index - right.index
 }
 
 export const __accountsViewTestHooks = {
   resolveDisplayedWeeklyResetAt,
+  compareResetDistance,
   compareWeeklyResetPriority,
 }
 
@@ -506,12 +516,8 @@ export function createAccountsView(deps) {
         const groupItems = cardItems
           .filter((item) => item.groupKey === group.key)
           .sort((left, right) => {
-            const leftReset = Number(left.weeklyResetAt ?? NaN)
-            const rightReset = Number(right.weeklyResetAt ?? NaN)
-            const hasLeftReset = Number.isFinite(leftReset)
-            const hasRightReset = Number.isFinite(rightReset)
-            if (hasLeftReset !== hasRightReset) return hasLeftReset ? -1 : 1
-            if (hasLeftReset && hasRightReset && leftReset !== rightReset) return leftReset - rightReset
+            const resetDelta = compareResetDistance(left.weeklyResetAt, right.weeklyResetAt)
+            if (resetDelta !== 0) return resetDelta
             return Number(left.originalIndex ?? 0) - Number(right.originalIndex ?? 0)
           })
         const groupCards = groupItems

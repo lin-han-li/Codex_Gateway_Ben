@@ -259,6 +259,30 @@ export function resolveQuotaSnapshotWeeklyResetMs(
   return resetAt === null ? null : Math.max(0, resetAt - now)
 }
 
+export function resolveQuotaSnapshotExhaustedWindow(
+  snapshot: AccountQuotaSnapshot | null | undefined,
+  now = Date.now(),
+  ttlMs = DEFAULT_ACCOUNT_QUOTA_CACHE_TTL_MS,
+) {
+  if (!snapshot || snapshot.status !== "ok" || !isQuotaCacheFresh(snapshot, now, ttlMs)) return null
+  for (const entry of [snapshot.primary, ...snapshot.additional]) {
+    for (const windowName of ["primary", "secondary"] as const) {
+      const window = entry?.[windowName]
+      if (!window) continue
+      const remainingPercent = normalizeQuotaWindowRemainingPercent(window.remainingPercent)
+      if (remainingPercent === 0) {
+        return {
+          limitId: entry?.limitId ?? null,
+          limitName: entry?.limitName ?? null,
+          window: windowName,
+          resetsAt: window.resetsAt,
+        }
+      }
+    }
+  }
+  return null
+}
+
 export function normalizeChatgptPlanType(value: unknown) {
   return normalizeIdentityText(value)?.toLowerCase() ?? null
 }

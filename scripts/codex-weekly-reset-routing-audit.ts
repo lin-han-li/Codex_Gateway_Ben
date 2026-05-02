@@ -31,6 +31,12 @@ type AccountsResponse = {
         } | null
       } | null
     } | null
+    abnormalState?: {
+      category?: string | null
+      classification?: string | null
+      reason?: string | null
+      label?: string | null
+    } | null
   }>
 }
 
@@ -156,10 +162,18 @@ async function main() {
   const tokenA = "weekly-reset-token-a"
   const tokenB = "weekly-reset-token-b"
   const tokenC = "weekly-reset-token-c"
+  const tokenD = "weekly-reset-token-d-zero"
   const resetMsByToken = new Map<string, number>([
     [tokenA, 6 * 24 * 60 * 60 * 1000],
     [tokenB, 1 * 24 * 60 * 60 * 1000],
     [tokenC, 3 * 24 * 60 * 60 * 1000],
+    [tokenD, 8 * 24 * 60 * 60 * 1000],
+  ])
+  const usedPercentByToken = new Map<string, number>([
+    [tokenA, 50],
+    [tokenB, 50],
+    [tokenC, 50],
+    [tokenD, 100],
   ])
   const capturedRequests: CapturedRequest[] = []
 
@@ -178,7 +192,7 @@ async function main() {
         return new Response(
           JSON.stringify(
             buildQuotaPayload({
-              usedPercent: 50,
+              usedPercent: usedPercentByToken.get(token) ?? 50,
               weeklyResetMs: resetMsByToken.get(token) ?? 7 * 24 * 60 * 60 * 1000,
             }),
           ),
@@ -274,12 +288,14 @@ async function main() {
     const accountA = await syncAccount({ label: "Weekly Reset A", token: tokenA })
     const accountB = await syncAccount({ label: "Weekly Reset B", token: tokenB })
     const accountC = await syncAccount({ label: "Weekly Reset C", token: tokenC })
+    const accountD = await syncAccount({ label: "Weekly Reset D Zero", token: tokenD })
 
     const db = new Database(path.join(tempDataDir, "accounts.db"))
-    db.query(`UPDATE accounts SET is_active = 1 WHERE id IN (?, ?, ?)`).run(
+    db.query(`UPDATE accounts SET is_active = 1 WHERE id IN (?, ?, ?, ?)`).run(
       accountA.account.id,
       accountB.account.id,
       accountC.account.id,
+      accountD.account.id,
     )
     db.close()
 
@@ -289,7 +305,7 @@ async function main() {
 
     const refreshed = await requestJSON<AccountsResponse>(`${origin}/api/accounts?refreshQuota=1&forceQuota=1`)
     const refreshedIds = refreshed.accounts.map((account) => account.id)
-    const expectedDisplayOrder = [accountB.account.id, accountC.account.id, accountA.account.id]
+    const expectedDisplayOrder = [accountB.account.id, accountC.account.id, accountA.account.id, accountD.account.id]
     const actualDisplayOrder = refreshed.accounts
       .filter((account) => expectedDisplayOrder.includes(account.id))
       .map((account) => account.id)
@@ -308,6 +324,13 @@ async function main() {
       if (account?.quota?.status !== "ok") {
         findings.push(`quota snapshot not ok for account=${accountId}`)
       }
+    }
+    const zeroQuotaAccount = quotaByAccountId.get(accountD.account.id)
+    if (zeroQuotaAccount?.abnormalState?.category !== "quota_exhausted") {
+      findings.push(`0% quota account should display quota_exhausted, actual=${JSON.stringify(zeroQuotaAccount?.abnormalState ?? null)}`)
+    }
+    if (zeroQuotaAccount?.abnormalState?.reason !== "quota_window_exhausted") {
+      findings.push(`0% quota account reason expected=quota_window_exhausted actual=${zeroQuotaAccount?.abnormalState?.reason ?? "<missing>"}`)
     }
 
     const issued = await requestJSON<IssueKeyResponse>(`${origin}/api/virtual-keys/issue`, {
@@ -364,6 +387,7 @@ async function main() {
       `- ${tokenA}: +6d account=${accountA.account.id}`,
       `- ${tokenB}: +1d account=${accountB.account.id}`,
       `- ${tokenC}: +3d account=${accountC.account.id}`,
+      `- ${tokenD}: +8d account=${accountD.account.id} used=100%`,
       "",
       "## Account API Order",
       `- expected: ${expectedDisplayOrder.join(" > ")}`,

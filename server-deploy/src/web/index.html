@@ -4974,10 +4974,11 @@
         const reason = String(abnormal.reason || "").trim();
         if (reason === "quota_headroom_low" || category === "soft_drained") return null;
         if (!category || category === "normal") return null;
+        const label = reason === "quota_window_exhausted" ? "????" : String(abnormal.label || getAbnormalLabelByCategory(category));
         return {
           ...abnormal,
           category,
-          label: String(abnormal.label || getAbnormalLabelByCategory(category)),
+          label,
         };
       }
 
@@ -6830,6 +6831,28 @@
         };
       }
 
+
+      function resolveFallbackWeeklyResetAt(account) {
+        const secondaryReset = Number(account?.quota?.primary?.secondary?.resetsAt ?? NaN);
+        if (Number.isFinite(secondaryReset) && secondaryReset > 0) return secondaryReset;
+        const direct = Number(account?.quotaWeeklyResetAt ?? NaN);
+        return Number.isFinite(direct) && direct > 0 ? direct : null;
+      }
+
+      function compareFallbackWeeklyResetDistance(leftAccount, rightAccount) {
+        const now = Date.now();
+        const leftReset = Number(resolveFallbackWeeklyResetAt(leftAccount) ?? NaN);
+        const rightReset = Number(resolveFallbackWeeklyResetAt(rightAccount) ?? NaN);
+        const hasLeft = Number.isFinite(leftReset);
+        const hasRight = Number.isFinite(rightReset);
+        if (hasLeft !== hasRight) return hasLeft ? -1 : 1;
+        if (!hasLeft || !hasRight) return 0;
+        const leftDistance = Math.max(0, leftReset - now);
+        const rightDistance = Math.max(0, rightReset - now);
+        if (leftDistance !== rightDistance) return leftDistance - rightDistance;
+        return leftReset - rightReset;
+      }
+
       function getAccountStatusMeta(account) {
         if (!isAccountConnected(account)) {
           return {
@@ -7229,6 +7252,8 @@
             return fields.some((field) => String(field ?? "").toLowerCase().includes(query));
           })
           .sort((left, right) => {
+            const resetRank = compareFallbackWeeklyResetDistance(left.account, right.account);
+            if (resetRank !== 0) return resetRank;
             const leftAbnormal = normalizeAbnormalState(left.account);
             const rightAbnormal = normalizeAbnormalState(right.account);
             const leftRank = leftAbnormal ? 1 : 0;

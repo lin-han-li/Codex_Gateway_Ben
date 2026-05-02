@@ -1996,6 +1996,11 @@ export class AccountStore {
       .all(keyID)
 
     const routeMap = new Map(routeRows.map((row) => [row.account_id, row]))
+    const now = Date.now()
+    const resetDistanceMs = (value: unknown) => {
+      const resetAt = Number(value ?? NaN)
+      return Number.isFinite(resetAt) ? Math.max(0, resetAt - now) : null
+    }
     const sorted = [...candidates].sort((a, b) => {
       const deprioritizedA = deprioritized.has(a.id) ? 1 : 0
       const deprioritizedB = deprioritized.has(b.id) ? 1 : 0
@@ -2007,6 +2012,9 @@ export class AccountStore {
       const hasWeeklyResetB = Number.isFinite(weeklyResetB)
       if (hasWeeklyResetA !== hasWeeklyResetB) return hasWeeklyResetA ? -1 : 1
       if (hasWeeklyResetA && hasWeeklyResetB && weeklyResetA !== weeklyResetB) {
+        const distanceA = resetDistanceMs(weeklyResetA) ?? Number.POSITIVE_INFINITY
+        const distanceB = resetDistanceMs(weeklyResetB) ?? Number.POSITIVE_INFINITY
+        if (distanceA !== distanceB) return distanceA - distanceB
         return Number(weeklyResetA) - Number(weeklyResetB)
       }
 
