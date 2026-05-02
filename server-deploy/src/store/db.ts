@@ -1691,6 +1691,7 @@ export class AccountStore {
       excludeAccountIds?: string[]
       deprioritizedAccountIds?: string[]
       headroomByAccountId?: Map<string, number>
+      weeklyResetAtByAccountId?: Map<string, number>
       pressureScoreByAccountId?: Map<string, number>
       routeOptionsFactory?: (
         key: Pick<VirtualApiKeyRecord, "id" | "providerId" | "routingMode" | "accountScope">,
@@ -1699,6 +1700,7 @@ export class AccountStore {
             excludeAccountIds?: string[]
             deprioritizedAccountIds?: string[]
             headroomByAccountId?: Map<string, number>
+            weeklyResetAtByAccountId?: Map<string, number>
             pressureScoreByAccountId?: Map<string, number>
           }
         | null
@@ -1748,6 +1750,13 @@ export class AccountStore {
     for (const [accountId, headroom] of derivedRouteOptions?.headroomByAccountId ?? []) {
       headroomByAccountId.set(accountId, headroom)
     }
+    const weeklyResetAtByAccountId = new Map<string, number>()
+    for (const [accountId, resetAt] of options?.weeklyResetAtByAccountId ?? []) {
+      weeklyResetAtByAccountId.set(accountId, resetAt)
+    }
+    for (const [accountId, resetAt] of derivedRouteOptions?.weeklyResetAtByAccountId ?? []) {
+      weeklyResetAtByAccountId.set(accountId, resetAt)
+    }
     const pressureScoreByAccountId = new Map<string, number>()
     for (const [accountId, score] of options?.pressureScoreByAccountId ?? []) {
       pressureScoreByAccountId.set(accountId, score)
@@ -1759,6 +1768,7 @@ export class AccountStore {
       excludeAccountIds,
       deprioritizedAccountIds,
       headroomByAccountId,
+      weeklyResetAtByAccountId,
       pressureScoreByAccountId,
       accountScope: key.accountScope,
     }
@@ -1781,6 +1791,7 @@ export class AccountStore {
       excludeAccountIds?: string[]
       deprioritizedAccountIds?: string[]
       headroomByAccountId?: Map<string, number>
+      weeklyResetAtByAccountId?: Map<string, number>
       pressureScoreByAccountId?: Map<string, number>
       routeOptionsFactory?: (
         key: Pick<VirtualApiKeyRecord, "id" | "providerId" | "routingMode" | "accountScope">,
@@ -1789,6 +1800,7 @@ export class AccountStore {
             excludeAccountIds?: string[]
             deprioritizedAccountIds?: string[]
             headroomByAccountId?: Map<string, number>
+            weeklyResetAtByAccountId?: Map<string, number>
             pressureScoreByAccountId?: Map<string, number>
           }
         | null
@@ -1838,6 +1850,13 @@ export class AccountStore {
     for (const [accountId, headroom] of derivedRouteOptions?.headroomByAccountId ?? []) {
       headroomByAccountId.set(accountId, headroom)
     }
+    const weeklyResetAtByAccountId = new Map<string, number>()
+    for (const [accountId, resetAt] of options?.weeklyResetAtByAccountId ?? []) {
+      weeklyResetAtByAccountId.set(accountId, resetAt)
+    }
+    for (const [accountId, resetAt] of derivedRouteOptions?.weeklyResetAtByAccountId ?? []) {
+      weeklyResetAtByAccountId.set(accountId, resetAt)
+    }
     const pressureScoreByAccountId = new Map<string, number>()
     for (const [accountId, score] of options?.pressureScoreByAccountId ?? []) {
       pressureScoreByAccountId.set(accountId, score)
@@ -1849,6 +1868,7 @@ export class AccountStore {
       excludeAccountIds,
       deprioritizedAccountIds,
       headroomByAccountId,
+      weeklyResetAtByAccountId,
       pressureScoreByAccountId,
       accountScope: key.accountScope,
     }
@@ -1885,6 +1905,7 @@ export class AccountStore {
       excludeAccountIds?: Set<string>
       deprioritizedAccountIds?: Set<string>
       headroomByAccountId?: Map<string, number>
+      weeklyResetAtByAccountId?: Map<string, number>
       pressureScoreByAccountId?: Map<string, number>
       accountScope?: VirtualKeyAccountScope
     },
@@ -1949,6 +1970,7 @@ export class AccountStore {
       excludeAccountIds?: Set<string>
       deprioritizedAccountIds?: Set<string>
       headroomByAccountId?: Map<string, number>
+      weeklyResetAtByAccountId?: Map<string, number>
       pressureScoreByAccountId?: Map<string, number>
       accountScope?: VirtualKeyAccountScope
     },
@@ -1956,6 +1978,7 @@ export class AccountStore {
     const excluded = options?.excludeAccountIds ?? new Set<string>()
     const deprioritized = options?.deprioritizedAccountIds ?? new Set<string>()
     const headroomByAccountId = options?.headroomByAccountId ?? new Map<string, number>()
+    const weeklyResetAtByAccountId = options?.weeklyResetAtByAccountId ?? new Map<string, number>()
     const pressureScoreByAccountId = options?.pressureScoreByAccountId ?? new Map<string, number>()
     const candidates = this.getAvailableAccountsForProvider(providerId).filter(
       (account) => !excluded.has(account.id) && virtualKeyScopeMatchesAccount(account, options?.accountScope ?? "all"),
@@ -1978,6 +2001,15 @@ export class AccountStore {
       const deprioritizedB = deprioritized.has(b.id) ? 1 : 0
       if (deprioritizedA !== deprioritizedB) return deprioritizedA - deprioritizedB
 
+      const weeklyResetA = weeklyResetAtByAccountId.get(a.id)
+      const weeklyResetB = weeklyResetAtByAccountId.get(b.id)
+      const hasWeeklyResetA = Number.isFinite(weeklyResetA)
+      const hasWeeklyResetB = Number.isFinite(weeklyResetB)
+      if (hasWeeklyResetA !== hasWeeklyResetB) return hasWeeklyResetA ? -1 : 1
+      if (hasWeeklyResetA && hasWeeklyResetB && weeklyResetA !== weeklyResetB) {
+        return Number(weeklyResetA) - Number(weeklyResetB)
+      }
+
       const pressureA = pressureScoreByAccountId.get(a.id)
       const pressureB = pressureScoreByAccountId.get(b.id)
       const hasPressureA = Number.isFinite(pressureA)
@@ -1991,7 +2023,6 @@ export class AccountStore {
       const hasHeadroomB = Number.isFinite(headroomB)
       if (hasHeadroomA !== hasHeadroomB) return hasHeadroomA ? -1 : 1
       if (hasHeadroomA && hasHeadroomB && headroomA !== headroomB) return Number(headroomB) - Number(headroomA)
-
 
       const routeA = routeMap.get(a.id)
       const routeB = routeMap.get(b.id)
@@ -2012,10 +2043,11 @@ export class AccountStore {
           .map((account) => {
             const route = routeMap.get(account.id)
             const headroom = headroomByAccountId.get(account.id)
+            const weeklyResetAt = weeklyResetAtByAccountId.get(account.id)
             const pressure = pressureScoreByAccountId.get(account.id)
-            return `${account.id}{deprioritized=${deprioritized.has(account.id)},pressure=${pressure ?? "-"},headroom=${headroom ?? "-"},count=${
-              route?.request_count ?? 0
-            },last=${route?.last_used_at ?? 0}}`
+            return `${account.id}{deprioritized=${deprioritized.has(account.id)},pressure=${pressure ?? "-"},weeklyResetAt=${
+              weeklyResetAt ?? "-"
+            },headroom=${headroom ?? "-"},count=${route?.request_count ?? 0},last=${route?.last_used_at ?? 0}}`
           })
           .join(",")}`,
       )
@@ -2033,6 +2065,7 @@ export class AccountStore {
     excludeAccountIds?: string[]
     deprioritizedAccountIds?: string[]
     headroomByAccountId?: Map<string, number>
+    weeklyResetAtByAccountId?: Map<string, number>
     pressureScoreByAccountId?: Map<string, number>
   }) {
     const sessionId = normalizeSessionRouteID(input.sessionId)
@@ -2044,6 +2077,7 @@ export class AccountStore {
       excludeAccountIds: excluded,
       deprioritizedAccountIds: new Set(input.deprioritizedAccountIds ?? []),
       headroomByAccountId: input.headroomByAccountId,
+      weeklyResetAtByAccountId: input.weeklyResetAtByAccountId,
       pressureScoreByAccountId: input.pressureScoreByAccountId,
       accountScope: input.accountScope,
     })
@@ -2062,6 +2096,7 @@ export class AccountStore {
     excludeAccountIds?: string[]
     deprioritizedAccountIds?: string[]
     headroomByAccountId?: Map<string, number>
+    weeklyResetAtByAccountId?: Map<string, number>
     pressureScoreByAccountId?: Map<string, number>
   }) {
     const excluded = new Set<string>([input.failedAccountId, ...(input.excludeAccountIds ?? [])])
@@ -2069,6 +2104,7 @@ export class AccountStore {
       excludeAccountIds: excluded,
       deprioritizedAccountIds: new Set(input.deprioritizedAccountIds ?? []),
       headroomByAccountId: input.headroomByAccountId,
+      weeklyResetAtByAccountId: input.weeklyResetAtByAccountId,
       pressureScoreByAccountId: input.pressureScoreByAccountId,
       accountScope: input.accountScope,
     })

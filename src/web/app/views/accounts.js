@@ -68,6 +68,59 @@ function formatQuotaResetStamp(resetsAt) {
   return `${month}/${day} ${hours}:${minutes}`
 }
 
+function isWeeklyQuotaWindow(window) {
+  if (!window) return false
+  const seconds = Number(window.windowSeconds ?? NaN)
+  if (Number.isFinite(seconds)) return seconds >= 5 * 24 * 60 * 60 && seconds <= 10 * 24 * 60 * 60
+  const minutes = Number(window.windowMinutes ?? NaN)
+  return Number.isFinite(minutes) && minutes >= 5 * 24 * 60 && minutes <= 10 * 24 * 60
+}
+
+function resolveWindowResetAt(window) {
+  const resetAt = Number(window?.resetsAt ?? NaN)
+  return Number.isFinite(resetAt) && resetAt > 0 ? resetAt : null
+}
+
+function resolveAccountWeeklyResetAt(account) {
+  const direct = Number(account?.quotaWeeklyResetAt ?? NaN)
+  if (Number.isFinite(direct) && direct > 0) return direct
+  const quota = account?.quota
+  if (!quota || quota.status !== "ok") return null
+
+  const weeklyCandidates = []
+  const fallbackCandidates = []
+  for (const entry of [quota.primary, ...(quota.additional || [])]) {
+    const window = entry?.secondary
+    const resetAt = resolveWindowResetAt(window)
+    if (!Number.isFinite(resetAt)) continue
+    if (isWeeklyQuotaWindow(window)) {
+      weeklyCandidates.push(resetAt)
+    } else {
+      fallbackCandidates.push(resetAt)
+    }
+  }
+
+  const candidates = weeklyCandidates.length > 0 ? weeklyCandidates : fallbackCandidates
+  if (candidates.length === 0) return null
+  const now = Date.now()
+  return candidates.sort((left, right) => {
+    const leftMs = Math.max(0, left - now)
+    const rightMs = Math.max(0, right - now)
+    if (leftMs !== rightMs) return leftMs - rightMs
+    return left - right
+  })[0]
+}
+
+function compareWeeklyResetPriority(left, right) {
+  const leftReset = Number(resolveAccountWeeklyResetAt(left.account) ?? NaN)
+  const rightReset = Number(resolveAccountWeeklyResetAt(right.account) ?? NaN)
+  const hasLeftReset = Number.isFinite(leftReset)
+  const hasRightReset = Number.isFinite(rightReset)
+  if (hasLeftReset !== hasRightReset) return hasLeftReset ? -1 : 1
+  if (hasLeftReset && hasRightReset && leftReset !== rightReset) return leftReset - rightReset
+  return left.index - right.index
+}
+
 function buildQuotaRows(account) {
   const quota = account?.quota
   if (!quota || quota.status !== "ok") return []
@@ -320,6 +373,8 @@ export function createAccountsView(deps) {
         const leftRank = rankFor(leftAbnormal)
         const rightRank = rankFor(rightAbnormal)
         if (leftRank !== rightRank) return leftRank - rightRank
+        const resetRank = compareWeeklyResetPriority(left, right)
+        if (resetRank !== 0) return resetRank
         return left.index - right.index
       })
       .map(({ account }) => account)
@@ -338,6 +393,10 @@ export function createAccountsView(deps) {
         const quotaText = formatAccountQuota(account.quota)
         const quotaRows = buildQuotaRows(account)
         const planMeta = resolvePlanMeta(account)
+        const weeklyResetAt = resolveAccountWeeklyResetAt(account)
+        const weeklyResetMeta = Number.isFinite(Number(weeklyResetAt ?? NaN))
+          ? `<span>周额度刷新 ${esc(formatQuotaResetStamp(weeklyResetAt))}</span>`
+          : ""
         const statusBanner = abnormal
           ? `<div class="account-status-banner ${abnormal.category === "soft_drained" ? "warn" : "danger"}">${esc(status.text)}${status.detail ? ` 路 ${esc(status.detail)}` : ""}</div>`
           : ""
@@ -398,6 +457,7 @@ export function createAccountsView(deps) {
             <div class="account-card-foot">
               <div class="account-card-meta">
                 <span>Token 已用 ${tokenUsed > 0 ? tokenUsed.toLocaleString() : "-"}</span>
+                ${weeklyResetMeta}
               </div>
               <div class="mini-actions account-card-actions">
                 <button class="mini-btn test" data-account-action="test" data-id="${esc(account.id)}">测试</button>

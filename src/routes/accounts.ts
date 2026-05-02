@@ -57,6 +57,7 @@ export type AccountRouteDeps = {
   ) => Promise<void>
   refreshAndEmitAccountQuota: (accountId: string, source: string) => Promise<void>
   toPublicAccount: (account: StoredAccount, quota: any) => unknown
+  sortPublicAccountsForDisplay?: (accounts: unknown[]) => unknown[]
   getUsageTotalsSnapshot: () => unknown
   buildDashboardMetrics: () => unknown
   emitAccountRateLimitsUpdated: (input: any) => void
@@ -133,10 +134,11 @@ export function registerAccountRoutes(app: Hono, deps: AccountRouteDeps) {
         targetAccountID,
       })
     }
+    const publicAccounts = accounts.map((account) =>
+      deps.toPublicAccount(account, deps.accountQuotaCache.get(account.id) ?? null),
+    )
     return c.json({
-      accounts: accounts.map((account) =>
-        deps.toPublicAccount(account, deps.accountQuotaCache.get(account.id) ?? null),
-      ),
+      accounts: deps.sortPublicAccountsForDisplay?.(publicAccounts) ?? publicAccounts,
       usageTotals: deps.getUsageTotalsSnapshot(),
       dashboardMetrics: deps.buildDashboardMetrics(),
     })

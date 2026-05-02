@@ -189,6 +189,69 @@ export function resolveQuotaSnapshotHeadroomPercent(
   return Math.max(0, Math.min(...values))
 }
 
+const WEEKLY_QUOTA_WINDOW_MIN_SECONDS = 5 * 24 * 60 * 60
+const WEEKLY_QUOTA_WINDOW_MAX_SECONDS = 10 * 24 * 60 * 60
+
+function isWeeklyQuotaWindow(window: AccountQuotaWindow | null | undefined) {
+  if (!window) return false
+  const windowSeconds = Number(window.windowSeconds ?? NaN)
+  if (Number.isFinite(windowSeconds)) {
+    return windowSeconds >= WEEKLY_QUOTA_WINDOW_MIN_SECONDS && windowSeconds <= WEEKLY_QUOTA_WINDOW_MAX_SECONDS
+  }
+  const windowMinutes = Number(window.windowMinutes ?? NaN)
+  if (!Number.isFinite(windowMinutes)) return false
+  return (
+    windowMinutes >= Math.floor(WEEKLY_QUOTA_WINDOW_MIN_SECONDS / 60) &&
+    windowMinutes <= Math.ceil(WEEKLY_QUOTA_WINDOW_MAX_SECONDS / 60)
+  )
+}
+
+function resolveQuotaWindowResetAt(window: AccountQuotaWindow | null | undefined) {
+  const resetAt = Number(window?.resetsAt ?? NaN)
+  return Number.isFinite(resetAt) && resetAt > 0 ? Math.floor(resetAt) : null
+}
+
+function sortResetCandidatesBySoonestRefresh(resetsAt: number[], now: number) {
+  return [...resetsAt].sort((left, right) => {
+    const leftMs = Math.max(0, left - now)
+    const rightMs = Math.max(0, right - now)
+    if (leftMs !== rightMs) return leftMs - rightMs
+    return left - right
+  })
+}
+
+export function resolveQuotaSnapshotWeeklyResetAt(
+  snapshot: AccountQuotaSnapshot | null | undefined,
+  now = Date.now(),
+  ttlMs = DEFAULT_ACCOUNT_QUOTA_CACHE_TTL_MS,
+) {
+  if (!snapshot || snapshot.status !== "ok" || !isQuotaCacheFresh(snapshot, now, ttlMs)) return null
+
+  const weeklyCandidates: number[] = []
+  const secondaryFallbackCandidates: number[] = []
+  for (const entry of [snapshot.primary, ...snapshot.additional]) {
+    const resetAt = resolveQuotaWindowResetAt(entry?.secondary)
+    if (resetAt === null) continue
+    if (isWeeklyQuotaWindow(entry?.secondary)) {
+      weeklyCandidates.push(resetAt)
+    } else {
+      secondaryFallbackCandidates.push(resetAt)
+    }
+  }
+
+  const selectedCandidates = weeklyCandidates.length > 0 ? weeklyCandidates : secondaryFallbackCandidates
+  return sortResetCandidatesBySoonestRefresh(selectedCandidates, now)[0] ?? null
+}
+
+export function resolveQuotaSnapshotWeeklyResetMs(
+  snapshot: AccountQuotaSnapshot | null | undefined,
+  now = Date.now(),
+  ttlMs = DEFAULT_ACCOUNT_QUOTA_CACHE_TTL_MS,
+) {
+  const resetAt = resolveQuotaSnapshotWeeklyResetAt(snapshot, now, ttlMs)
+  return resetAt === null ? null : Math.max(0, resetAt - now)
+}
+
 export function normalizeChatgptPlanType(value: unknown) {
   return normalizeIdentityText(value)?.toLowerCase() ?? null
 }

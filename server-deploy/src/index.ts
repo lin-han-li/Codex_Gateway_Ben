@@ -41,6 +41,8 @@ import {
   resolveAccountPlanCohort,
   resolvePlanCohortPriority,
   resolveQuotaSnapshotHeadroomPercent,
+  resolveQuotaSnapshotWeeklyResetAt,
+  resolveQuotaSnapshotWeeklyResetMs,
   resolveQuotaWindowRemainingPercent,
   type AccountPlanCohort,
   type AccountQuotaEntry,
@@ -3754,6 +3756,7 @@ function parseImportedJsonExpiresAt(value: unknown) {
 function buildProviderQuotaRoutingHints(providerId: string, now = Date.now()) {
   const normalizedProviderId = normalizeIdentity(providerId)?.toLowerCase()
   const headroomByAccountId = new Map<string, number>()
+  const weeklyResetAtByAccountId = new Map<string, number>()
   const excludeAccountIds: string[] = []
   const deprioritizedAccountIds: string[] = []
   if (!normalizedProviderId) {
@@ -3761,18 +3764,30 @@ function buildProviderQuotaRoutingHints(providerId: string, now = Date.now()) {
       excludeAccountIds,
       deprioritizedAccountIds,
       headroomByAccountId,
+      weeklyResetAtByAccountId,
     }
   }
 
-  // Quota snapshots are informational only for routing. Do not pre-drain,
-  // pre-exclude, or headroom-rank accounts from cached remaining-percent data:
+  for (const account of accountStore.list()) {
+    if (account.providerId.toLowerCase() !== normalizedProviderId) continue
+    const weeklyResetAt = resolveQuotaSnapshotWeeklyResetAt(accountQuotaCache.get(account.id), now)
+    if (Number.isFinite(weeklyResetAt)) {
+      weeklyResetAtByAccountId.set(account.id, Number(weeklyResetAt))
+    }
+  }
+
+  // Quota snapshots are informational only for routing. Do not pre-drain or
+  // pre-exclude accounts from cached remaining-percent data:
   // keep using the selected account until an actual upstream quota failure is
-  // observed, then fail over that in-flight request.
+  // observed, then fail over that in-flight request. Weekly reset timestamps
+  // are only a soft tie-breaker so soon-to-reset weekly buckets are consumed
+  // before they expire.
 
   return {
     excludeAccountIds,
     deprioritizedAccountIds,
     headroomByAccountId,
+    weeklyResetAtByAccountId,
   }
 }
 
@@ -3823,6 +3838,7 @@ function buildProviderRoutingHints(
     providerId,
     accounts: accountStore.list(),
     headroomByAccountId: quotaHints.headroomByAccountId,
+    weeklyResetAtByAccountId: quotaHints.weeklyResetAtByAccountId,
     pressureScoreByAccountId: pressureHints.pressureScoreByAccountId,
     quotaExcludedAccountIds: [...quotaHints.excludeAccountIds, ...cooldownExcludedAccountIds],
     unhealthyExcludedAccountIds: collectProviderUnhealthyExclusions(providerId, {
@@ -3856,6 +3872,7 @@ function buildRelaxedProviderRoutingHints(
     providerId,
     accounts: accountStore.list(),
     headroomByAccountId: quotaHints.headroomByAccountId,
+    weeklyResetAtByAccountId: quotaHints.weeklyResetAtByAccountId,
     pressureScoreByAccountId: pressureHints.pressureScoreByAccountId,
     quotaExcludedAccountIds: [...quotaHints.excludeAccountIds, ...cooldownExcludedAccountIds],
     unhealthyExcludedAccountIds: collectProviderUnhealthyExclusions(providerId, {
@@ -4148,6 +4165,9 @@ async function refreshAccountQuotaCache(accounts: StoredAccount[], input?: { for
 function toPublicAccount(account: StoredAccount, quota?: AccountQuotaSnapshot | null) {
   const metadata = account.metadata ?? {}
   const derived = resolvePublicAccountDerivedState(account.id, quota)
+  const now = Date.now()
+  const quotaWeeklyResetAt = resolveQuotaSnapshotWeeklyResetAt(quota, now)
+  const quotaWeeklyResetMs = resolveQuotaSnapshotWeeklyResetMs(quota, now)
   return {
     ...account,
     organizationId: normalizeIdentity(String((metadata as Record<string, unknown>).organizationId ?? "")),
@@ -4164,7 +4184,52 @@ function toPublicAccount(account: StoredAccount, quota?: AccountQuotaSnapshot | 
     routing: derived.routing,
     abnormalState: derived.abnormalState,
     quota: quota ?? null,
+    quotaWeeklyResetAt,
+    quotaWeeklyResetMs,
   }
+}
+
+function resolvePublicAccountWeeklyResetAt(account: unknown, now = Date.now()) {
+  const record = account && typeof account === "object" ? (account as Record<string, unknown>) : null
+  if (!record) return null
+  const direct = Number(record.quotaWeeklyResetAt ?? NaN)
+  if (Number.isFinite(direct) && direct > 0) return Math.floor(direct)
+  return resolveQuotaSnapshotWeeklyResetAt(record.quota as AccountQuotaSnapshot | null | undefined, now)
+}
+
+function sortPublicAccountsForDisplay(accounts: unknown[]) {
+  const now = Date.now()
+  const buckets = new Map<AccountPlanCohort, Array<{ account: unknown; index: number; weeklyResetAt: number | null }>>()
+  accounts.forEach((account, index) => {
+    const cohort = resolveAccountPlanCohort(account as StoredAccount)
+    const bucket = buckets.get(cohort) ?? []
+    bucket.push({
+      account,
+      index,
+      weeklyResetAt: resolvePublicAccountWeeklyResetAt(account, now),
+    })
+    buckets.set(cohort, bucket)
+  })
+
+  for (const bucket of buckets.values()) {
+    bucket.sort((left, right) => {
+      const leftReset = Number(left.weeklyResetAt ?? NaN)
+      const rightReset = Number(right.weeklyResetAt ?? NaN)
+      const hasLeftReset = Number.isFinite(leftReset)
+      const hasRightReset = Number.isFinite(rightReset)
+      if (hasLeftReset !== hasRightReset) return hasLeftReset ? -1 : 1
+      if (hasLeftReset && hasRightReset && leftReset !== rightReset) return leftReset - rightReset
+      return left.index - right.index
+    })
+  }
+
+  const cursors = new Map<AccountPlanCohort, number>()
+  return accounts.map((account) => {
+    const cohort = resolveAccountPlanCohort(account as StoredAccount)
+    const cursor = cursors.get(cohort) ?? 0
+    cursors.set(cohort, cursor + 1)
+    return buckets.get(cohort)?.[cursor]?.account ?? account
+  })
 }
 
 function deleteAccountsWithSingleRouteKeys(accounts: StoredAccount[]) {
@@ -4967,6 +5032,7 @@ function rerouteResolvedPoolAccount(input: {
           excludeAccountIds: input.routingHints.excludeAccountIds,
           deprioritizedAccountIds: input.routingHints.deprioritizedAccountIds,
           headroomByAccountId: input.routingHints.headroomByAccountId,
+          weeklyResetAtByAccountId: input.routingHints.weeklyResetAtByAccountId,
           pressureScoreByAccountId: input.routingHints.pressureScoreByAccountId,
         })
       : accountStore.reassignVirtualKeyRoute({
@@ -4977,6 +5043,7 @@ function rerouteResolvedPoolAccount(input: {
           excludeAccountIds: input.routingHints.excludeAccountIds,
           deprioritizedAccountIds: input.routingHints.deprioritizedAccountIds,
           headroomByAccountId: input.routingHints.headroomByAccountId,
+          weeklyResetAtByAccountId: input.routingHints.weeklyResetAtByAccountId,
           pressureScoreByAccountId: input.routingHints.pressureScoreByAccountId,
         })
 }
@@ -5023,6 +5090,7 @@ function ensureResolvedPoolAccountEligible(input: {
         excludeAccountIds: [...excluded],
         deprioritizedAccountIds: routingHints.deprioritizedAccountIds,
         headroomByAccountId: routingHints.headroomByAccountId,
+        weeklyResetAtByAccountId: routingHints.weeklyResetAtByAccountId,
         pressureScoreByAccountId: routingHints.pressureScoreByAccountId,
         preferredPlanCohort,
         allowedPlanCohorts: routingHints.allowedPlanCohorts,
@@ -5087,6 +5155,7 @@ function ensureResolvedPoolAccountEligible(input: {
       excludeAccountIds: [...excluded],
       deprioritizedAccountIds: routingHints.deprioritizedAccountIds,
       headroomByAccountId: routingHints.headroomByAccountId,
+      weeklyResetAtByAccountId: routingHints.weeklyResetAtByAccountId,
       pressureScoreByAccountId: routingHints.pressureScoreByAccountId,
       preferredPlanCohort,
       allowedPlanCohorts: routingHints.allowedPlanCohorts,
@@ -9854,6 +9923,7 @@ registerAccountRoutes(app, {
   refreshAccountQuotaCache,
   refreshAndEmitAccountQuota,
   toPublicAccount,
+  sortPublicAccountsForDisplay,
   getUsageTotalsSnapshot,
   buildDashboardMetrics,
   emitAccountRateLimitsUpdated,
@@ -10170,6 +10240,7 @@ async function proxyVirtualKeyCodexRequest(c: any, upstreamPath = "/responses") 
             excludeAccountIds: [...excluded],
             deprioritizedAccountIds: routingHints.deprioritizedAccountIds,
             headroomByAccountId: routingHints.headroomByAccountId,
+            weeklyResetAtByAccountId: routingHints.weeklyResetAtByAccountId,
             pressureScoreByAccountId: routingHints.pressureScoreByAccountId,
           })
       : accountStore.reassignVirtualKeyRoute({
@@ -10180,6 +10251,7 @@ async function proxyVirtualKeyCodexRequest(c: any, upstreamPath = "/responses") 
           excludeAccountIds: [...excluded],
           deprioritizedAccountIds: routingHints.deprioritizedAccountIds,
           headroomByAccountId: routingHints.headroomByAccountId,
+          weeklyResetAtByAccountId: routingHints.weeklyResetAtByAccountId,
           pressureScoreByAccountId: routingHints.pressureScoreByAccountId,
         })
 
@@ -10198,6 +10270,7 @@ async function proxyVirtualKeyCodexRequest(c: any, upstreamPath = "/responses") 
               excludeAccountIds: [...relaxedExcluded],
               deprioritizedAccountIds: relaxedHints.deprioritizedAccountIds,
               headroomByAccountId: relaxedHints.headroomByAccountId,
+              weeklyResetAtByAccountId: relaxedHints.weeklyResetAtByAccountId,
               pressureScoreByAccountId: relaxedHints.pressureScoreByAccountId,
             })
         : accountStore.reassignVirtualKeyRoute({
@@ -10208,6 +10281,7 @@ async function proxyVirtualKeyCodexRequest(c: any, upstreamPath = "/responses") 
             excludeAccountIds: [...relaxedExcluded],
             deprioritizedAccountIds: relaxedHints.deprioritizedAccountIds,
             headroomByAccountId: relaxedHints.headroomByAccountId,
+            weeklyResetAtByAccountId: relaxedHints.weeklyResetAtByAccountId,
             pressureScoreByAccountId: relaxedHints.pressureScoreByAccountId,
           })
       }
@@ -10852,6 +10926,7 @@ async function proxyVirtualKeyCursorChatCompletions(c: any) {
             excludeAccountIds: [...excluded],
             deprioritizedAccountIds: routingHints.deprioritizedAccountIds,
             headroomByAccountId: routingHints.headroomByAccountId,
+            weeklyResetAtByAccountId: routingHints.weeklyResetAtByAccountId,
             pressureScoreByAccountId: routingHints.pressureScoreByAccountId,
           })
         : accountStore.reassignVirtualKeyRoute({
@@ -10862,6 +10937,7 @@ async function proxyVirtualKeyCursorChatCompletions(c: any) {
             excludeAccountIds: [...excluded],
             deprioritizedAccountIds: routingHints.deprioritizedAccountIds,
             headroomByAccountId: routingHints.headroomByAccountId,
+            weeklyResetAtByAccountId: routingHints.weeklyResetAtByAccountId,
             pressureScoreByAccountId: routingHints.pressureScoreByAccountId,
           })
 
@@ -10880,6 +10956,7 @@ async function proxyVirtualKeyCursorChatCompletions(c: any) {
               excludeAccountIds: [...relaxedExcluded],
               deprioritizedAccountIds: relaxedHints.deprioritizedAccountIds,
               headroomByAccountId: relaxedHints.headroomByAccountId,
+              weeklyResetAtByAccountId: relaxedHints.weeklyResetAtByAccountId,
               pressureScoreByAccountId: relaxedHints.pressureScoreByAccountId,
             })
           : accountStore.reassignVirtualKeyRoute({
@@ -10890,6 +10967,7 @@ async function proxyVirtualKeyCursorChatCompletions(c: any) {
               excludeAccountIds: [...relaxedExcluded],
               deprioritizedAccountIds: relaxedHints.deprioritizedAccountIds,
               headroomByAccountId: relaxedHints.headroomByAccountId,
+              weeklyResetAtByAccountId: relaxedHints.weeklyResetAtByAccountId,
               pressureScoreByAccountId: relaxedHints.pressureScoreByAccountId,
             })
       }
@@ -11864,6 +11942,7 @@ app.post("/api/chat/virtual-key", async (c) => {
               excludeAccountIds: [...excluded],
               deprioritizedAccountIds: routingHints.deprioritizedAccountIds,
               headroomByAccountId: routingHints.headroomByAccountId,
+              weeklyResetAtByAccountId: routingHints.weeklyResetAtByAccountId,
               pressureScoreByAccountId: routingHints.pressureScoreByAccountId,
             })
         : accountStore.reassignVirtualKeyRoute({
@@ -11874,6 +11953,7 @@ app.post("/api/chat/virtual-key", async (c) => {
             excludeAccountIds: [...excluded],
             deprioritizedAccountIds: routingHints.deprioritizedAccountIds,
             headroomByAccountId: routingHints.headroomByAccountId,
+            weeklyResetAtByAccountId: routingHints.weeklyResetAtByAccountId,
             pressureScoreByAccountId: routingHints.pressureScoreByAccountId,
           })
 
@@ -11889,11 +11969,12 @@ app.post("/api/chat/virtual-key", async (c) => {
                 sessionId: input.sessionId,
                 failedAccountId,
                 accountScope: eligibleResolved.key.accountScope ?? "all",
-                excludeAccountIds: [...relaxedExcluded],
-                deprioritizedAccountIds: relaxedHints.deprioritizedAccountIds,
-                headroomByAccountId: relaxedHints.headroomByAccountId,
-                pressureScoreByAccountId: relaxedHints.pressureScoreByAccountId,
-              })
+              excludeAccountIds: [...relaxedExcluded],
+              deprioritizedAccountIds: relaxedHints.deprioritizedAccountIds,
+              headroomByAccountId: relaxedHints.headroomByAccountId,
+              weeklyResetAtByAccountId: relaxedHints.weeklyResetAtByAccountId,
+              pressureScoreByAccountId: relaxedHints.pressureScoreByAccountId,
+            })
           : accountStore.reassignVirtualKeyRoute({
               keyId: eligibleResolved.key.id,
               providerId: eligibleResolved.key.providerId,
@@ -11902,6 +11983,7 @@ app.post("/api/chat/virtual-key", async (c) => {
               excludeAccountIds: [...relaxedExcluded],
               deprioritizedAccountIds: relaxedHints.deprioritizedAccountIds,
               headroomByAccountId: relaxedHints.headroomByAccountId,
+              weeklyResetAtByAccountId: relaxedHints.weeklyResetAtByAccountId,
               pressureScoreByAccountId: relaxedHints.pressureScoreByAccountId,
             })
         }

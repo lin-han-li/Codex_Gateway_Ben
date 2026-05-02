@@ -9,6 +9,7 @@ export type ProviderRoutingHints = {
   excludeAccountIds: string[]
   deprioritizedAccountIds: string[]
   headroomByAccountId: Map<string, number>
+  weeklyResetAtByAccountId: Map<string, number>
   pressureScoreByAccountId: Map<string, number>
   preferredPlanCohort: AccountPlanCohort | null
   allowedPlanCohorts: AccountPlanCohort[] | null
@@ -36,6 +37,7 @@ export function buildProviderRoutingHintsFromState(input: {
   providerId: string
   accounts: StoredAccount[]
   headroomByAccountId: Map<string, number>
+  weeklyResetAtByAccountId: Map<string, number>
   pressureScoreByAccountId: Map<string, number>
   quotaExcludedAccountIds?: Iterable<string>
   unhealthyExcludedAccountIds?: Iterable<string>
@@ -101,6 +103,7 @@ export function buildProviderRoutingHintsFromState(input: {
     excludeAccountIds: [...excluded],
     deprioritizedAccountIds: [...deprioritized].filter((accountId) => !excluded.has(accountId)),
     headroomByAccountId: input.headroomByAccountId,
+    weeklyResetAtByAccountId: input.weeklyResetAtByAccountId,
     pressureScoreByAccountId: input.pressureScoreByAccountId,
     preferredPlanCohort: cohortMode === "off" ? null : preferredPlanCohort,
     allowedPlanCohorts,
