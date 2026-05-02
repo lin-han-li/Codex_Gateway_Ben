@@ -1999,7 +1999,7 @@ export class AccountStore {
     const now = Date.now()
     const resetDistanceMs = (value: unknown) => {
       const resetAt = Number(value ?? NaN)
-      return Number.isFinite(resetAt) ? Math.max(0, resetAt - now) : null
+      return Number.isFinite(resetAt) ? resetAt - now : null
     }
     const sorted = [...candidates].sort((a, b) => {
       const deprioritizedA = deprioritized.has(a.id) ? 1 : 0

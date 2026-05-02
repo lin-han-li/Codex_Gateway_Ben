@@ -88,7 +88,7 @@ function resolveQuotaEntryWeeklyResetAt(entry) {
   return isWeeklyQuotaWindow(window) ? resetAt : null
 }
 
-function resolveAccountWeeklyResetAt(account) {
+function resolveAccountWeeklyResetAt(account, now = Date.now()) {
   const quota = account?.quota
   if (!quota || quota.status !== "ok") {
     const direct = Number(account?.quotaWeeklyResetAt ?? NaN)
@@ -110,16 +110,10 @@ function resolveAccountWeeklyResetAt(account) {
 
   const candidates = weeklyCandidates.length > 0 ? weeklyCandidates : fallbackCandidates
   if (candidates.length === 0) return null
-  const now = Date.now()
-  return candidates.sort((left, right) => {
-    const leftMs = Math.max(0, left - now)
-    const rightMs = Math.max(0, right - now)
-    if (leftMs !== rightMs) return leftMs - rightMs
-    return left - right
-  })[0]
+  return candidates.sort((left, right) => compareResetDistance(left, right, now))[0]
 }
 
-function resolveDisplayedWeeklyResetAt(account) {
+function resolveDisplayedWeeklyResetAt(account, now = Date.now()) {
   const quota = account?.quota
   if (quota?.status === "ok") {
     const primaryResetAt = resolveQuotaEntryWeeklyResetAt(quota.primary)
@@ -129,32 +123,55 @@ function resolveDisplayedWeeklyResetAt(account) {
       if (Number.isFinite(Number(resetAt ?? NaN))) return resetAt
     }
   }
-  return resolveAccountWeeklyResetAt(account)
+  return resolveAccountWeeklyResetAt(account, now)
+}
+
+function normalizeResetSortValue(value) {
+  const resetAt = Number(value ?? NaN)
+  return Number.isFinite(resetAt) && resetAt > 0 ? resetAt : null
 }
 
 function compareResetDistance(leftReset, rightReset, now = Date.now()) {
-  const leftValue = Number(leftReset ?? NaN)
-  const rightValue = Number(rightReset ?? NaN)
-  const hasLeft = Number.isFinite(leftValue)
-  const hasRight = Number.isFinite(rightValue)
+  const leftValue = normalizeResetSortValue(leftReset)
+  const rightValue = normalizeResetSortValue(rightReset)
+  const hasLeft = leftValue !== null
+  const hasRight = rightValue !== null
   if (hasLeft !== hasRight) return hasLeft ? -1 : 1
   if (!hasLeft || !hasRight) return 0
-  const leftDistance = Math.max(0, leftValue - now)
-  const rightDistance = Math.max(0, rightValue - now)
+  const leftDistance = leftValue - now
+  const rightDistance = rightValue - now
   if (leftDistance !== rightDistance) return leftDistance - rightDistance
   return leftValue - rightValue
 }
 
-function compareWeeklyResetPriority(left, right) {
-  const resetDelta = compareResetDistance(resolveDisplayedWeeklyResetAt(left.account), resolveDisplayedWeeklyResetAt(right.account))
+function compareWeeklyResetPriority(left, right, now = Date.now()) {
+  const resetDelta = compareResetDistance(
+    resolveDisplayedWeeklyResetAt(left.account, now),
+    resolveDisplayedWeeklyResetAt(right.account, now),
+    now,
+  )
   if (resetDelta !== 0) return resetDelta
   return left.index - right.index
+}
+
+function sortAccountEntriesByWeeklyReset(entries, now = Date.now()) {
+  return [...entries].sort((left, right) => compareWeeklyResetPriority(left, right, now))
+}
+
+function sortCardItemsByWeeklyReset(items, now = Date.now()) {
+  return [...items].sort((left, right) => {
+    const resetDelta = compareResetDistance(left.weeklyResetAt, right.weeklyResetAt, now)
+    if (resetDelta !== 0) return resetDelta
+    return Number(left.originalIndex ?? 0) - Number(right.originalIndex ?? 0)
+  })
 }
 
 export const __accountsViewTestHooks = {
   resolveDisplayedWeeklyResetAt,
   compareResetDistance,
   compareWeeklyResetPriority,
+  sortAccountEntriesByWeeklyReset,
+  sortCardItemsByWeeklyReset,
 }
 
 function buildQuotaRows(account) {
@@ -372,64 +389,52 @@ export function createAccountsView(deps) {
     }
 
     const query = normalizeQuery(S.accountQuery)
-    const rows = S.accounts
-      .map((account, index) => ({ account, index }))
-      .filter(({ account }) => {
-        if (!query) return true
-        const quota = formatAccountQuota(account.quota)
-        const status = getAccountStatusMeta(account)
-        const abnormal = normalizeAbnormalState(account)
-        const quotaRows = buildQuotaRows(account)
-        const fields = [
-          providerDisplayName(account),
-          accountType(account),
-          account.displayName,
-          account.email,
-          account.accountId,
-          account.id,
-          status.text,
-          status.detail,
-          abnormal?.label,
-          String(account.totalTokens || 0),
-          quota.text,
-          quota.detail,
-          resolvePlanMeta(account).label,
-          ...quotaRows.map((row) => `${row.label} ${row.remainingPercent ?? "--"} ${row.resetText}`),
-        ]
-        return fields.some((field) => String(field ?? "").toLowerCase().includes(query))
-      })
-      .sort((left, right) => {
-        const resetRank = compareWeeklyResetPriority(left, right)
-        if (resetRank !== 0) return resetRank
-        const leftAbnormal = normalizeAbnormalState(left.account)
-        const rightAbnormal = normalizeAbnormalState(right.account)
-        const rankFor = (abnormal) => {
-          if (!abnormal) return 0
-          if (abnormal.category === "soft_drained") return 1
-          return 2
-        }
-        const leftRank = rankFor(leftAbnormal)
-        const rightRank = rankFor(rightAbnormal)
-        if (leftRank !== rightRank) return leftRank - rightRank
-        return left.index - right.index
-      })
-      .map(({ account }) => account)
+    const renderNow = Date.now()
+    const rowEntries = sortAccountEntriesByWeeklyReset(
+      S.accounts
+        .map((account, index) => ({ account, index }))
+        .filter(({ account }) => {
+          if (!query) return true
+          const quota = formatAccountQuota(account.quota)
+          const status = getAccountStatusMeta(account)
+          const abnormal = normalizeAbnormalState(account)
+          const quotaRows = buildQuotaRows(account)
+          const fields = [
+            providerDisplayName(account),
+            accountType(account),
+            account.displayName,
+            account.email,
+            account.accountId,
+            account.id,
+            status.text,
+            status.detail,
+            abnormal?.label,
+            String(account.totalTokens || 0),
+            quota.text,
+            quota.detail,
+            resolvePlanMeta(account).label,
+            ...quotaRows.map((row) => `${row.label} ${row.remainingPercent ?? "--"} ${row.resetText}`),
+          ]
+          return fields.some((field) => String(field ?? "").toLowerCase().includes(query))
+        }),
+      renderNow,
+    )
 
-    if (!rows.length) {
+    if (!rowEntries.length) {
       tbody.innerHTML =
         '<tr class="account-card-row"><td colspan="7"><div class="account-empty muted">未找到匹配账号。</div></td></tr>'
       return
     }
 
-    const cardItems = rows
-      .map((account) => {
+    const cardItems = rowEntries
+      .map(({ account, index }) => {
         const abnormal = normalizeAbnormalState(account)
         const status = getAccountStatusMeta(account)
         const tokenUsed = Number(account.totalTokens || 0)
         const quotaText = formatAccountQuota(account.quota)
         const quotaRows = buildQuotaRows(account)
         const planMeta = resolvePlanMeta(account)
-        const weeklyResetAt = resolveDisplayedWeeklyResetAt(account)
+        const weeklyResetAt = resolveDisplayedWeeklyResetAt(account, renderNow)
         const weeklyResetMeta = Number.isFinite(Number(weeklyResetAt ?? NaN))
           ? `<span>周额度刷新 ${esc(formatQuotaResetStamp(weeklyResetAt))}</span>`
           : ""
@@ -475,9 +480,13 @@ export function createAccountsView(deps) {
           id: account.id,
           canRefreshQuota: canRefreshAccountQuota(account),
           weeklyResetAt,
-          originalIndex: S.accounts.indexOf(account),
+          originalIndex: index,
           html: `
-          <article class="account-card ${abnormal ? "is-abnormal" : ""}">
+          <article
+            class="account-card ${abnormal ? "is-abnormal" : ""}"
+            data-weekly-reset-at="${esc(String(weeklyResetAt ?? ""))}"
+            style="order:__ACCOUNT_CARD_DISPLAY_ORDER__"
+          >
             <div class="account-card-top">
               <div class="account-card-badges">
                 <span class="type-badge provider">${esc(providerDisplayName(account))}</span>
@@ -513,15 +522,12 @@ export function createAccountsView(deps) {
 
     const groupedSections = ACCOUNT_PLAN_GROUPS
       .map((group) => {
-        const groupItems = cardItems
-          .filter((item) => item.groupKey === group.key)
-          .sort((left, right) => {
-            const resetDelta = compareResetDistance(left.weeklyResetAt, right.weeklyResetAt)
-            if (resetDelta !== 0) return resetDelta
-            return Number(left.originalIndex ?? 0) - Number(right.originalIndex ?? 0)
-          })
+        const groupItems = sortCardItemsByWeeklyReset(
+          cardItems.filter((item) => item.groupKey === group.key),
+          renderNow,
+        )
         const groupCards = groupItems
-          .map((item) => item.html)
+          .map((item, index) => item.html.replace("__ACCOUNT_CARD_DISPLAY_ORDER__", String(index)))
           .join("")
         const refreshableCount = groupItems.filter((item) => item.canRefreshQuota).length
         const isGroupRefreshing = Boolean(S.ui?.busyActions?.[`accounts:quota:refresh:${group.key}`])

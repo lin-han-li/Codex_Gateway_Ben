@@ -6841,16 +6841,15 @@
         return Number.isFinite(direct) && direct > 0 ? direct : null;
       }
 
-      function compareFallbackWeeklyResetDistance(leftAccount, rightAccount) {
-        const now = Date.now();
+      function compareFallbackWeeklyResetDistance(leftAccount, rightAccount, now = Date.now()) {
         const leftReset = Number(resolveFallbackWeeklyResetAt(leftAccount) ?? NaN);
         const rightReset = Number(resolveFallbackWeeklyResetAt(rightAccount) ?? NaN);
         const hasLeft = Number.isFinite(leftReset);
         const hasRight = Number.isFinite(rightReset);
         if (hasLeft !== hasRight) return hasLeft ? -1 : 1;
         if (!hasLeft || !hasRight) return 0;
-        const leftDistance = Math.max(0, leftReset - now);
-        const rightDistance = Math.max(0, rightReset - now);
+        const leftDistance = leftReset - now;
+        const rightDistance = rightReset - now;
         if (leftDistance !== rightDistance) return leftDistance - rightDistance;
         return leftReset - rightReset;
       }
@@ -7230,6 +7229,7 @@
         }
 
         const query = normalizeQuery(S.accountQuery);
+        const renderNow = Date.now();
         const rows = S.accounts
           .map((account, index) => ({ account, index }))
           .filter(({ account }) => {
@@ -7254,13 +7254,8 @@
             return fields.some((field) => String(field ?? "").toLowerCase().includes(query));
           })
           .sort((left, right) => {
-            const resetRank = compareFallbackWeeklyResetDistance(left.account, right.account);
+            const resetRank = compareFallbackWeeklyResetDistance(left.account, right.account, renderNow);
             if (resetRank !== 0) return resetRank;
-            const leftAbnormal = normalizeAbnormalState(left.account);
-            const rightAbnormal = normalizeAbnormalState(right.account);
-            const leftRank = leftAbnormal ? 1 : 0;
-            const rightRank = rightAbnormal ? 1 : 0;
-            if (leftRank !== rightRank) return leftRank - rightRank;
             return left.index - right.index;
           })
           .map(({ account }) => account);

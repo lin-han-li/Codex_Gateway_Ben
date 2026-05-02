@@ -4206,7 +4206,7 @@ function sortPublicAccountsForDisplay(accounts: unknown[]) {
   const now = Date.now()
   const resetDistanceMs = (value: unknown) => {
     const resetAt = Number(value ?? NaN)
-    return Number.isFinite(resetAt) ? Math.max(0, resetAt - now) : null
+    return Number.isFinite(resetAt) ? resetAt - now : null
   }
   const buckets = new Map<AccountPlanCohort, Array<{ account: unknown; index: number; weeklyResetAt: number | null }>>()
   accounts.forEach((account, index) => {
