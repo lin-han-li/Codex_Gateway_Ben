@@ -2984,7 +2984,7 @@ function resolveAccountAbnormalStateLegacy(input: {
   if (quotaWindowExhausted) {
     return buildAccountAbnormalState({
       classification: "quota_exhausted",
-      label: "额度耗尽",
+      label: "\u989d\u5ea6\u8017\u5c3d",
       reason: "quota_window_exhausted",
       source: "quota",
       detectedAt: input.quota?.fetchedAt ?? null,
@@ -3141,7 +3141,7 @@ function resolveAccountAbnormalState(input: {
   if (quotaWindowExhausted) {
     return buildAccountAbnormalState({
       classification: "quota_exhausted",
-      label: "????",
+      label: "\u989d\u5ea6\u8017\u5c3d",
       reason: "quota_window_exhausted",
       source: "quota",
       detectedAt: input.quota?.fetchedAt ?? null,

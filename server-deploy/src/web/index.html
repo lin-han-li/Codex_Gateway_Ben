@@ -4648,6 +4648,8 @@
             return "额度已耗尽，账号正在冷却";
           case "quota_headroom_exhausted":
             return "额度已耗尽";
+          case "quota_window_exhausted":
+            return "5\u5c0f\u65f6\u6216\u5468\u989d\u5ea6\u4e3a 0\uff0c\u7b49\u5f85\u5237\u65b0\uff1b\u8bf7\u6c42\u5931\u8d25\u65f6\u4f1a\u81ea\u52a8\u5207\u6362\u8d26\u53f7";
           case "pool_consistency_excluded":
             return "该账号当前未参与均流路由";
           case "routing_excluded":
@@ -4974,7 +4976,7 @@
         const reason = String(abnormal.reason || "").trim();
         if (reason === "quota_headroom_low" || category === "soft_drained") return null;
         if (!category || category === "normal") return null;
-        const label = reason === "quota_window_exhausted" ? "????" : String(abnormal.label || getAbnormalLabelByCategory(category));
+        const label = reason === "quota_window_exhausted" ? "\u989d\u5ea6\u8017\u5c3d" : String(abnormal.label || getAbnormalLabelByCategory(category));
         return {
           ...abnormal,
           category,

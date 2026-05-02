@@ -332,6 +332,9 @@ async function main() {
     if (zeroQuotaAccount?.abnormalState?.reason !== "quota_window_exhausted") {
       findings.push(`0% quota account reason expected=quota_window_exhausted actual=${zeroQuotaAccount?.abnormalState?.reason ?? "<missing>"}`)
     }
+    if (zeroQuotaAccount?.abnormalState?.label !== "\u989d\u5ea6\u8017\u5c3d") {
+      findings.push(`0% quota account label expected=额度耗尽 actual=${zeroQuotaAccount?.abnormalState?.label ?? "<missing>"}`)
+    }
 
     const issued = await requestJSON<IssueKeyResponse>(`${origin}/api/virtual-keys/issue`, {
       method: "POST",

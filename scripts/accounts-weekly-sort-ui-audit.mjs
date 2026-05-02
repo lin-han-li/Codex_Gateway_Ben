@@ -57,5 +57,6 @@ assertCondition(displayedReset === input[0].quota.primary.secondary.resetsAt, "d
 
 const webShell = await readFile(new URL("../src/web/index.html", import.meta.url), "utf8")
 assertCondition(!webShell.includes("\u5df2\u6682\u7f13\u5206\u6d41"), "web UI must not display legacy soft-drain wording")
+assertCondition(!webShell.includes("????"), "web UI must not contain corrupted replacement glyphs")
 
 console.log(`Accounts weekly UI sort audit passed: ${sorted.join(" > ")}`)
