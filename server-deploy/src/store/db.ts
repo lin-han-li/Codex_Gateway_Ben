@@ -248,6 +248,24 @@ type VirtualKeySessionRow = {
 const VIRTUAL_KEY_SESSION_IDLE_TTL_MS = 45 * 60 * 1000
 const VIRTUAL_KEY_SESSION_CLEANUP_INTERVAL_MS = 60 * 1000
 
+function normalizeWeeklyResetAtForRouting(value: unknown) {
+  const resetAt = Number(value ?? NaN)
+  return Number.isFinite(resetAt) && resetAt > 0 ? resetAt : null
+}
+
+function compareWeeklyResetAtForRouting(left: unknown, right: unknown, now = Date.now()) {
+  const leftResetAt = normalizeWeeklyResetAtForRouting(left)
+  const rightResetAt = normalizeWeeklyResetAtForRouting(right)
+  const hasLeftReset = leftResetAt !== null
+  const hasRightReset = rightResetAt !== null
+  if (hasLeftReset !== hasRightReset) return hasLeftReset ? -1 : 1
+  if (!hasLeftReset || !hasRightReset) return 0
+  const leftDistance = leftResetAt - now
+  const rightDistance = rightResetAt - now
+  if (leftDistance !== rightDistance) return leftDistance - rightDistance
+  return leftResetAt - rightResetAt
+}
+
 type TableInfoRow = {
   name: string
   notnull: number
@@ -1911,25 +1929,38 @@ export class AccountStore {
     },
   ) {
     this.pruneExpiredVirtualKeySessions()
+    const weeklyResetAtByAccountId = options?.weeklyResetAtByAccountId ?? new Map<string, number>()
+    const now = Date.now()
+    let sticky: StoredAccount | null = null
     if (sessionId) {
-      const sticky = this.pickSessionStickyAccount(keyID, providerId, sessionId, options?.accountScope)
+      sticky = this.pickSessionStickyAccount(keyID, providerId, sessionId, options?.accountScope, { touch: false })
       if (
         sticky &&
-        !options?.excludeAccountIds?.has(sticky.id) &&
-        !options?.deprioritizedAccountIds?.has(sticky.id)
+        (options?.excludeAccountIds?.has(sticky.id) ||
+          options?.deprioritizedAccountIds?.has(sticky.id))
       ) {
-        return sticky
+        sticky = null
       }
     }
 
     const selected = this.pickPoolAccountCandidate(keyID, providerId, options)
 
     if (!selected) return null
-    this.touchVirtualKeyRoute(keyID, selected.id)
-    if (sessionId) {
-      this.touchVirtualKeySessionRoute(keyID, sessionId, selected.id)
+    let routed = selected
+    if (sticky) {
+      const stickyResetRank = compareWeeklyResetAtForRouting(
+        weeklyResetAtByAccountId.get(sticky.id),
+        weeklyResetAtByAccountId.get(selected.id),
+        now,
+      )
+      if (stickyResetRank <= 0) routed = sticky
     }
-    return selected
+
+    this.touchVirtualKeyRoute(keyID, routed.id)
+    if (sessionId) {
+      this.touchVirtualKeySessionRoute(keyID, sessionId, routed.id)
+    }
+    return routed
   }
 
   private pickSessionStickyAccount(
@@ -1937,6 +1968,7 @@ export class AccountStore {
     providerId: string,
     sessionId: string,
     accountScope: VirtualKeyAccountScope = "all",
+    options?: { touch?: boolean },
   ) {
     this.pruneExpiredVirtualKeySessions()
     const row = this.db
@@ -1958,8 +1990,10 @@ export class AccountStore {
     const account = this.getSingleRouteAccount(providerId, row.account_id, accountScope)
     if (!account) return null
 
-    this.touchVirtualKeyRoute(keyID, account.id)
-    this.touchVirtualKeySessionRoute(keyID, sessionId, account.id)
+    if (options?.touch !== false) {
+      this.touchVirtualKeyRoute(keyID, account.id)
+      this.touchVirtualKeySessionRoute(keyID, sessionId, account.id)
+    }
     return account
   }
 
@@ -1997,10 +2031,6 @@ export class AccountStore {
 
     const routeMap = new Map(routeRows.map((row) => [row.account_id, row]))
     const now = Date.now()
-    const resetDistanceMs = (value: unknown) => {
-      const resetAt = Number(value ?? NaN)
-      return Number.isFinite(resetAt) ? resetAt - now : null
-    }
     const sorted = [...candidates].sort((a, b) => {
       const deprioritizedA = deprioritized.has(a.id) ? 1 : 0
       const deprioritizedB = deprioritized.has(b.id) ? 1 : 0
@@ -2008,15 +2038,8 @@ export class AccountStore {
 
       const weeklyResetA = weeklyResetAtByAccountId.get(a.id)
       const weeklyResetB = weeklyResetAtByAccountId.get(b.id)
-      const hasWeeklyResetA = Number.isFinite(weeklyResetA)
-      const hasWeeklyResetB = Number.isFinite(weeklyResetB)
-      if (hasWeeklyResetA !== hasWeeklyResetB) return hasWeeklyResetA ? -1 : 1
-      if (hasWeeklyResetA && hasWeeklyResetB && weeklyResetA !== weeklyResetB) {
-        const distanceA = resetDistanceMs(weeklyResetA) ?? Number.POSITIVE_INFINITY
-        const distanceB = resetDistanceMs(weeklyResetB) ?? Number.POSITIVE_INFINITY
-        if (distanceA !== distanceB) return distanceA - distanceB
-        return Number(weeklyResetA) - Number(weeklyResetB)
-      }
+      const weeklyResetRank = compareWeeklyResetAtForRouting(weeklyResetA, weeklyResetB, now)
+      if (weeklyResetRank !== 0) return weeklyResetRank
 
       const pressureA = pressureScoreByAccountId.get(a.id)
       const pressureB = pressureScoreByAccountId.get(b.id)

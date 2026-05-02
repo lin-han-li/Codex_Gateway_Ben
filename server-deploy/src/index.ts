@@ -3785,8 +3785,8 @@ function buildProviderQuotaRoutingHints(providerId: string, now = Date.now()) {
   // pre-exclude accounts from cached remaining-percent data:
   // keep using the selected account until an actual upstream quota failure is
   // observed, then fail over that in-flight request. Weekly reset timestamps
-  // are only a soft tie-breaker so soon-to-reset weekly buckets are consumed
-  // before they expire.
+  // are the primary pool ordering signal inside the eligible account set, so
+  // soon-to-reset weekly buckets are consumed before they expire.
 
   return {
     excludeAccountIds,

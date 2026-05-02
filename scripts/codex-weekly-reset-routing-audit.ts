@@ -16,6 +16,9 @@ type SyncResponse = {
 
 type IssueKeyResponse = {
   key: string
+  record?: {
+    id?: string | null
+  } | null
 }
 
 type AccountsResponse = {
@@ -346,6 +349,40 @@ async function main() {
       }),
     })
     assertCondition(issued.key?.startsWith("ocsk_live_"), "pool key issue failed")
+    const issuedKeyId = String(issued.record?.id ?? "").trim()
+    assertCondition(issuedKeyId, "pool key issue did not return record id")
+
+    const stickySessionId = "weekly-reset-session-1"
+    const stickyDb = new Database(path.join(tempDataDir, "accounts.db"))
+    const stickyNow = Date.now()
+    stickyDb
+      .query(
+        `
+          INSERT INTO virtual_key_sessions (
+            key_id,
+            session_id,
+            account_id,
+            request_count,
+            last_used_at,
+            updated_at
+          ) VALUES (?, ?, ?, 1, ?, ?)
+        `,
+      )
+      .run(issuedKeyId, stickySessionId, accountA.account.id, stickyNow, stickyNow)
+    stickyDb
+      .query(
+        `
+          INSERT INTO virtual_key_routes (
+            key_id,
+            account_id,
+            request_count,
+            last_used_at,
+            updated_at
+          ) VALUES (?, ?, 1, ?, ?)
+        `,
+      )
+      .run(issuedKeyId, accountA.account.id, stickyNow, stickyNow)
+    stickyDb.close()
 
     const response = await fetch(`${origin}/v1/responses`, {
       method: "POST",
@@ -356,14 +393,14 @@ async function main() {
         originator: CODEX_ORIGINATOR,
         "user-agent": userAgent,
         version: CODEX_CLIENT_VERSION,
-        session_id: "weekly-reset-session-1",
+        session_id: stickySessionId,
         "openai-beta": "responses=v1",
       },
       body: JSON.stringify({
         model: "gpt-5.4",
         instructions: "weekly reset routing audit",
         input: [{ role: "user", content: [{ type: "input_text", text: "weekly reset routing" }] }],
-        prompt_cache_key: "weekly-reset-session-1",
+        prompt_cache_key: stickySessionId,
         stream: false,
         store: false,
       }),
@@ -399,6 +436,8 @@ async function main() {
       "",
       "## Routing Result",
       `- selected token: ${selectedToken || "-"}`,
+      `- pre-existing sticky session account: ${accountA.account.id}`,
+      `- expected sticky override account: ${accountB.account.id}`,
       "",
       "## Captured Requests",
       ...capturedRequests.map(
