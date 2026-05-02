@@ -174,6 +174,19 @@ function normalizeEpochMs(value: unknown) {
   return Number.isFinite(parsed) ? parsed : null
 }
 
+function extractModelCatalogEntryID(value: unknown) {
+  if (!value || typeof value !== "object") return null
+  const record = value as Record<string, unknown>
+  const normalized = String(record.id ?? record.slug ?? record.model ?? "").trim()
+  return normalized.length > 0 ? normalized : null
+}
+
+function cloneModelCatalogEntries(entries: unknown[]) {
+  return entries
+    .filter((item) => item && typeof item === "object")
+    .map((item) => ({ ...(item as Record<string, unknown>) }))
+}
+
 function resolveCodexHome() {
   return process.env.CODEX_HOME ? path.resolve(process.env.CODEX_HOME) : path.join(os.homedir(), ".codex")
 }
@@ -261,21 +274,48 @@ function ensureFastModeFeature(raw: string) {
   return `${lines.join("\n").trimStart()}\n`
 }
 
-function buildCodexGatewayModelCatalog(row: { fixedModel?: unknown; fixed_model?: unknown }) {
+function buildCodexGatewayModelCatalog(
+  row: { fixedModel?: unknown; fixed_model?: unknown },
+  resolveCodexModelCatalogPayload?: (fixedModelId?: string | null) => Record<string, unknown>,
+) {
   const fixedModel = String(row.fixedModel ?? row.fixed_model ?? "").trim()
-  if (fixedModel) {
-    const known = CODEX_GATEWAY_MODEL_CATALOG[fixedModel]
-    return {
-      models: [known ?? buildCodexGatewayModelInfo(fixedModel, fixedModel, 0, "medium", [])],
+  const officialPayload = resolveCodexModelCatalogPayload?.(fixedModel || null)
+  if (officialPayload && typeof officialPayload === "object") {
+    const sourceEntries = Array.isArray(officialPayload.models)
+      ? officialPayload.models
+      : Array.isArray(officialPayload.data)
+        ? officialPayload.data
+        : []
+    const filteredEntries = fixedModel
+      ? sourceEntries.filter((item) => extractModelCatalogEntryID(item) === fixedModel)
+      : sourceEntries
+    const clonedEntries = cloneModelCatalogEntries(filteredEntries)
+    if (clonedEntries.length > 0) {
+      return {
+        object: String(officialPayload.object ?? "list") || "list",
+        data: clonedEntries,
+        models: clonedEntries,
+      }
     }
   }
-  return { models: Object.values(CODEX_GATEWAY_MODEL_CATALOG) }
+  if (fixedModel) {
+    const known = CODEX_GATEWAY_MODEL_CATALOG[fixedModel]
+    const fallbackModel = known ?? buildCodexGatewayModelInfo(fixedModel, fixedModel, 0, "medium", [])
+    return {
+      object: "list",
+      data: [fallbackModel],
+      models: [fallbackModel],
+    }
+  }
+  const fallbackModels = Object.values(CODEX_GATEWAY_MODEL_CATALOG)
+  return { object: "list", data: fallbackModels, models: fallbackModels }
 }
 
 async function writeCodexGatewayConfigForVirtualKey(input: {
   row: Record<string, unknown>
   apiBase: string
   restartCodexApp?: boolean
+  resolveCodexModelCatalogPayload?: (fixedModelId?: string | null) => Record<string, unknown>
 }) {
   const codexHome = resolveCodexHome()
   await mkdir(codexHome, { recursive: true })
@@ -289,7 +329,7 @@ async function writeCodexGatewayConfigForVirtualKey(input: {
     backupFileIfExists(modelCatalogPath, stamp),
   ])
 
-  const modelCatalog = buildCodexGatewayModelCatalog(input.row)
+  const modelCatalog = buildCodexGatewayModelCatalog(input.row, input.resolveCodexModelCatalogPayload)
   const modelCatalogJson = `${JSON.stringify(modelCatalog, null, 2)}\n`
   await writeFile(modelCatalogPath, modelCatalogJson, "utf8")
 
@@ -327,6 +367,7 @@ export type VirtualKeysRouteDeps = {
   getCachedPoolConsistencyResult: (providerId: string, now?: number, options?: { preferredPlanCohort?: "free" | "paid" | "business" | "unknown" | null }) => any
   hasSensitiveActionConfirmation: (c: any) => boolean
   errorMessage: (error: unknown) => string
+  resolveCodexModelCatalogPayload?: (fixedModelId?: string | null) => Record<string, unknown>
   setCodexOAuthBridgeBinding?: (input: {
     virtualKeyId: string
     accessToken?: string | null
@@ -568,6 +609,7 @@ export function registerVirtualKeysRoutes(app: Hono, deps: VirtualKeysRouteDeps)
         row,
         apiBase,
         restartCodexApp,
+        resolveCodexModelCatalogPayload: deps.resolveCodexModelCatalogPayload,
       })
       return c.json({ success: true, ...result, bridgeBinding: binding })
     } catch (error) {

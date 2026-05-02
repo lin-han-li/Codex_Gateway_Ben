@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises"
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import { spawn } from "node:child_process"
 import net from "node:net"
 import os from "node:os"
@@ -26,6 +26,17 @@ type IssueKeyResponse = {
 
 type UpdateKeyResponse = {
   record?: IssueKeyResponse["record"]
+}
+
+type ChatModelsResponse = {
+  models?: Array<Record<string, unknown>>
+  data?: Array<Record<string, unknown>>
+  defaultModelId?: string | null
+}
+
+type ConfigureCodexResponse = {
+  success?: boolean
+  modelCatalogPath?: string | null
 }
 
 function assertCondition(condition: unknown, message: string): asserts condition {
@@ -99,12 +110,31 @@ async function stopChildProcess(child: ReturnType<typeof spawn>) {
 
 async function main() {
   const tempDataDir = await mkdtemp(path.join(os.tmpdir(), "oauth-key-issue-"))
+  const codexHome = path.join(tempDataDir, ".codex-home")
   const bridgePort = await reserveFreePort()
   const upstreamPort = await reserveFreePort()
   const bridgeOrigin = `http://127.0.0.1:${bridgePort}`
   const upstreamOrigin = `http://127.0.0.1:${upstreamPort}`
   const upstreamBase = `${upstreamOrigin}/v1`
   const capturedRequests: Array<{ path: string; token: string }> = []
+
+  await mkdir(codexHome, { recursive: true })
+  await writeFile(
+    path.join(codexHome, "auth.json"),
+    `${JSON.stringify(
+      {
+        auth_mode: "chatgpt",
+        tokens: {
+          access_token: "local-codex-access",
+          id_token: "local-codex-id",
+          account_id: "local-codex-account",
+        },
+      },
+      null,
+      2,
+    )}\n`,
+    "utf8",
+  )
 
   const upstreamServer = Bun.serve({
     hostname: "127.0.0.1",
@@ -169,6 +199,7 @@ async function main() {
       OAUTH_APP_DATA_DIR: tempDataDir,
       OAUTH_OPENAI_API_BASE: upstreamBase,
       OAUTH_BEHAVIOR_ENABLED: "false",
+      CODEX_HOME: codexHome,
     },
     stdio: ["ignore", "pipe", "pipe"],
   })
@@ -231,6 +262,19 @@ async function main() {
     assertCondition(issued.key?.startsWith("ocsk_live_"), "pool key issue failed")
     assertCondition(issued.record?.id, "pool key issue did not return record id")
 
+    const chatModels = await requestJSON<ChatModelsResponse>(`${bridgeOrigin}/api/chat/models`)
+    const chatModelsList = Array.isArray(chatModels.models) ? chatModels.models : Array.isArray(chatModels.data) ? chatModels.data : []
+    const chatGpt55 = chatModelsList.find((item) => String(item?.id ?? item?.slug ?? "") === "gpt-5.5")
+    assertCondition(chatGpt55, "chat models should expose gpt-5.5")
+    assertCondition(
+      typeof chatGpt55.base_instructions === "string" && String(chatGpt55.base_instructions).trim().length > 0,
+      "chat models gpt-5.5 should expose official base_instructions",
+    )
+    assertCondition(
+      String(chatGpt55.availability_nux?.message || "").includes("GPT-5.5 is now available in Codex"),
+      "chat models gpt-5.5 should expose official availability_nux message",
+    )
+
     const cursorUpdated = await requestJSON<UpdateKeyResponse>(
       `${bridgeOrigin}/api/virtual-keys/${encodeURIComponent(issued.record.id)}/settings`,
       {
@@ -273,6 +317,48 @@ async function main() {
     assertCondition(singleUpdated.record?.clientMode === "codex", "settings update should switch key back to codex mode")
     assertCondition(singleUpdated.record?.wireApi === "responses", "settings update should switch wire API back to responses")
     assertCondition(!singleUpdated.record?.fixedModel, "settings update should clear fixed model")
+
+    const configured = await requestJSON<ConfigureCodexResponse>(
+      `${bridgeOrigin}/api/virtual-keys/${encodeURIComponent(issued.record.id)}/configure-codex`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          apiBase: `${bridgeOrigin}/v1`,
+          restartCodexApp: false,
+        }),
+      },
+    )
+    assertCondition(configured.success === true, "configure-codex should succeed")
+    const modelCatalogPath = configured.modelCatalogPath || path.join(codexHome, "codex-gateway-models.json")
+    const configuredCatalog = JSON.parse(await readFile(modelCatalogPath, "utf8")) as {
+      models?: Array<Record<string, unknown>>
+      data?: Array<Record<string, unknown>>
+    }
+    const configuredModels = Array.isArray(configuredCatalog.models)
+      ? configuredCatalog.models
+      : Array.isArray(configuredCatalog.data)
+        ? configuredCatalog.data
+        : []
+    const configuredGpt55 = configuredModels.find((item) => String(item?.id ?? item?.slug ?? "") === "gpt-5.5")
+    assertCondition(configuredGpt55, "configure-codex should write gpt-5.5 into codex-gateway-models.json")
+    assertCondition(
+      typeof configuredGpt55.base_instructions === "string" && String(configuredGpt55.base_instructions).trim().length > 0,
+      "configure-codex gpt-5.5 should preserve base_instructions",
+    )
+    assertCondition(
+      String(configuredGpt55.availability_nux?.message || "").includes("GPT-5.5 is now available in Codex"),
+      "configure-codex gpt-5.5 should preserve availability_nux",
+    )
+    assertCondition(
+      Array.isArray(configuredGpt55.additional_speed_tiers) &&
+        configuredGpt55.additional_speed_tiers.includes("fast"),
+      "configure-codex gpt-5.5 should preserve additional_speed_tiers",
+    )
+    assertCondition(
+      Array.isArray(configuredGpt55.available_in_plans) && configuredGpt55.available_in_plans.includes("free"),
+      "configure-codex gpt-5.5 should preserve available_in_plans",
+    )
     await Bun.sleep(250)
 
     const modelFetchCount = capturedRequests.filter((item) => item.path === "/v1/models").length

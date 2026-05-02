@@ -3,7 +3,7 @@ import { existsSync } from "node:fs"
 import path from "node:path"
 
 const VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/
-const FALLBACK_CODEX_CLIENT_VERSION = "0.125.0"
+const FALLBACK_CODEX_CLIENT_VERSION = "0.128.0"
 const FALLBACK_CODEX_PROMPT = "You are Codex, a coding agent based on GPT-5."
 const OFFICIAL_PROMPT_RELATIVE_PATHS = [
   path.join("codex-rs", "core", "prompt.md"),

@@ -1280,36 +1280,38 @@ type CodexModelCatalogEntry = {
   apiMetadata: Record<string, unknown>
 }
 
+type CodexOfficialModelRecord = Record<string, unknown> & {
+  slug?: string
+  display_name?: string
+  description?: string
+  visibility?: string
+  supported_in_api?: boolean
+  default_reasoning_level?: string
+  supported_reasoning_levels?: Array<{ effort?: string }>
+  supports_parallel_tool_calls?: boolean
+  supports_reasoning_summaries?: boolean
+  support_verbosity?: boolean
+  default_verbosity?: string
+  default_reasoning_summary?: string
+  reasoning_summary_format?: string
+  prefer_websockets?: boolean
+  minimal_client_version?: string
+  context_window?: number
+  max_context_window?: number
+  effective_context_window_percent?: number
+  experimental_supported_tools?: unknown[]
+  additional_speed_tiers?: string[]
+  input_modalities?: string[]
+  truncation_policy?: Record<string, unknown>
+  supports_image_detail_original?: boolean
+  apply_patch_tool_type?: string
+  web_search_tool_type?: string
+  shell_type?: string
+  supports_search_tool?: boolean
+}
+
 type CodexOfficialModelsFile = {
-  models?: Array<Record<string, unknown> & {
-    slug?: string
-    display_name?: string
-    description?: string
-    visibility?: string
-    supported_in_api?: boolean
-    default_reasoning_level?: string
-    supported_reasoning_levels?: Array<{ effort?: string }>
-    supports_parallel_tool_calls?: boolean
-    supports_reasoning_summaries?: boolean
-    support_verbosity?: boolean
-    default_verbosity?: string
-    default_reasoning_summary?: string
-    reasoning_summary_format?: string
-    prefer_websockets?: boolean
-    minimal_client_version?: string
-    context_window?: number
-    max_context_window?: number
-    effective_context_window_percent?: number
-    experimental_supported_tools?: unknown[]
-    additional_speed_tiers?: string[]
-    input_modalities?: string[]
-    truncation_policy?: Record<string, unknown>
-    supports_image_detail_original?: boolean
-    apply_patch_tool_type?: string
-    web_search_tool_type?: string
-    shell_type?: string
-    supports_search_tool?: boolean
-  }>
+  models?: CodexOfficialModelRecord[]
 }
 
 const OFFICIAL_CODEX_REASONING_LEVELS = [
@@ -1620,8 +1622,13 @@ async function loadCodexModelCatalog(): Promise<CodexModelCatalogEntry[]> {
   if (modelsFilePath && existsSync(modelsFilePath)) {
     try {
       const raw = await readFile(modelsFilePath, "utf8")
-      const parsed = JSON.parse(raw) as CodexOfficialModelsFile
-      const mapped = (parsed.models ?? [])
+      const parsed = JSON.parse(raw) as CodexOfficialModelsFile | CodexOfficialModelRecord[]
+      const officialModels = Array.isArray(parsed)
+        ? parsed
+        : parsed && typeof parsed === "object" && Array.isArray(parsed.models)
+          ? parsed.models
+          : []
+      const mapped = officialModels
         .filter((model) => model && model.supported_in_api !== false)
         .map((model) => {
           const id = extractModelID(model.slug)
@@ -1822,7 +1829,7 @@ function resolveDefaultChatModelId() {
 
 function buildChatModelsResponsePayload() {
   return {
-    models: resolveChatModelCatalog(),
+    ...resolveModelCatalogForCodexMode(),
     defaultModelId: resolveDefaultChatModelId(),
   }
 }
@@ -9913,6 +9920,7 @@ app.get("/api/providers", () =>
 registerModelsRoutes(app, {
   resolveChatModelList,
   resolveDefaultChatModelId,
+  resolveChatModelsPayload: buildChatModelsResponsePayload,
   resolveVirtualKeyContext,
   ensureResolvedPoolAccountConsistent,
   behaviorController,
@@ -9973,6 +9981,10 @@ registerVirtualKeysRoutes(app, {
   getCachedPoolConsistencyResult,
   hasSensitiveActionConfirmation,
   errorMessage,
+  resolveCodexModelCatalogPayload: (fixedModelId) =>
+    buildModelCatalogPayload({
+      ids: fixedModelId ? [fixedModelId] : [...DEFAULT_CHAT_MODELS],
+    }),
   setCodexOAuthBridgeBinding,
 })
 

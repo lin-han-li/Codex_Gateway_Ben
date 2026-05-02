@@ -4220,6 +4220,7 @@
             unpricedRequestCount: 0,
           },
           models: [],
+          modelCatalogModels: [],
           defaultModelId: "gpt-5.5",
           logs: [],
           recentFailovers: [],
@@ -7784,13 +7785,35 @@
         "gpt-5.2": buildCodexGatewayModelInfo("gpt-5.2", "GPT-5.2", 10, "medium", []),
       };
 
+      function extractCodexGatewayModelCatalogEntryId(item) {
+        return String(item?.id || item?.slug || item?.model || "").trim();
+      }
+
+      function cloneCodexGatewayModelCatalogEntries(entries) {
+        return (Array.isArray(entries) ? entries : [])
+          .filter((item) => item && typeof item === "object")
+          .map((item) => JSON.parse(JSON.stringify(item)));
+      }
+
       function buildCodexGatewayModelCatalog(row) {
         const fixedModel = String(row?.fixedModel || row?.fixed_model || "").trim();
+        const dynamicCatalog = Array.isArray(S.modelCatalogModels) ? S.modelCatalogModels : [];
+        if (dynamicCatalog.length > 0) {
+          const filtered = fixedModel
+            ? dynamicCatalog.filter((item) => extractCodexGatewayModelCatalogEntryId(item) === fixedModel)
+            : dynamicCatalog;
+          const cloned = cloneCodexGatewayModelCatalogEntries(filtered);
+          if (cloned.length > 0) {
+            return { object: "list", data: cloned, models: cloned };
+          }
+        }
         if (fixedModel) {
           const known = CODEX_GATEWAY_MODEL_CATALOG[fixedModel];
-          return { models: [known || buildCodexGatewayModelInfo(fixedModel, fixedModel, 0, "medium", [])] };
+          const fallbackModel = known || buildCodexGatewayModelInfo(fixedModel, fixedModel, 0, "medium", []);
+          return { object: "list", data: [fallbackModel], models: [fallbackModel] };
         }
-        return { models: Object.values(CODEX_GATEWAY_MODEL_CATALOG) };
+        const fallbackModels = Object.values(CODEX_GATEWAY_MODEL_CATALOG);
+        return { object: "list", data: fallbackModels, models: fallbackModels };
       }
 
       function buildCodexModelCatalogPowerShellLines(row) {
@@ -9187,7 +9210,13 @@
 
       async function loadModels() {
         const output = await api("/api/chat/models");
-        const models = Array.isArray(output?.models) ? output.models.map((item) => normalizeChatModelOption(item)).filter(Boolean) : [];
+        const rawModels = Array.isArray(output?.models)
+          ? output.models.filter((item) => item && typeof item === "object")
+          : Array.isArray(output?.data)
+            ? output.data.filter((item) => item && typeof item === "object")
+            : [];
+        S.modelCatalogModels = rawModels.map((item) => ({ ...item }));
+        const models = rawModels.map((item) => normalizeChatModelOption(item)).filter(Boolean);
         S.models = models;
         S.defaultModelId = String(output?.defaultModelId || models[0]?.id || "gpt-5.5");
         fillTestSelectors();

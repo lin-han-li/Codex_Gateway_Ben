@@ -3,6 +3,7 @@ import type { Hono } from "hono"
 export type ModelsRouteDeps = {
   resolveChatModelList: () => Array<Record<string, unknown>>
   resolveDefaultChatModelId?: () => string
+  resolveChatModelsPayload?: () => Record<string, unknown>
   resolveVirtualKeyContext: (
     c: any,
     options?: {
@@ -109,6 +110,16 @@ function filterCursorCatalogToFixedModel(payload: any, fixedModelId: string) {
 
 export function registerModelsRoutes(app: Hono, deps: ModelsRouteDeps) {
   app.get("/api/chat/models", (c) => {
+    const payload = deps.resolveChatModelsPayload?.()
+    if (payload && typeof payload === "object") {
+      return c.json({
+        ...payload,
+        defaultModelId:
+          typeof payload.defaultModelId === "string" && payload.defaultModelId.trim()
+            ? payload.defaultModelId
+            : deps.resolveDefaultChatModelId?.() ?? null,
+      })
+    }
     const models = deps.resolveChatModelList()
     return c.json({
       models,
