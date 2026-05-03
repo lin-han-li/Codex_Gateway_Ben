@@ -21,6 +21,17 @@ export type CodexAppRestartResult = {
   stderr?: string
 }
 
+export type CodexAppControlResult = {
+  status: "skipped" | "completed" | "failed"
+  message?: string
+  appId?: string | null
+  closed?: number
+  forced?: number
+  started?: boolean
+  remaining?: number
+  stderr?: string
+}
+
 export type CodexLocalAuthWriteResult = {
   codexHome: string
   authPath: string
@@ -201,13 +212,26 @@ function skippedRestart(message: string): CodexAppRestartResult {
   }
 }
 
-export function restartOfficialCodexApp(): CodexAppRestartResult {
+function skippedControl(message: string): CodexAppControlResult {
+  return {
+    status: "skipped",
+    message,
+    appId: null,
+    closed: 0,
+    forced: 0,
+    started: false,
+    remaining: 0,
+  }
+}
+
+function controlOfficialCodexApp(action: "stop" | "start" | "restart"): CodexAppControlResult {
   if (process.platform !== "win32") {
-    return skippedRestart("Codex App restart is only implemented on Windows")
+    return skippedControl("Codex App control is only implemented on Windows")
   }
 
   const script = `
 $ErrorActionPreference = 'Stop'
+$action = '${action}'
 $result = [ordered]@{
   status = 'skipped'
   message = ''
@@ -215,6 +239,7 @@ $result = [ordered]@{
   closed = 0
   forced = 0
   started = $false
+  remaining = 0
 }
 try {
   $pkg = Get-AppxPackage -Name OpenAI.Codex -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -225,40 +250,60 @@ try {
     if ($startApp) { $result.appId = $startApp.AppID }
   }
 
-  $targets = @(Get-Process -Name Codex -ErrorAction SilentlyContinue | Where-Object {
-    $_.MainWindowHandle -ne 0 -and (
-      ($_.Path -like '*WindowsApps*OpenAI.Codex*') -or
-      ($_.MainWindowTitle -eq 'Codex')
-    )
-  })
-
-  foreach ($p in $targets) {
-    try {
-      if ($p.CloseMainWindow()) { $result.closed += 1 }
-    } catch {}
+  function Get-CodexTargets {
+    @(Get-Process -ErrorAction SilentlyContinue | Where-Object {
+      ($_.ProcessName -in @('Codex', 'codex')) -and (
+        ($_.Path -like '*WindowsApps*OpenAI.Codex*') -or
+        ($_.MainWindowTitle -eq 'Codex')
+      )
+    })
   }
 
-  foreach ($p in $targets) {
-    try { Wait-Process -Id $p.Id -Timeout 12 -ErrorAction SilentlyContinue } catch {}
-  }
+  if ($action -in @('stop', 'restart')) {
+    $targets = @(Get-CodexTargets)
+    foreach ($p in $targets) {
+      try {
+        if ($p.MainWindowHandle -ne 0 -and $p.CloseMainWindow()) { $result.closed += 1 }
+      } catch {}
+    }
 
-  foreach ($p in $targets) {
-    try {
-      $alive = Get-Process -Id $p.Id -ErrorAction SilentlyContinue
-      if ($alive -and $p.Path -like '*WindowsApps*OpenAI.Codex*') {
+    Start-Sleep -Milliseconds 800
+    foreach ($p in $targets) {
+      try { Wait-Process -Id $p.Id -Timeout 8 -ErrorAction SilentlyContinue } catch {}
+    }
+
+    $remaining = @(Get-CodexTargets)
+    foreach ($p in $remaining) {
+      try {
         Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
         $result.forced += 1
-      }
-    } catch {}
+      } catch {}
+    }
+
+    Start-Sleep -Milliseconds 400
+    $remaining = @(Get-CodexTargets)
+    $result.remaining = $remaining.Count
+    if ($result.remaining -gt 0) {
+      $result.status = 'failed'
+      $result.message = 'Official Codex background processes are still running'
+      $result | ConvertTo-Json -Compress
+      exit 1
+    }
   }
 
-  if ($result.appId) {
-    Start-Process explorer.exe "shell:AppsFolder\\$($result.appId)"
-    $result.status = 'restarted'
-    $result.started = $true
-    $result.message = 'Official Codex App restarted'
+  if ($action -in @('start', 'restart')) {
+    if ($result.appId) {
+      Start-Process explorer.exe "shell:AppsFolder\\$($result.appId)"
+      $result.started = $true
+      $result.status = 'completed'
+      $result.message = 'Official Codex App started'
+    } else {
+      $result.status = 'failed'
+      $result.message = 'Official Codex App was not found'
+    }
   } else {
-    $result.message = 'Official Codex App was not found'
+    $result.status = 'completed'
+    $result.message = 'Official Codex App stopped'
   }
 } catch {
   $result.status = 'failed'
@@ -282,14 +327,15 @@ $result | ConvertTo-Json -Compress
     }
   }
   try {
-    const parsed = JSON.parse(stdout || "{}") as CodexAppRestartResult
+    const parsed = JSON.parse(stdout || "{}") as CodexAppControlResult
     return {
-      status: parsed.status === "restarted" || parsed.status === "failed" ? parsed.status : "skipped",
+      status: parsed.status === "completed" || parsed.status === "failed" ? parsed.status : "skipped",
       message: normalizeNonEmpty(parsed.message) || (child.status === 0 ? undefined : `PowerShell exited with ${child.status}`),
       appId: parsed.appId ?? null,
       closed: Number(parsed.closed ?? 0),
       forced: Number(parsed.forced ?? 0),
       started: Boolean(parsed.started),
+      remaining: Number(parsed.remaining ?? 0),
       stderr: stderr || undefined,
     }
   } catch {
@@ -298,5 +344,26 @@ $result | ConvertTo-Json -Compress
       message: stdout || `PowerShell exited with ${child.status}`,
       stderr,
     }
+  }
+}
+
+export function shutdownOfficialCodexApp(): CodexAppControlResult {
+  return controlOfficialCodexApp("stop")
+}
+
+export function launchOfficialCodexApp(): CodexAppControlResult {
+  return controlOfficialCodexApp("start")
+}
+
+export function restartOfficialCodexApp(): CodexAppRestartResult {
+  const result = controlOfficialCodexApp("restart")
+  return {
+    status: result.status === "completed" ? "restarted" : result.status,
+    message: result.message,
+    appId: result.appId ?? null,
+    closed: Number(result.closed ?? 0),
+    forced: Number(result.forced ?? 0),
+    started: Boolean(result.started),
+    stderr: result.stderr,
   }
 }

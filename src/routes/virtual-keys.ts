@@ -3,7 +3,7 @@ import { Database } from "bun:sqlite"
 import os from "node:os"
 import path from "node:path"
 import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises"
-import { restartOfficialCodexApp } from "../codex-local-auth"
+import { launchOfficialCodexApp, shutdownOfficialCodexApp } from "../codex-local-auth"
 import { loadCodexInstructionsText } from "../codex-version"
 
 const CODEX_GATEWAY_BASE_INSTRUCTIONS =
@@ -305,7 +305,6 @@ async function backupFileIfPresent(filePath: string, stamp: string) {
 async function resetCodexGatewayThreadSandboxState(codexHome: string) {
   const statePath = path.join(codexHome, "state_5.sqlite")
   const stamp = `${timestampForFilename()}.${process.pid}`
-  const cwd = normalizeFsPathForCompare(process.cwd())
   try {
     try {
       await readFile(statePath)
@@ -325,7 +324,6 @@ async function resetCodexGatewayThreadSandboxState(codexHome: string) {
         approval_mode: string
       }>
       const ids = rows
-        .filter((row) => normalizeFsPathForCompare(String(row.cwd ?? "")) === cwd)
         .filter((row) => row.sandbox_policy !== CODEX_GATEWAY_WORKSPACE_WRITE_POLICY || row.approval_mode !== "on-request")
         .map((row) => String(row.id))
         .filter(Boolean)
@@ -482,6 +480,11 @@ async function writeCodexGatewayConfigForVirtualKey(input: {
   const modelCatalogJson = `${JSON.stringify(modelCatalog, null, 2)}\n`
   await writeFile(modelCatalogPath, modelCatalogJson, "utf8")
 
+  const appShutdown = input.restartCodexApp === false ? null : shutdownOfficialCodexApp()
+  if (appShutdown?.status === "failed") {
+    throw new Error(appShutdown.message || "Failed to stop Official Codex App before applying key mode")
+  }
+
   const existingConfig = setWindowsSandboxMode(withoutGatewayManagedConfigLines(await readTextIfExists(configPath)), "unelevated")
   const configHeader = [
     'cli_auth_credentials_store = "file"',
@@ -497,7 +500,19 @@ async function writeCodexGatewayConfigForVirtualKey(input: {
     resetCodexGlobalAgentMode(codexHome),
   ])
 
-  const appRestart = input.restartCodexApp === false ? null : restartOfficialCodexApp()
+  const appLaunch = input.restartCodexApp === false ? null : launchOfficialCodexApp()
+  const appRestart =
+    input.restartCodexApp === false
+      ? null
+      : {
+          status: appLaunch?.status === "failed" ? "failed" : "restarted",
+          message: appLaunch?.message,
+          appId: appLaunch?.appId ?? appShutdown?.appId ?? null,
+          closed: Number(appShutdown?.closed ?? 0),
+          forced: Number(appShutdown?.forced ?? 0),
+          started: Boolean(appLaunch?.started),
+          stderr: [appShutdown?.stderr, appLaunch?.stderr].filter(Boolean).join(" | ") || undefined,
+        }
   return {
     codexHome,
     configPath,
