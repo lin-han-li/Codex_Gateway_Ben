@@ -38,6 +38,10 @@ type ChatModelsResponse = {
 type ConfigureCodexResponse = {
   success?: boolean
   modelCatalogPath?: string | null
+  modelsCachePath?: string | null
+  backups?: {
+    modelsCachePath?: string | null
+  }
 }
 
 function assertCondition(condition: unknown, message: string): asserts condition {
@@ -186,6 +190,46 @@ async function main() {
       },
     })}
 `,
+    "utf8",
+  )
+  const modelsCachePath = path.join(codexHome, "models_cache.json")
+  await writeFile(
+    modelsCachePath,
+    `${JSON.stringify(
+      {
+        fetched_at: new Date().toISOString(),
+        etag: 'W/"stale-no-fast"',
+        client_version: "0.128.0",
+        models: [
+          {
+            slug: "gpt-5.4",
+            display_name: "gpt-5.4",
+            description: "stale cached model without fast",
+            default_reasoning_level: "medium",
+            supported_reasoning_levels: [{ effort: "medium" }],
+            shell_type: "shell_command",
+            visibility: "list",
+            supported_in_api: true,
+            priority: 0,
+            additional_speed_tiers: [],
+            base_instructions: "cached",
+            supports_reasoning_summaries: true,
+            default_reasoning_summary: "none",
+            support_verbosity: true,
+            default_verbosity: "low",
+            truncation_policy: { mode: "tokens", limit: 10000 },
+            supports_parallel_tool_calls: true,
+            context_window: 272000,
+            max_context_window: 272000,
+            effective_context_window_percent: 95,
+            experimental_supported_tools: [],
+            input_modalities: ["text"],
+          },
+        ],
+      },
+      null,
+      2,
+    )}\n`,
     "utf8",
   )
   const stateDbPath = path.join(codexHome, "state_5.sqlite")
@@ -440,6 +484,15 @@ async function main() {
     assertCondition(
       !configured.modelCatalogPath,
       "configure-codex should not return a local model catalog path after switching to gateway /v1/models",
+    )
+    assertCondition(configured.modelsCachePath === modelsCachePath, "configure-codex should report the models cache path")
+    assertCondition(
+      !(await Bun.file(modelsCachePath).exists()),
+      "configure-codex should clear stale Codex models_cache.json so fast-capable gateway models can be fetched",
+    )
+    assertCondition(
+      configured.backups?.modelsCachePath && (await Bun.file(configured.backups.modelsCachePath).exists()),
+      "configure-codex should backup stale models_cache.json before clearing it",
     )
 
     await Bun.sleep(250)

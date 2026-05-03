@@ -1,7 +1,7 @@
 import type { Hono } from "hono"
 import os from "node:os"
 import path from "node:path"
-import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises"
+import { copyFile, mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import { launchOfficialCodexApp, shutdownOfficialCodexApp } from "../codex-local-auth"
 
 function timestampForFilename() {
@@ -46,6 +46,13 @@ async function backupFileIfExists(filePath: string, stamp: string) {
   const parsed = path.parse(filePath)
   const backupPath = path.join(parsed.dir, `${parsed.name}.backup.${stamp}${parsed.ext}`)
   await copyFile(filePath, backupPath)
+  return backupPath
+}
+
+async function backupAndRemoveFileIfExists(filePath: string, stamp: string) {
+  const backupPath = await backupFileIfExists(filePath, stamp)
+  if (!backupPath) return null
+  await rm(filePath, { force: true })
   return backupPath
 }
 
@@ -164,6 +171,7 @@ async function writeCodexGatewayConfigForVirtualKey(input: {
   const stamp = `${timestampForFilename()}.${process.pid}`
   const configPath = path.join(codexHome, "config.toml")
   const authPath = path.join(codexHome, "auth.json")
+  const modelsCachePath = path.join(codexHome, "models_cache.json")
   const configBackupPath = await backupFileIfExists(configPath, stamp)
 
   const appShutdown = input.restartCodexApp === false ? null : shutdownOfficialCodexApp()
@@ -180,6 +188,7 @@ async function writeCodexGatewayConfigForVirtualKey(input: {
   ].join("\n")
   const nextConfig = ensureFastModeFeature(existingConfig ? `${configHeader}\n${existingConfig}` : `${configHeader}\n`)
   await writeFile(configPath, nextConfig, "utf8")
+  const modelsCacheBackupPath = await backupAndRemoveFileIfExists(modelsCachePath, stamp)
   const threadSandboxReset = preserveCodexState(path.join(codexHome, "state_5.sqlite"), "thread")
   const globalAgentModeReset = preserveCodexState(path.join(codexHome, ".codex-global-state.json"), "global")
 
@@ -201,10 +210,12 @@ async function writeCodexGatewayConfigForVirtualKey(input: {
     configPath,
     authPath,
     modelCatalogPath: null,
+    modelsCachePath,
     backups: {
       configPath: configBackupPath,
       authPath: null,
       modelCatalogPath: null,
+      modelsCachePath: modelsCacheBackupPath,
     },
     threadSandboxReset,
     globalAgentModeReset,
