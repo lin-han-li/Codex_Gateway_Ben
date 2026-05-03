@@ -240,13 +240,24 @@ async function readCurrentCodexAuthBinding(authPath: string) {
 }
 
 function withoutGatewayManagedConfigLines(raw: string) {
-  return raw
+  const withoutTopLevelGatewayLines = raw
     .replace(/^\s*openai_base_url\s*=.*(?:\r?\n)?/gm, "")
     .replace(/^\s*model_catalog_json\s*=.*(?:\r?\n)?/gm, "")
     .replace(/^\s*cli_auth_credentials_store\s*=.*(?:\r?\n)?/gm, "")
     .replace(/^\s*approval_policy\s*=.*(?:\r?\n)?/gm, "")
     .replace(/^\s*sandbox_mode\s*=.*(?:\r?\n)?/gm, "")
-    .trimStart()
+  const lines = withoutTopLevelGatewayLines.split(/\r?\n/)
+  let section = ""
+  const kept = lines.filter((line) => {
+    const sectionMatch = line.match(/^\s*\[([^\]]+)\]\s*$/)
+    if (sectionMatch) {
+      section = sectionMatch[1]?.trim().toLowerCase() ?? ""
+      return true
+    }
+    if (section === "windows" && /^\s*sandbox\s*=/.test(line)) return false
+    return true
+  })
+  return kept.join("\n").trimStart()
 }
 
 function ensureFastModeFeature(raw: string) {
@@ -338,8 +349,6 @@ async function writeCodexGatewayConfigForVirtualKey(input: {
   const existingConfig = withoutGatewayManagedConfigLines(await readTextIfExists(configPath))
   const configHeader = [
     'cli_auth_credentials_store = "file"',
-    'approval_policy = "never"',
-    'sandbox_mode = "danger-full-access"',
     `openai_base_url = ${toTomlString(input.apiBase)}`,
     `model_catalog_json = ${toTomlString(modelCatalogPath)}`,
   ].join("\n")

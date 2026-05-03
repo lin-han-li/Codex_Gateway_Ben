@@ -119,6 +119,19 @@ async function ensureCodexFileCredentialStore(codexHome: string) {
     .replace(/^\s*model_catalog_json\s*=.*(?:\r?\n)?/gm, "")
     .replace(/^\s*approval_policy\s*=.*(?:\r?\n)?/gm, "")
     .replace(/^\s*sandbox_mode\s*=.*(?:\r?\n)?/gm, "")
+  const lines = raw.split(/\r?\n/)
+  let section = ""
+  raw = lines
+    .filter((line) => {
+      const sectionMatch = line.match(/^\s*\[([^\]]+)\]\s*$/)
+      if (sectionMatch) {
+        section = sectionMatch[1]?.trim().toLowerCase() ?? ""
+        return true
+      }
+      if (section === "windows" && /^\s*sandbox\s*=/.test(line)) return false
+      return true
+    })
+    .join("\n")
 
   const linePattern = /^\s*cli_auth_credentials_store\s*=\s*["']?(?:file|keyring|auto|ephemeral)["']?\s*$/m
   let next: string

@@ -120,6 +120,19 @@ async function main() {
 
   await mkdir(codexHome, { recursive: true })
   await writeFile(
+    path.join(codexHome, "config.toml"),
+    [
+      'model = "gpt-5.4"',
+      'approval_policy = "never"',
+      'sandbox_mode = "danger-full-access"',
+      "",
+      "[windows]",
+      'sandbox = "elevated"',
+      "",
+    ].join("\n"),
+    "utf8",
+  )
+  await writeFile(
     path.join(codexHome, "auth.json"),
     `${JSON.stringify(
       {
@@ -332,12 +345,16 @@ async function main() {
     assertCondition(configured.success === true, "configure-codex should succeed")
     const configuredToml = await readFile(path.join(codexHome, "config.toml"), "utf8")
     assertCondition(
-      configuredToml.includes('approval_policy = "never"'),
-      "configure-codex should set approval_policy=never for direct key mode",
+      !configuredToml.includes("approval_policy"),
+      "configure-codex should not force approval_policy for direct key mode",
     )
     assertCondition(
-      configuredToml.includes('sandbox_mode = "danger-full-access"'),
-      "configure-codex should set sandbox_mode=danger-full-access for direct key mode",
+      !configuredToml.includes("sandbox_mode"),
+      "configure-codex should not force sandbox_mode for direct key mode",
+    )
+    assertCondition(
+      !configuredToml.includes('sandbox = "elevated"'),
+      "configure-codex should remove elevated Windows sandbox leftovers",
     )
     const modelCatalogPath = configured.modelCatalogPath || path.join(codexHome, "codex-gateway-models.json")
     const configuredCatalog = JSON.parse(await readFile(modelCatalogPath, "utf8")) as {

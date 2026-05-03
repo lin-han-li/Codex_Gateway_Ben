@@ -7829,7 +7829,7 @@
           "$modelCatalogLine = 'model_catalog_json = \"' + $modelCatalogTomlPath + '\"'",
           "$cfg = [System.Text.RegularExpressions.Regex]::Replace($cfg, '(?m)^[ \\t]*model_catalog_json\\s*=.*(?:\\r?\\n)?', '')",
           "$cfg = $cfg.TrimStart(\"`r\", \"`n\")",
-          "$gatewayConfigHeader = $credentialStoreLine + [Environment]::NewLine + $approvalPolicyLine + [Environment]::NewLine + $sandboxModeLine + [Environment]::NewLine + $cfgLine + [Environment]::NewLine + $modelCatalogLine + [Environment]::NewLine",
+          "$gatewayConfigHeader = $credentialStoreLine + [Environment]::NewLine + $cfgLine + [Environment]::NewLine + $modelCatalogLine + [Environment]::NewLine",
           "if ([string]::IsNullOrWhiteSpace($cfg)) { $cfg = $gatewayConfigHeader } else { $cfg = $gatewayConfigHeader + $cfg }",
           "[System.IO.File]::WriteAllText($modelCatalogFile, $modelCatalogPayload + [Environment]::NewLine, $utf8NoBom)",
         ];
@@ -7867,6 +7867,19 @@
         ];
       }
 
+      function buildCodexRemoveGatewaySandboxPowerShellLines() {
+        return [
+          "$cfgLines = [System.Collections.Generic.List[string]]::new()",
+          "$cfgSection = ''",
+          "foreach ($line in ($cfg -split \"`r?`n\")) {",
+          "  if ($line -match '^\\s*\\[([^\\]]+)\\]\\s*$') { $cfgSection = $Matches[1].Trim().ToLowerInvariant(); [void]$cfgLines.Add($line); continue }",
+          "  if ($cfgSection -eq 'windows' -and $line -match '^\\s*sandbox\\s*=') { continue }",
+          "  [void]$cfgLines.Add($line)",
+          "}",
+          "$cfg = [string]::Join([Environment]::NewLine, $cfgLines)",
+        ];
+      }
+
       function buildBasicSetupPowerShell(key, apiBase, row = null) {
         const escapedKey = toPowerShellSingleQuoted(key);
         const escapedApiBase = toPowerShellSingleQuoted(apiBase);
@@ -7888,8 +7901,6 @@
           "if (Test-Path $configFile) { Copy-Item -Force $configFile $configBackup }",
           "if (Test-Path $authFile) { Copy-Item -Force $authFile $authBackup }",
           "$credentialStoreLine = 'cli_auth_credentials_store = \"file\"'",
-          "$approvalPolicyLine = 'approval_policy = \"never\"'",
-          "$sandboxModeLine = 'sandbox_mode = \"danger-full-access\"'",
           "$cfgLine = 'openai_base_url = \"' + $apiBase + '\"'",
           "$cfg = ''",
           "if (Test-Path $configFile) { $cfg = [System.IO.File]::ReadAllText($configFile) }",
@@ -7897,6 +7908,7 @@
           "$cfg = [System.Text.RegularExpressions.Regex]::Replace($cfg, '(?m)^[ \\t]*cli_auth_credentials_store\\s*=.*(?:\\r?\\n)?', '')",
           "$cfg = [System.Text.RegularExpressions.Regex]::Replace($cfg, '(?m)^[ \\t]*approval_policy\\s*=.*(?:\\r?\\n)?', '')",
           "$cfg = [System.Text.RegularExpressions.Regex]::Replace($cfg, '(?m)^[ \\t]*sandbox_mode\\s*=.*(?:\\r?\\n)?', '')",
+          ...buildCodexRemoveGatewaySandboxPowerShellLines(),
           "$utf8NoBom = New-Object System.Text.UTF8Encoding($false)",
           ...buildCodexRequireExistingChatGptAuthPowerShellLines(),
           ...buildCodexModelCatalogPowerShellLines(row),
@@ -7932,8 +7944,6 @@
           "if (Test-Path $configFile) { Copy-Item -Force $configFile $configBackup }",
           "if (Test-Path $authFile) { Copy-Item -Force $authFile $authBackup }",
           "$credentialStoreLine = 'cli_auth_credentials_store = \"file\"'",
-          "$approvalPolicyLine = 'approval_policy = \"never\"'",
-          "$sandboxModeLine = 'sandbox_mode = \"danger-full-access\"'",
           "$cfgLine = 'openai_base_url = \"' + $apiBase + '\"'",
           "$cfg = ''",
           "if (Test-Path $configFile) { $cfg = [System.IO.File]::ReadAllText($configFile) }",
@@ -7941,6 +7951,7 @@
           "$cfg = [System.Text.RegularExpressions.Regex]::Replace($cfg, '(?m)^[ \\t]*cli_auth_credentials_store\\s*=.*(?:\\r?\\n)?', '')",
           "$cfg = [System.Text.RegularExpressions.Regex]::Replace($cfg, '(?m)^[ \\t]*approval_policy\\s*=.*(?:\\r?\\n)?', '')",
           "$cfg = [System.Text.RegularExpressions.Regex]::Replace($cfg, '(?m)^[ \\t]*sandbox_mode\\s*=.*(?:\\r?\\n)?', '')",
+          ...buildCodexRemoveGatewaySandboxPowerShellLines(),
           "$gatewayHost = ''",
           "try { $uri = [Uri]$apiBase; if ($uri.Host) { $gatewayHost = $uri.Host } } catch {}",
           "$noProxyValues = New-Object 'System.Collections.Generic.List[string]'",
@@ -8175,8 +8186,6 @@
         }
         const configToml = [
           "# Official-style minimal config.toml (only endpoint replaced):",
-          'approval_policy = "never"',
-          'sandbox_mode = "danger-full-access"',
           `openai_base_url = ${toTomlString(apiBase)}`,
           "",
           "# Key is stored in ~/.codex/auth.json (apikey mode):",
@@ -10946,8 +10955,6 @@
 
           const configToml = [
             "# Official-style minimal config.toml (only endpoint replaced):",
-            'approval_policy = "never"',
-            'sandbox_mode = "danger-full-access"',
             `openai_base_url = ${toTomlString(apiBase)}`,
             "",
             "# Key is stored in ~/.codex/auth.json (apikey mode):",
