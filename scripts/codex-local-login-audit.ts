@@ -64,7 +64,7 @@ async function main() {
   const codexHome = path.join(tempRoot, ".codex")
   const oldAuth = JSON.stringify({ auth_mode: "apikey", OPENAI_API_KEY: "old-key" }, null, 2)
   const oldConfig =
-    'openai_base_url = "http://127.0.0.1:65260/v1"\nmodel_catalog_json = "C:\\\\Users\\\\test\\\\.codex\\\\codex-gateway-models.json"\nmodel = "gpt-5.4"\ncli_auth_credentials_store = "auto"\n'
+    'openai_base_url = "http://127.0.0.1:65260/v1"\nmodel_catalog_json = "C:\\\\Users\\\\test\\\\.codex\\\\codex-gateway-models.json"\napproval_policy = "never"\nsandbox_mode = "danger-full-access"\nmodel = "gpt-5.4"\ncli_auth_credentials_store = "auto"\n'
   const idTokenA = fakeJwt("a@example.com", "account-a", "plus")
   const idTokenB = fakeJwt("b@example.com", "account-b", "team")
   const accountA = makeAccount({
@@ -114,6 +114,8 @@ async function main() {
   assertCondition(config.includes('cli_auth_credentials_store = "file"'), "config should force file credential store")
   assertCondition(!config.includes("openai_base_url"), "local OAuth login should remove API base URL override")
   assertCondition(!config.includes("model_catalog_json"), "local OAuth login should remove gateway model catalog override")
+  assertCondition(!config.includes("approval_policy"), "local OAuth login should remove gateway approval policy override")
+  assertCondition(!config.includes("sandbox_mode"), "local OAuth login should remove gateway sandbox mode override")
 
   const second = await writeCodexLocalAuth({
     account: accountB,
