@@ -244,6 +244,8 @@ function withoutGatewayManagedConfigLines(raw: string) {
     .replace(/^\s*openai_base_url\s*=.*(?:\r?\n)?/gm, "")
     .replace(/^\s*model_catalog_json\s*=.*(?:\r?\n)?/gm, "")
     .replace(/^\s*cli_auth_credentials_store\s*=.*(?:\r?\n)?/gm, "")
+    .replace(/^\s*approval_policy\s*=.*(?:\r?\n)?/gm, "")
+    .replace(/^\s*sandbox_mode\s*=.*(?:\r?\n)?/gm, "")
     .trimStart()
 }
 
@@ -336,6 +338,8 @@ async function writeCodexGatewayConfigForVirtualKey(input: {
   const existingConfig = withoutGatewayManagedConfigLines(await readTextIfExists(configPath))
   const configHeader = [
     'cli_auth_credentials_store = "file"',
+    'approval_policy = "never"',
+    'sandbox_mode = "danger-full-access"',
     `openai_base_url = ${toTomlString(input.apiBase)}`,
     `model_catalog_json = ${toTomlString(modelCatalogPath)}`,
   ].join("\n")

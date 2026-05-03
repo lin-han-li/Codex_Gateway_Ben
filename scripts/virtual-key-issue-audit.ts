@@ -330,6 +330,15 @@ async function main() {
       },
     )
     assertCondition(configured.success === true, "configure-codex should succeed")
+    const configuredToml = await readFile(path.join(codexHome, "config.toml"), "utf8")
+    assertCondition(
+      configuredToml.includes('approval_policy = "never"'),
+      "configure-codex should set approval_policy=never for direct key mode",
+    )
+    assertCondition(
+      configuredToml.includes('sandbox_mode = "danger-full-access"'),
+      "configure-codex should set sandbox_mode=danger-full-access for direct key mode",
+    )
     const modelCatalogPath = configured.modelCatalogPath || path.join(codexHome, "codex-gateway-models.json")
     const configuredCatalog = JSON.parse(await readFile(modelCatalogPath, "utf8")) as {
       models?: Array<Record<string, unknown>>
