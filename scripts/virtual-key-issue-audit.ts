@@ -1,5 +1,6 @@
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import { spawn } from "node:child_process"
+import { Database } from "bun:sqlite"
 import net from "node:net"
 import os from "node:os"
 import path from "node:path"
@@ -148,6 +149,29 @@ async function main() {
     )}\n`,
     "utf8",
   )
+
+  await writeFile(
+    path.join(codexHome, ".codex-global-state.json"),
+    `${JSON.stringify({
+      "electron-persisted-atom-state": {
+        "agent-mode-by-host-id": { local: "full-access" },
+        "preferred-non-full-access-agent-mode-by-host-id": { local: "guardian-approvals" },
+        "skip-full-access-confirm": true,
+      },
+    })}
+`,
+    "utf8",
+  )
+  const stateDbPath = path.join(codexHome, "state_5.sqlite")
+  const stateDb = new Database(stateDbPath)
+  stateDb.run("create table threads (id text primary key, cwd text not null, sandbox_policy text not null, approval_mode text not null)")
+  stateDb.run("insert into threads (id, cwd, sandbox_policy, approval_mode) values (?, ?, ?, ?)", [
+    "thread-key-mode-audit",
+    process.cwd(),
+    '{"type":"danger-full-access"}',
+    "never",
+  ])
+  stateDb.close()
 
   const upstreamServer = Bun.serve({
     hostname: "127.0.0.1",
@@ -359,6 +383,30 @@ async function main() {
     assertCondition(
       configuredToml.includes('[windows]') && configuredToml.includes('sandbox = "unelevated"'),
       "configure-codex should switch key mode to unelevated Windows sandbox",
+    )
+    const configuredGlobalState = JSON.parse(await readFile(path.join(codexHome, ".codex-global-state.json"), "utf8"))
+    const configuredAtomState = configuredGlobalState["electron-persisted-atom-state"] || {}
+    assertCondition(
+      configuredAtomState["agent-mode-by-host-id"]?.local === "guardian-approvals",
+      "configure-codex should switch Codex App local agent mode away from full-access",
+    )
+    assertCondition(
+      configuredAtomState["skip-full-access-confirm"] !== true,
+      "configure-codex should clear skip-full-access-confirm so key mode does not force admin sandbox",
+    )
+    const configuredStateDb = new Database(stateDbPath, { readonly: true })
+    const configuredThread = configuredStateDb
+      .query("select sandbox_policy, approval_mode from threads where id = ?")
+      .get("thread-key-mode-audit") as { sandbox_policy: string; approval_mode: string } | null
+    configuredStateDb.close()
+    assertCondition(
+      configuredThread?.sandbox_policy ===
+        '{"type":"workspace-write","writable_roots":[],"network_access":false,"exclude_tmpdir_env_var":false,"exclude_slash_tmp":false}',
+      "configure-codex should reset existing Codex Gateway threads away from full-access sandbox",
+    )
+    assertCondition(
+      configuredThread?.approval_mode === "on-request",
+      "configure-codex should reset existing Codex Gateway threads to on-request approvals",
     )
     const modelCatalogPath = configured.modelCatalogPath || path.join(codexHome, "codex-gateway-models.json")
     const configuredCatalog = JSON.parse(await readFile(modelCatalogPath, "utf8")) as {

@@ -318,11 +318,15 @@ async function resetCodexGatewayThreadSandboxState(codexHome: string) {
 
     const db = new Database(statePath)
     try {
-      const rows = db
-        .query("select id, cwd, sandbox_policy from threads where sandbox_policy = ?")
-        .all('{"type":"danger-full-access"}') as Array<{ id: string; cwd: string; sandbox_policy: string }>
+      const rows = db.query("select id, cwd, sandbox_policy, approval_mode from threads").all() as Array<{
+        id: string
+        cwd: string
+        sandbox_policy: string
+        approval_mode: string
+      }>
       const ids = rows
         .filter((row) => normalizeFsPathForCompare(String(row.cwd ?? "")) === cwd)
+        .filter((row) => row.sandbox_policy !== CODEX_GATEWAY_WORKSPACE_WRITE_POLICY || row.approval_mode !== "on-request")
         .map((row) => String(row.id))
         .filter(Boolean)
       if (ids.length === 0) return { updated: 0, statePath }
@@ -339,6 +343,53 @@ async function resetCodexGatewayThreadSandboxState(codexHome: string) {
   } catch (error) {
     return {
       updated: 0,
+      statePath,
+      error: error instanceof Error ? error.message : String(error),
+    }
+  }
+}
+
+async function resetCodexGlobalAgentMode(codexHome: string) {
+  const statePath = path.join(codexHome, ".codex-global-state.json")
+  const stamp = `${timestampForFilename()}.${process.pid}`
+  try {
+    let raw = ""
+    try {
+      raw = await readFile(statePath, "utf8")
+    } catch {
+      return { updated: false, statePath, skipped: "global state file not found" }
+    }
+    let parsed: any
+    try {
+      parsed = JSON.parse(raw)
+    } catch {
+      return { updated: false, statePath, error: "global state file is not valid JSON" }
+    }
+    const atomState =
+      parsed && typeof parsed === "object"
+        ? ((parsed["electron-persisted-atom-state"] ??= {}) as Record<string, any>)
+        : null
+    if (!atomState) return { updated: false, statePath, error: "global state root is not an object" }
+
+    const currentModes = ((atomState["agent-mode-by-host-id"] ??= {}) as Record<string, string>)
+    const preferredModes = ((atomState["preferred-non-full-access-agent-mode-by-host-id"] ??= {}) as Record<string, string>)
+    const preferred = String(preferredModes.local || "guardian-approvals")
+    const previous = String(currentModes.local || "")
+    const previousSkipFullAccessConfirm = atomState["skip-full-access-confirm"]
+    currentModes.local = preferred
+    preferredModes.local = preferred
+    if (atomState["skip-full-access-confirm"] === true) atomState["skip-full-access-confirm"] = false
+
+    if (previous === currentModes.local && previousSkipFullAccessConfirm !== true) {
+      return { updated: false, statePath, mode: currentModes.local }
+    }
+
+    await backupFileIfPresent(statePath, stamp)
+    await writeFile(statePath, `${JSON.stringify(parsed)}\n`, "utf8")
+    return { updated: true, statePath, previousMode: previous || null, mode: currentModes.local }
+  } catch (error) {
+    return {
+      updated: false,
       statePath,
       error: error instanceof Error ? error.message : String(error),
     }
@@ -441,7 +492,10 @@ async function writeCodexGatewayConfigForVirtualKey(input: {
   ].join("\n")
   const nextConfig = ensureFastModeFeature(existingConfig ? `${configHeader}\n${existingConfig}` : `${configHeader}\n`)
   await writeFile(configPath, nextConfig, "utf8")
-  const threadSandboxReset = await resetCodexGatewayThreadSandboxState(codexHome)
+  const [threadSandboxReset, globalAgentModeReset] = await Promise.all([
+    resetCodexGatewayThreadSandboxState(codexHome),
+    resetCodexGlobalAgentMode(codexHome),
+  ])
 
   const appRestart = input.restartCodexApp === false ? null : restartOfficialCodexApp()
   return {
@@ -455,6 +509,7 @@ async function writeCodexGatewayConfigForVirtualKey(input: {
       modelCatalogPath: modelCatalogBackupPath,
     },
     threadSandboxReset,
+    globalAgentModeReset,
     appRestart,
     authPreserved: true,
   }
