@@ -116,7 +116,7 @@ async function main() {
   assertCondition(!config.includes("model_catalog_json"), "local OAuth login should remove gateway model catalog override")
   assertCondition(!config.includes("approval_policy"), "local OAuth login should remove gateway approval policy override")
   assertCondition(!config.includes("sandbox_mode"), "local OAuth login should remove gateway sandbox mode override")
-  assertCondition(!config.includes('sandbox = "elevated"'), "local OAuth login should remove elevated Windows sandbox override")
+  assertCondition(config.includes('sandbox = "elevated"'), "local OAuth login should preserve existing official Windows sandbox mode")
 
   const second = await writeCodexLocalAuth({
     account: accountB,

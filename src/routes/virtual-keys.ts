@@ -240,23 +240,39 @@ async function readCurrentCodexAuthBinding(authPath: string) {
 }
 
 function withoutGatewayManagedConfigLines(raw: string) {
-  const withoutTopLevelGatewayLines = raw
+  return raw
     .replace(/^\s*openai_base_url\s*=.*(?:\r?\n)?/gm, "")
     .replace(/^\s*model_catalog_json\s*=.*(?:\r?\n)?/gm, "")
     .replace(/^\s*cli_auth_credentials_store\s*=.*(?:\r?\n)?/gm, "")
     .replace(/^\s*approval_policy\s*=.*(?:\r?\n)?/gm, "")
     .replace(/^\s*sandbox_mode\s*=.*(?:\r?\n)?/gm, "")
-  const lines = withoutTopLevelGatewayLines.split(/\r?\n/)
+    .trimStart()
+}
+
+function setWindowsSandboxMode(raw: string, mode: "elevated" | "unelevated" | null) {
+  const lines = raw.split(/\r?\n/)
   let section = ""
-  const kept = lines.filter((line) => {
+  let windowsSectionIndex = -1
+  const kept: string[] = []
+  for (const line of lines) {
     const sectionMatch = line.match(/^\s*\[([^\]]+)\]\s*$/)
     if (sectionMatch) {
       section = sectionMatch[1]?.trim().toLowerCase() ?? ""
-      return true
+      if (section === "windows") windowsSectionIndex = kept.length
+      kept.push(line)
+      continue
     }
-    if (section === "windows" && /^\s*sandbox\s*=/.test(line)) return false
-    return true
-  })
+    if (section === "windows" && /^\s*sandbox\s*=/.test(line)) continue
+    kept.push(line)
+  }
+  if (mode) {
+    if (windowsSectionIndex >= 0) {
+      kept.splice(windowsSectionIndex + 1, 0, `sandbox = "${mode}"`)
+    } else {
+      if (kept.length > 0 && kept[kept.length - 1]?.trim()) kept.push("")
+      kept.push("[windows]", `sandbox = "${mode}"`)
+    }
+  }
   return kept.join("\n").trimStart()
 }
 
@@ -346,7 +362,7 @@ async function writeCodexGatewayConfigForVirtualKey(input: {
   const modelCatalogJson = `${JSON.stringify(modelCatalog, null, 2)}\n`
   await writeFile(modelCatalogPath, modelCatalogJson, "utf8")
 
-  const existingConfig = withoutGatewayManagedConfigLines(await readTextIfExists(configPath))
+  const existingConfig = setWindowsSandboxMode(withoutGatewayManagedConfigLines(await readTextIfExists(configPath)), "unelevated")
   const configHeader = [
     'cli_auth_credentials_store = "file"',
     `openai_base_url = ${toTomlString(input.apiBase)}`,

@@ -356,6 +356,10 @@ async function main() {
       !configuredToml.includes('sandbox = "elevated"'),
       "configure-codex should remove elevated Windows sandbox leftovers",
     )
+    assertCondition(
+      configuredToml.includes('[windows]') && configuredToml.includes('sandbox = "unelevated"'),
+      "configure-codex should switch key mode to unelevated Windows sandbox",
+    )
     const modelCatalogPath = configured.modelCatalogPath || path.join(codexHome, "codex-gateway-models.json")
     const configuredCatalog = JSON.parse(await readFile(modelCatalogPath, "utf8")) as {
       models?: Array<Record<string, unknown>>

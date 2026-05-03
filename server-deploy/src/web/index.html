@@ -7867,14 +7867,27 @@
         ];
       }
 
-      function buildCodexRemoveGatewaySandboxPowerShellLines() {
+      function buildCodexSetGatewaySandboxPowerShellLines() {
         return [
           "$cfgLines = [System.Collections.Generic.List[string]]::new()",
           "$cfgSection = ''",
+          "$windowsSectionIndex = -1",
           "foreach ($line in ($cfg -split \"`r?`n\")) {",
-          "  if ($line -match '^\\s*\\[([^\\]]+)\\]\\s*$') { $cfgSection = $Matches[1].Trim().ToLowerInvariant(); [void]$cfgLines.Add($line); continue }",
+          "  if ($line -match '^\\s*\\[([^\\]]+)\\]\\s*$') {",
+          "    $cfgSection = $Matches[1].Trim().ToLowerInvariant()",
+          "    if ($cfgSection -eq 'windows') { $windowsSectionIndex = $cfgLines.Count }",
+          "    [void]$cfgLines.Add($line)",
+          "    continue",
+          "  }",
           "  if ($cfgSection -eq 'windows' -and $line -match '^\\s*sandbox\\s*=') { continue }",
           "  [void]$cfgLines.Add($line)",
+          "}",
+          "if ($windowsSectionIndex -ge 0) {",
+          "  $cfgLines.Insert($windowsSectionIndex + 1, 'sandbox = \"unelevated\"')",
+          "} else {",
+          "  if ($cfgLines.Count -gt 0 -and -not [string]::IsNullOrWhiteSpace($cfgLines[$cfgLines.Count - 1])) { [void]$cfgLines.Add('') }",
+          "  [void]$cfgLines.Add('[windows]')",
+          "  [void]$cfgLines.Add('sandbox = \"unelevated\"')",
           "}",
           "$cfg = [string]::Join([Environment]::NewLine, $cfgLines)",
         ];
@@ -7908,7 +7921,7 @@
           "$cfg = [System.Text.RegularExpressions.Regex]::Replace($cfg, '(?m)^[ \\t]*cli_auth_credentials_store\\s*=.*(?:\\r?\\n)?', '')",
           "$cfg = [System.Text.RegularExpressions.Regex]::Replace($cfg, '(?m)^[ \\t]*approval_policy\\s*=.*(?:\\r?\\n)?', '')",
           "$cfg = [System.Text.RegularExpressions.Regex]::Replace($cfg, '(?m)^[ \\t]*sandbox_mode\\s*=.*(?:\\r?\\n)?', '')",
-          ...buildCodexRemoveGatewaySandboxPowerShellLines(),
+          ...buildCodexSetGatewaySandboxPowerShellLines(),
           "$utf8NoBom = New-Object System.Text.UTF8Encoding($false)",
           ...buildCodexRequireExistingChatGptAuthPowerShellLines(),
           ...buildCodexModelCatalogPowerShellLines(row),
@@ -7951,7 +7964,7 @@
           "$cfg = [System.Text.RegularExpressions.Regex]::Replace($cfg, '(?m)^[ \\t]*cli_auth_credentials_store\\s*=.*(?:\\r?\\n)?', '')",
           "$cfg = [System.Text.RegularExpressions.Regex]::Replace($cfg, '(?m)^[ \\t]*approval_policy\\s*=.*(?:\\r?\\n)?', '')",
           "$cfg = [System.Text.RegularExpressions.Regex]::Replace($cfg, '(?m)^[ \\t]*sandbox_mode\\s*=.*(?:\\r?\\n)?', '')",
-          ...buildCodexRemoveGatewaySandboxPowerShellLines(),
+          ...buildCodexSetGatewaySandboxPowerShellLines(),
           "$gatewayHost = ''",
           "try { $uri = [Uri]$apiBase; if ($uri.Host) { $gatewayHost = $uri.Host } } catch {}",
           "$noProxyValues = New-Object 'System.Collections.Generic.List[string]'",
@@ -8187,6 +8200,9 @@
         const configToml = [
           "# Official-style minimal config.toml (only endpoint replaced):",
           `openai_base_url = ${toTomlString(apiBase)}`,
+          "",
+          "[windows]",
+          'sandbox = "unelevated"',
           "",
           "# Key is stored in ~/.codex/auth.json (apikey mode):",
           `# OPENAI_API_KEY=${key}`,
@@ -10956,6 +10972,9 @@
           const configToml = [
             "# Official-style minimal config.toml (only endpoint replaced):",
             `openai_base_url = ${toTomlString(apiBase)}`,
+            "",
+            "[windows]",
+            'sandbox = "unelevated"',
             "",
             "# Key is stored in ~/.codex/auth.json (apikey mode):",
             `# OPENAI_API_KEY=${key}`,
