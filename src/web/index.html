@@ -7789,52 +7789,6 @@
         return String(item?.id || item?.slug || item?.model || "").trim();
       }
 
-      function cloneCodexGatewayModelCatalogEntries(entries) {
-        return (Array.isArray(entries) ? entries : [])
-          .filter((item) => item && typeof item === "object")
-          .map((item) => JSON.parse(JSON.stringify(item)));
-      }
-
-      function buildCodexGatewayModelCatalog(row) {
-        const fixedModel = String(row?.fixedModel || row?.fixed_model || "").trim();
-        const dynamicCatalog = Array.isArray(S.modelCatalogModels) ? S.modelCatalogModels : [];
-        if (dynamicCatalog.length > 0) {
-          const filtered = fixedModel
-            ? dynamicCatalog.filter((item) => extractCodexGatewayModelCatalogEntryId(item) === fixedModel)
-            : dynamicCatalog;
-          const cloned = cloneCodexGatewayModelCatalogEntries(filtered);
-          if (cloned.length > 0) {
-            return { object: "list", data: cloned, models: cloned };
-          }
-        }
-        if (fixedModel) {
-          const known = CODEX_GATEWAY_MODEL_CATALOG[fixedModel];
-          const fallbackModel = known || buildCodexGatewayModelInfo(fixedModel, fixedModel, 0, "medium", []);
-          return { object: "list", data: [fallbackModel], models: [fallbackModel] };
-        }
-        const fallbackModels = Object.values(CODEX_GATEWAY_MODEL_CATALOG);
-        return { object: "list", data: fallbackModels, models: fallbackModels };
-      }
-
-      function buildCodexModelCatalogPowerShellLines(row) {
-        const catalogJson = JSON.stringify(buildCodexGatewayModelCatalog(row), null, 2);
-        return [
-          "$modelCatalogFile = Join-Path $codexHome 'codex-gateway-models.json'",
-          "$modelCatalogBackup = Join-Path $codexHome ('codex-gateway-models.backup.' + $timestamp + '.json')",
-          "if (Test-Path $modelCatalogFile) { Copy-Item -Force $modelCatalogFile $modelCatalogBackup }",
-          "$modelCatalogPayload = @'",
-          catalogJson,
-          "'@",
-          "$modelCatalogTomlPath = $modelCatalogFile.Replace('\\', '\\\\').Replace('\"', '\\\"')",
-          "$modelCatalogLine = 'model_catalog_json = \"' + $modelCatalogTomlPath + '\"'",
-          "$cfg = [System.Text.RegularExpressions.Regex]::Replace($cfg, '(?m)^[ \\t]*model_catalog_json\\s*=.*(?:\\r?\\n)?', '')",
-          "$cfg = $cfg.TrimStart(\"`r\", \"`n\")",
-          "$gatewayConfigHeader = $credentialStoreLine + [Environment]::NewLine + $approvalPolicyLine + [Environment]::NewLine + $sandboxModeLine + [Environment]::NewLine + $cfgLine + [Environment]::NewLine + $modelCatalogLine + [Environment]::NewLine",
-          "if ([string]::IsNullOrWhiteSpace($cfg)) { $cfg = $gatewayConfigHeader } else { $cfg = $gatewayConfigHeader + $cfg }",
-          "[System.IO.File]::WriteAllText($modelCatalogFile, $modelCatalogPayload + [Environment]::NewLine, $utf8NoBom)",
-        ];
-      }
-
       function buildCodexFastModeFeaturePowerShellLines() {
         return [
           "$configLines = [System.Collections.Generic.List[string]]::new()",
@@ -7903,7 +7857,6 @@
           "$codexHome = Join-Path $env:USERPROFILE '.codex'",
           "$configFile = Join-Path $codexHome 'config.toml'",
           "$authFile = Join-Path $codexHome 'auth.json'",
-          "$modelCatalogFile = Join-Path $codexHome 'codex-gateway-models.json'",
           "$launcherFile = Join-Path $codexHome 'codex-gateway.cmd'",
           "$startMenuShortcut = Join-Path $env:APPDATA 'Microsoft\\Windows\\Start Menu\\Programs\\Codex Gateway.lnk'",
           "$desktopShortcut = Join-Path $env:USERPROFILE 'Desktop\\Codex Gateway.lnk'",
@@ -7926,14 +7879,15 @@
           ...buildCodexSetGatewaySandboxPowerShellLines(),
           "$utf8NoBom = New-Object System.Text.UTF8Encoding($false)",
           ...buildCodexRequireExistingChatGptAuthPowerShellLines(),
-          ...buildCodexModelCatalogPowerShellLines(row),
+          "$gatewayConfigHeader = $credentialStoreLine + [Environment]::NewLine + $approvalPolicyLine + [Environment]::NewLine + $sandboxModeLine + [Environment]::NewLine + $cfgLine + [Environment]::NewLine",
+          "$cfg = $cfg.TrimStart(\"`r\", \"`n\")",
+          "if ([string]::IsNullOrWhiteSpace($cfg)) { $cfg = $gatewayConfigHeader } else { $cfg = $gatewayConfigHeader + $cfg }",
           ...buildCodexFastModeFeaturePowerShellLines(),
           "[System.IO.File]::WriteAllText($configFile, $cfg, $utf8NoBom)",
           "foreach ($path in @($launcherFile, $startMenuShortcut, $desktopShortcut)) { if (Test-Path $path) { Remove-Item -Force $path -ErrorAction SilentlyContinue } }",
           "Write-Host '[OK] Updated official-style Codex files:'",
           "Write-Host ('  Config : ' + $configFile)",
           "Write-Host ('  Auth   : preserved existing Codex ChatGPT/OAuth login at ' + $authFile)",
-          "Write-Host ('  Models : ' + $modelCatalogFile)",
           "Write-Host '[OK] Removed any prior gateway-only launcher shortcuts for this user.'",
           "Write-Host '[INFO] Launch Codex normally from its original icon or command.'",
         ].join('\n');
@@ -7990,7 +7944,9 @@
           "$launcher = [string]::Join([Environment]::NewLine, $launcherLines)",
           "$utf8NoBom = New-Object System.Text.UTF8Encoding($false)",
           ...buildCodexRequireExistingChatGptAuthPowerShellLines(),
-          ...buildCodexModelCatalogPowerShellLines(row),
+          "$gatewayConfigHeader = $credentialStoreLine + [Environment]::NewLine + $approvalPolicyLine + [Environment]::NewLine + $sandboxModeLine + [Environment]::NewLine + $cfgLine + [Environment]::NewLine",
+          "$cfg = $cfg.TrimStart(\"`r\", \"`n\")",
+          "if ([string]::IsNullOrWhiteSpace($cfg)) { $cfg = $gatewayConfigHeader } else { $cfg = $gatewayConfigHeader + $cfg }",
           ...buildCodexFastModeFeaturePowerShellLines(),
           "[System.IO.File]::WriteAllText($configFile, $cfg, $utf8NoBom)",
           "[System.IO.File]::WriteAllText($launcherFile, $launcher, $utf8NoBom)",
@@ -8007,7 +7963,6 @@
           "Write-Host '[OK] Updated official-style Codex files:'",
           "Write-Host ('  Config : ' + $configFile)",
           "Write-Host ('  Auth   : preserved existing Codex ChatGPT/OAuth login at ' + $authFile)",
-          "Write-Host ('  Models : ' + $modelCatalogFile)",
           "Write-Host ('  Launcher: ' + $launcherFile)",
           "Write-Host ('  Start Menu Shortcut: ' + $startMenuShortcut)",
           "Write-Host ('  Desktop Shortcut   : ' + $desktopShortcut)",
@@ -8056,7 +8011,7 @@
           "  $utf8NoBom = New-Object System.Text.UTF8Encoding($false)",
           "  [System.IO.File]::WriteAllText($configFile, $cfg, $utf8NoBom)",
           "}",
-          "foreach ($path in @($launcherFile, $startMenuShortcut, $desktopShortcut, $modelCatalogFile)) { if (Test-Path $path) { Remove-Item -Force $path -ErrorAction SilentlyContinue } }",
+          "foreach ($path in @($launcherFile, $startMenuShortcut, $desktopShortcut)) { if (Test-Path $path) { Remove-Item -Force $path -ErrorAction SilentlyContinue } }",
           "foreach ($name in @('OPENAI_BASE_URL', 'OPENAI_API_BASE', 'OPENAI_API_KEY', 'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY')) {",
           "  Remove-ItemProperty -Path 'HKCU:\\Environment' -Name $name -ErrorAction SilentlyContinue",
           "}",
@@ -8201,19 +8156,24 @@
             "4. 若使用自定义模型，请从网关暴露的 Cursor 稳定模型中选择。",
           ].join("\n");
         }
-        const configToml = [
-          "# Official-style minimal config.toml (only endpoint replaced):",
-          'approval_policy = "on-request"',
-          'sandbox_mode = "workspace-write"',
-          `openai_base_url = ${toTomlString(apiBase)}`,
-          "",
-          "[windows]",
-          'sandbox = "unelevated"',
-          "",
-          "# Key is stored in ~/.codex/auth.json (apikey mode):",
-          `# OPENAI_API_KEY=${key}`,
-          `# Key: ${keyLabel}`,
-        ].join("\n");
+          const configToml = [
+            "# Official-style Codex Gateway config.toml:",
+            'cli_auth_credentials_store = "file"',
+            'approval_policy = "on-request"',
+            'sandbox_mode = "workspace-write"',
+            `openai_base_url = ${toTomlString(apiBase)}`,
+            `model = ${toTomlString(modelId)}`,
+            "",
+            "[features]",
+            "fast_mode = true",
+            "",
+            "[windows]",
+            'sandbox = "unelevated"',
+            "",
+            "# Key is stored in ~/.codex/auth.json (apikey mode):",
+            `# OPENAI_API_KEY=${key}`,
+            `# Key: ${keyLabel}`,
+          ].join("\n");
 
         if (mode === "config-cmd-basic") {
           return buildBasicConfigSwitchCmd(key, apiBase, row);
@@ -10976,10 +10936,15 @@
           }
 
           const configToml = [
-            "# Official-style minimal config.toml (only endpoint replaced):",
+            "# Official-style Codex Gateway config.toml:",
+            'cli_auth_credentials_store = "file"',
             'approval_policy = "on-request"',
             'sandbox_mode = "workspace-write"',
             `openai_base_url = ${toTomlString(apiBase)}`,
+            `model = ${toTomlString(modelId)}`,
+            "",
+            "[features]",
+            "fast_mode = true",
             "",
             "[windows]",
             'sandbox = "unelevated"',

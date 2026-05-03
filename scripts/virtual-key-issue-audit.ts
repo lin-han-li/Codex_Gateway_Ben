@@ -44,6 +44,11 @@ function assertCondition(condition: unknown, message: string): asserts condition
   if (!condition) throw new Error(message)
 }
 
+function buildFakeJwt(payload: Record<string, unknown>) {
+  const encode = (value: Record<string, unknown>) => Buffer.from(JSON.stringify(value)).toString("base64url")
+  return `${encode({ alg: "RS256", typ: "JWT" })}.${encode(payload)}.sig`
+}
+
 async function reserveFreePort() {
   return await new Promise<number>((resolve, reject) => {
     const server = net.createServer()
@@ -118,6 +123,27 @@ async function main() {
   const upstreamOrigin = `http://127.0.0.1:${upstreamPort}`
   const upstreamBase = `${upstreamOrigin}/v1`
   const capturedRequests: Array<{ path: string; token: string }> = []
+  const fakeAccessToken = buildFakeJwt({
+    sub: "user-key-issue-audit",
+    email: "codex-audit@example.com",
+    "https://api.openai.com/auth": {
+      chatgpt_account_id: "local-codex-account",
+      account_id: "local-codex-account",
+      chatgpt_user_id: "user-key-issue-audit",
+      user_id: "user-key-issue-audit",
+      organization_id: "local-codex-account",
+    },
+    "https://api.openai.com/profile": {
+      email: "codex-audit@example.com",
+    },
+  })
+  const fakeIdToken = buildFakeJwt({
+    sub: "auth0|codex-audit",
+    email: "codex-audit@example.com",
+    "https://api.openai.com/profile": {
+      email: "codex-audit@example.com",
+    },
+  })
 
   await mkdir(codexHome, { recursive: true })
   await writeFile(
@@ -139,8 +165,8 @@ async function main() {
       {
         auth_mode: "chatgpt",
         tokens: {
-          access_token: "local-codex-access",
-          id_token: "local-codex-id",
+          access_token: fakeAccessToken,
+          id_token: fakeIdToken,
           account_id: "local-codex-account",
         },
       },
@@ -384,15 +410,19 @@ async function main() {
       configuredToml.includes('[windows]') && configuredToml.includes('sandbox = "unelevated"'),
       "configure-codex should switch key mode to unelevated Windows sandbox",
     )
+    assertCondition(
+      !configuredToml.includes("model_catalog_json"),
+      "configure-codex should rely on gateway /v1/models instead of injecting local model_catalog_json",
+    )
     const configuredGlobalState = JSON.parse(await readFile(path.join(codexHome, ".codex-global-state.json"), "utf8"))
     const configuredAtomState = configuredGlobalState["electron-persisted-atom-state"] || {}
     assertCondition(
-      configuredAtomState["agent-mode-by-host-id"]?.local === "guardian-approvals",
-      "configure-codex should switch Codex App local agent mode away from full-access",
+      configuredAtomState["agent-mode-by-host-id"]?.local === "full-access",
+      "configure-codex should preserve existing Codex App local agent mode",
     )
     assertCondition(
-      configuredAtomState["skip-full-access-confirm"] !== true,
-      "configure-codex should clear skip-full-access-confirm so key mode does not force admin sandbox",
+      configuredAtomState["skip-full-access-confirm"] === true,
+      "configure-codex should preserve existing global sandbox flags",
     )
     const configuredStateDb = new Database(stateDbPath, { readonly: true })
     const configuredThread = configuredStateDb
@@ -400,48 +430,23 @@ async function main() {
       .get("thread-key-mode-audit") as { sandbox_policy: string; approval_mode: string } | null
     configuredStateDb.close()
     assertCondition(
-      configuredThread?.sandbox_policy ===
-        '{"type":"workspace-write","writable_roots":[],"network_access":false,"exclude_tmpdir_env_var":false,"exclude_slash_tmp":false}',
-      "configure-codex should reset existing Codex Gateway threads away from full-access sandbox",
+      configuredThread?.sandbox_policy === '{"type":"danger-full-access"}',
+      "configure-codex should preserve existing thread sandbox policy",
     )
     assertCondition(
-      configuredThread?.approval_mode === "on-request",
-      "configure-codex should reset existing Codex Gateway threads to on-request approvals",
-    )
-    const modelCatalogPath = configured.modelCatalogPath || path.join(codexHome, "codex-gateway-models.json")
-    const configuredCatalog = JSON.parse(await readFile(modelCatalogPath, "utf8")) as {
-      models?: Array<Record<string, unknown>>
-      data?: Array<Record<string, unknown>>
-    }
-    const configuredModels = Array.isArray(configuredCatalog.models)
-      ? configuredCatalog.models
-      : Array.isArray(configuredCatalog.data)
-        ? configuredCatalog.data
-        : []
-    const configuredGpt55 = configuredModels.find((item) => String(item?.id ?? item?.slug ?? "") === "gpt-5.5")
-    assertCondition(configuredGpt55, "configure-codex should write gpt-5.5 into codex-gateway-models.json")
-    assertCondition(
-      typeof configuredGpt55.base_instructions === "string" && String(configuredGpt55.base_instructions).trim().length > 0,
-      "configure-codex gpt-5.5 should preserve base_instructions",
+      configuredThread?.approval_mode === "never",
+      "configure-codex should preserve existing thread approval mode",
     )
     assertCondition(
-      String(configuredGpt55.availability_nux?.message || "").includes("GPT-5.5 is now available in Codex"),
-      "configure-codex gpt-5.5 should preserve availability_nux",
+      !configured.modelCatalogPath,
+      "configure-codex should not return a local model catalog path after switching to gateway /v1/models",
     )
-    assertCondition(
-      Array.isArray(configuredGpt55.additional_speed_tiers) &&
-        configuredGpt55.additional_speed_tiers.includes("fast"),
-      "configure-codex gpt-5.5 should preserve additional_speed_tiers",
-    )
-    assertCondition(
-      Array.isArray(configuredGpt55.available_in_plans) && configuredGpt55.available_in_plans.includes("free"),
-      "configure-codex gpt-5.5 should preserve available_in_plans",
-    )
+
     await Bun.sleep(250)
 
     const modelFetchCount = capturedRequests.filter((item) => item.path === "/v1/models").length
     if (modelFetchCount !== 0) {
-      findings.push(`virtual key issue should not force /v1/models probes actual=${modelFetchCount}`)
+      findings.push(`configure-codex should not force direct /v1/models probes during local key apply actual=${modelFetchCount}`)
     }
   } finally {
     await stopChildProcess(child)

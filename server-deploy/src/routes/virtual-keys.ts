@@ -1,166 +1,8 @@
 import type { Hono } from "hono"
-import { Database } from "bun:sqlite"
 import os from "node:os"
 import path from "node:path"
 import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises"
 import { launchOfficialCodexApp, shutdownOfficialCodexApp } from "../codex-local-auth"
-import { loadCodexInstructionsText } from "../codex-version"
-
-const CODEX_GATEWAY_BASE_INSTRUCTIONS =
-  (await loadCodexInstructionsText().catch(() => ({ content: "You are Codex, a coding agent based on GPT-5." }))).content ||
-  "You are Codex, a coding agent based on GPT-5."
-
-const CODEX_GATEWAY_REASONING_LEVELS = [
-  { effort: "low", description: "Fast responses with lighter reasoning" },
-  { effort: "medium", description: "Balances speed and reasoning depth for everyday tasks" },
-  { effort: "high", description: "Greater reasoning depth for complex problems" },
-  { effort: "xhigh", description: "Extra high reasoning depth for complex problems" },
-]
-
-const CODEX_GATEWAY_WORKSPACE_WRITE_POLICY = JSON.stringify({
-  type: "workspace-write",
-  writable_roots: [],
-  network_access: false,
-  exclude_tmpdir_env_var: false,
-  exclude_slash_tmp: false,
-})
-
-function buildCodexGatewayModelInfo(
-  id: string,
-  displayName: string,
-  priority: number,
-  defaultReasoningLevel: string,
-  additionalSpeedTiers: string[] = [],
-  overrides: Record<string, unknown> = {},
-) {
-  const model = {
-    slug: id,
-    id,
-    object: "model",
-    created: 0,
-    owned_by: "openai",
-    display_name: displayName,
-    displayName,
-    description: `${displayName} via Codex Gateway`,
-    default_reasoning_level: defaultReasoningLevel,
-    defaultReasoningEffort: defaultReasoningLevel,
-    supported_reasoning_levels: CODEX_GATEWAY_REASONING_LEVELS,
-    supportedReasoningEfforts: CODEX_GATEWAY_REASONING_LEVELS,
-    shell_type: "shell_command",
-    visibility: "list",
-    hidden: false,
-    supported_in_api: true,
-    priority,
-    additional_speed_tiers: additionalSpeedTiers,
-    additionalSpeedTiers,
-    availability_nux: null,
-    availabilityNux: null,
-    upgrade: null,
-    upgradeInfo: null,
-    base_instructions: CODEX_GATEWAY_BASE_INSTRUCTIONS,
-    supports_reasoning_summaries: true,
-    default_reasoning_summary: "none",
-    support_verbosity: true,
-    default_verbosity: "low",
-    reasoning_summary_format: "experimental",
-    minimal_client_version: "0.98.0",
-    apply_patch_tool_type: "freeform",
-    web_search_tool_type: "text_and_image",
-    truncation_policy: { mode: "tokens", limit: 10000 },
-    auto_compact_token_limit: null,
-    supports_parallel_tool_calls: true,
-    supports_image_detail_original: true,
-    context_window: 272000,
-    max_context_window: id === "gpt-5.4" ? 1000000 : 272000,
-    effective_context_window_percent: 95,
-    experimental_supported_tools: [],
-    input_modalities: ["text", "image"],
-    inputModalities: ["text", "image"],
-    supports_search_tool: true,
-    supportsPersonality: true,
-    isDefault: id === "gpt-5.5",
-    ...overrides,
-  }
-  const defaultEffort = String(model.default_reasoning_level || defaultReasoningLevel)
-  return {
-    ...model,
-    defaultReasoningEffort: defaultEffort,
-    hidden: String(model.visibility || "list").toLowerCase() === "hide",
-    additionalSpeedTiers: Array.isArray(model.additional_speed_tiers) ? model.additional_speed_tiers : additionalSpeedTiers,
-    inputModalities: Array.isArray(model.input_modalities) ? model.input_modalities : ["text", "image"],
-  }
-}
-
-const CODEX_GATEWAY_ALL_PLANS = [
-  "business",
-  "edu",
-  "education",
-  "enterprise",
-  "enterprise_cbp_usage_based",
-  "finserv",
-  "free",
-  "free_workspace",
-  "go",
-  "hc",
-  "k12",
-  "plus",
-  "pro",
-  "prolite",
-  "quorum",
-  "self_serve_business_usage_based",
-  "team",
-]
-
-const CODEX_GATEWAY_PAID_PLANS = CODEX_GATEWAY_ALL_PLANS.filter((plan) => plan !== "free" && plan !== "free_workspace" && plan !== "k12")
-
-const CODEX_GATEWAY_MODEL_CATALOG: Record<string, Record<string, unknown>> = {
-  "gpt-5.5": buildCodexGatewayModelInfo("gpt-5.5", "GPT-5.5", 0, "medium", ["fast"], {
-    description: "Frontier model for complex coding, research, and real-world work.",
-    minimal_client_version: "0.124.0",
-    available_in_plans: CODEX_GATEWAY_ALL_PLANS,
-  }),
-  "gpt-5.4": buildCodexGatewayModelInfo("gpt-5.4", "gpt-5.4", 2, "xhigh", ["fast"], {
-    description: "Strong model for everyday coding.",
-    max_context_window: 1000000,
-    available_in_plans: CODEX_GATEWAY_PAID_PLANS,
-  }),
-  "gpt-5.4-mini": buildCodexGatewayModelInfo("gpt-5.4-mini", "GPT-5.4-Mini", 4, "medium", [], {
-    description: "Small, fast, and cost-efficient model for simpler coding tasks.",
-    default_verbosity: "medium",
-    available_in_plans: CODEX_GATEWAY_ALL_PLANS,
-  }),
-  "gpt-5.3-codex": buildCodexGatewayModelInfo("gpt-5.3-codex", "gpt-5.3-codex", 6, "medium", [], {
-    description: "Coding-optimized model.",
-    web_search_tool_type: "text",
-    available_in_plans: CODEX_GATEWAY_PAID_PLANS,
-    upgrade: {
-      model: "gpt-5.4",
-      migration_markdown:
-        "Introducing GPT-5.4\n\nCodex just got an upgrade with GPT-5.4, our most capable model for professional work. It outperforms prior models while being more token efficient, with notable improvements on long-running tasks, tool calling, computer use, and frontend development.\n\nLearn more: https://openai.com/index/introducing-gpt-5-4\n\nYou can always keep using GPT-5.3-Codex if you prefer.\n",
-    },
-  }),
-  "gpt-5.2": buildCodexGatewayModelInfo("gpt-5.2", "gpt-5.2", 10, "medium", [], {
-    description: "Optimized for professional work and long-running agents.",
-    minimal_client_version: "0.0.1",
-    default_reasoning_summary: "auto",
-    reasoning_summary_format: "none",
-    web_search_tool_type: "text",
-    truncation_policy: { mode: "bytes", limit: 10000 },
-    supports_image_detail_original: false,
-    available_in_plans: CODEX_GATEWAY_ALL_PLANS,
-    upgrade: {
-      model: "gpt-5.4",
-      migration_markdown:
-        "Introducing GPT-5.4\n\nCodex just got an upgrade with GPT-5.4, our most capable model for professional work. It outperforms prior models while being more token efficient, with notable improvements on long-running tasks, tool calling, computer use, and frontend development.\n\nLearn more: https://openai.com/index/introducing-gpt-5-4\n\nYou can always keep using GPT-5.3-Codex if you prefer.\n",
-    },
-  }),
-  "codex-auto-review": buildCodexGatewayModelInfo("codex-auto-review", "Codex Auto Review", 29, "medium", [], {
-    description: "Automatic approval review model for Codex.",
-    visibility: "hide",
-    max_context_window: 1000000,
-    available_in_plans: CODEX_GATEWAY_PAID_PLANS,
-  }),
-}
 
 function timestampForFilename() {
   return new Date().toISOString().replace(/[-:]/g, "").replace(/\..+$/, "").replace("T", "_")
@@ -181,19 +23,6 @@ function normalizeEpochMs(value: unknown) {
   if (Number.isFinite(numeric)) return numeric
   const parsed = Date.parse(String(value))
   return Number.isFinite(parsed) ? parsed : null
-}
-
-function extractModelCatalogEntryID(value: unknown) {
-  if (!value || typeof value !== "object") return null
-  const record = value as Record<string, unknown>
-  const normalized = String(record.id ?? record.slug ?? record.model ?? "").trim()
-  return normalized.length > 0 ? normalized : null
-}
-
-function cloneModelCatalogEntries(entries: unknown[]) {
-  return entries
-    .filter((item) => item && typeof item === "object")
-    .map((item) => ({ ...(item as Record<string, unknown>) }))
 }
 
 function resolveCodexHome() {
@@ -285,112 +114,14 @@ function setWindowsSandboxMode(raw: string, mode: "elevated" | "unelevated" | nu
   return kept.join("\n").trimStart()
 }
 
-function normalizeFsPathForCompare(value: string) {
-  return value
-    .replace(/^\\\\\?\\/, "")
-    .replace(/\//g, "\\")
-    .replace(/\\+$/g, "")
-    .toLowerCase()
-}
-
-async function backupFileIfPresent(filePath: string, stamp: string) {
-  try {
-    await copyFile(filePath, `${filePath}.backup.${stamp}`)
-    return true
-  } catch {
-    return false
-  }
-}
-
-async function resetCodexGatewayThreadSandboxState(codexHome: string) {
-  const statePath = path.join(codexHome, "state_5.sqlite")
-  const stamp = `${timestampForFilename()}.${process.pid}`
-  try {
-    try {
-      await readFile(statePath)
-    } catch {
-      return { updated: 0, statePath, skipped: "state database not found" }
-    }
-    await backupFileIfPresent(statePath, stamp)
-    await backupFileIfPresent(`${statePath}-wal`, stamp)
-    await backupFileIfPresent(`${statePath}-shm`, stamp)
-
-    const db = new Database(statePath)
-    try {
-      const rows = db.query("select id, cwd, sandbox_policy, approval_mode from threads").all() as Array<{
-        id: string
-        cwd: string
-        sandbox_policy: string
-        approval_mode: string
-      }>
-      const ids = rows
-        .filter((row) => row.sandbox_policy !== CODEX_GATEWAY_WORKSPACE_WRITE_POLICY || row.approval_mode !== "on-request")
-        .map((row) => String(row.id))
-        .filter(Boolean)
-      if (ids.length === 0) return { updated: 0, statePath }
-
-      const update = db.query("update threads set sandbox_policy = ?, approval_mode = ? where id = ?")
-      const tx = db.transaction((threadIds: string[]) => {
-        for (const id of threadIds) update.run(CODEX_GATEWAY_WORKSPACE_WRITE_POLICY, "on-request", id)
-      })
-      tx(ids)
-      return { updated: ids.length, statePath }
-    } finally {
-      db.close()
-    }
-  } catch (error) {
-    return {
-      updated: 0,
-      statePath,
-      error: error instanceof Error ? error.message : String(error),
-    }
-  }
-}
-
-async function resetCodexGlobalAgentMode(codexHome: string) {
-  const statePath = path.join(codexHome, ".codex-global-state.json")
-  const stamp = `${timestampForFilename()}.${process.pid}`
-  try {
-    let raw = ""
-    try {
-      raw = await readFile(statePath, "utf8")
-    } catch {
-      return { updated: false, statePath, skipped: "global state file not found" }
-    }
-    let parsed: any
-    try {
-      parsed = JSON.parse(raw)
-    } catch {
-      return { updated: false, statePath, error: "global state file is not valid JSON" }
-    }
-    const atomState =
-      parsed && typeof parsed === "object"
-        ? ((parsed["electron-persisted-atom-state"] ??= {}) as Record<string, any>)
-        : null
-    if (!atomState) return { updated: false, statePath, error: "global state root is not an object" }
-
-    const currentModes = ((atomState["agent-mode-by-host-id"] ??= {}) as Record<string, string>)
-    const preferredModes = ((atomState["preferred-non-full-access-agent-mode-by-host-id"] ??= {}) as Record<string, string>)
-    const preferred = String(preferredModes.local || "guardian-approvals")
-    const previous = String(currentModes.local || "")
-    const previousSkipFullAccessConfirm = atomState["skip-full-access-confirm"]
-    currentModes.local = preferred
-    preferredModes.local = preferred
-    if (atomState["skip-full-access-confirm"] === true) atomState["skip-full-access-confirm"] = false
-
-    if (previous === currentModes.local && previousSkipFullAccessConfirm !== true) {
-      return { updated: false, statePath, mode: currentModes.local }
-    }
-
-    await backupFileIfPresent(statePath, stamp)
-    await writeFile(statePath, `${JSON.stringify(parsed)}\n`, "utf8")
-    return { updated: true, statePath, previousMode: previous || null, mode: currentModes.local }
-  } catch (error) {
-    return {
-      updated: false,
-      statePath,
-      error: error instanceof Error ? error.message : String(error),
-    }
+function preserveCodexState(statePath: string, kind: "thread" | "global") {
+  return {
+    updated: false,
+    statePath,
+    skipped:
+      kind === "thread"
+        ? "preserved existing Codex thread sandbox state"
+        : "preserved existing Codex App global sandbox state",
   }
 }
 
@@ -421,43 +152,6 @@ function ensureFastModeFeature(raw: string) {
   return `${lines.join("\n").trimStart()}\n`
 }
 
-function buildCodexGatewayModelCatalog(
-  row: { fixedModel?: unknown; fixed_model?: unknown },
-  resolveCodexModelCatalogPayload?: (fixedModelId?: string | null) => Record<string, unknown>,
-) {
-  const fixedModel = String(row.fixedModel ?? row.fixed_model ?? "").trim()
-  const officialPayload = resolveCodexModelCatalogPayload?.(fixedModel || null)
-  if (officialPayload && typeof officialPayload === "object") {
-    const sourceEntries = Array.isArray(officialPayload.models)
-      ? officialPayload.models
-      : Array.isArray(officialPayload.data)
-        ? officialPayload.data
-        : []
-    const filteredEntries = fixedModel
-      ? sourceEntries.filter((item) => extractModelCatalogEntryID(item) === fixedModel)
-      : sourceEntries
-    const clonedEntries = cloneModelCatalogEntries(filteredEntries)
-    if (clonedEntries.length > 0) {
-      return {
-        object: String(officialPayload.object ?? "list") || "list",
-        data: clonedEntries,
-        models: clonedEntries,
-      }
-    }
-  }
-  if (fixedModel) {
-    const known = CODEX_GATEWAY_MODEL_CATALOG[fixedModel]
-    const fallbackModel = known ?? buildCodexGatewayModelInfo(fixedModel, fixedModel, 0, "medium", [])
-    return {
-      object: "list",
-      data: [fallbackModel],
-      models: [fallbackModel],
-    }
-  }
-  const fallbackModels = Object.values(CODEX_GATEWAY_MODEL_CATALOG)
-  return { object: "list", data: fallbackModels, models: fallbackModels }
-}
-
 async function writeCodexGatewayConfigForVirtualKey(input: {
   row: Record<string, unknown>
   apiBase: string
@@ -470,15 +164,7 @@ async function writeCodexGatewayConfigForVirtualKey(input: {
   const stamp = `${timestampForFilename()}.${process.pid}`
   const configPath = path.join(codexHome, "config.toml")
   const authPath = path.join(codexHome, "auth.json")
-  const modelCatalogPath = path.join(codexHome, "codex-gateway-models.json")
-  const [configBackupPath, modelCatalogBackupPath] = await Promise.all([
-    backupFileIfExists(configPath, stamp),
-    backupFileIfExists(modelCatalogPath, stamp),
-  ])
-
-  const modelCatalog = buildCodexGatewayModelCatalog(input.row, input.resolveCodexModelCatalogPayload)
-  const modelCatalogJson = `${JSON.stringify(modelCatalog, null, 2)}\n`
-  await writeFile(modelCatalogPath, modelCatalogJson, "utf8")
+  const configBackupPath = await backupFileIfExists(configPath, stamp)
 
   const appShutdown = input.restartCodexApp === false ? null : shutdownOfficialCodexApp()
   if (appShutdown?.status === "failed") {
@@ -491,14 +177,11 @@ async function writeCodexGatewayConfigForVirtualKey(input: {
     'approval_policy = "on-request"',
     'sandbox_mode = "workspace-write"',
     `openai_base_url = ${toTomlString(input.apiBase)}`,
-    `model_catalog_json = ${toTomlString(modelCatalogPath)}`,
   ].join("\n")
   const nextConfig = ensureFastModeFeature(existingConfig ? `${configHeader}\n${existingConfig}` : `${configHeader}\n`)
   await writeFile(configPath, nextConfig, "utf8")
-  const [threadSandboxReset, globalAgentModeReset] = await Promise.all([
-    resetCodexGatewayThreadSandboxState(codexHome),
-    resetCodexGlobalAgentMode(codexHome),
-  ])
+  const threadSandboxReset = preserveCodexState(path.join(codexHome, "state_5.sqlite"), "thread")
+  const globalAgentModeReset = preserveCodexState(path.join(codexHome, ".codex-global-state.json"), "global")
 
   const appLaunch = input.restartCodexApp === false ? null : launchOfficialCodexApp()
   const appRestart =
@@ -517,11 +200,11 @@ async function writeCodexGatewayConfigForVirtualKey(input: {
     codexHome,
     configPath,
     authPath,
-    modelCatalogPath,
+    modelCatalogPath: null,
     backups: {
       configPath: configBackupPath,
       authPath: null,
-      modelCatalogPath: modelCatalogBackupPath,
+      modelCatalogPath: null,
     },
     threadSandboxReset,
     globalAgentModeReset,
