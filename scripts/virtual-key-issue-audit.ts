@@ -345,12 +345,12 @@ async function main() {
     assertCondition(configured.success === true, "configure-codex should succeed")
     const configuredToml = await readFile(path.join(codexHome, "config.toml"), "utf8")
     assertCondition(
-      !configuredToml.includes("approval_policy"),
-      "configure-codex should not force approval_policy for direct key mode",
+      configuredToml.includes('approval_policy = "on-request"'),
+      "configure-codex should set approval_policy=on-request for direct key mode",
     )
     assertCondition(
-      !configuredToml.includes("sandbox_mode"),
-      "configure-codex should not force sandbox_mode for direct key mode",
+      configuredToml.includes('sandbox_mode = "workspace-write"'),
+      "configure-codex should set sandbox_mode=workspace-write for direct key mode",
     )
     assertCondition(
       !configuredToml.includes('sandbox = "elevated"'),

@@ -1,4 +1,5 @@
 import type { Hono } from "hono"
+import { Database } from "bun:sqlite"
 import os from "node:os"
 import path from "node:path"
 import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises"
@@ -15,6 +16,14 @@ const CODEX_GATEWAY_REASONING_LEVELS = [
   { effort: "high", description: "Greater reasoning depth for complex problems" },
   { effort: "xhigh", description: "Extra high reasoning depth for complex problems" },
 ]
+
+const CODEX_GATEWAY_WORKSPACE_WRITE_POLICY = JSON.stringify({
+  type: "workspace-write",
+  writable_roots: [],
+  network_access: false,
+  exclude_tmpdir_env_var: false,
+  exclude_slash_tmp: false,
+})
 
 function buildCodexGatewayModelInfo(
   id: string,
@@ -276,6 +285,66 @@ function setWindowsSandboxMode(raw: string, mode: "elevated" | "unelevated" | nu
   return kept.join("\n").trimStart()
 }
 
+function normalizeFsPathForCompare(value: string) {
+  return value
+    .replace(/^\\\\\?\\/, "")
+    .replace(/\//g, "\\")
+    .replace(/\\+$/g, "")
+    .toLowerCase()
+}
+
+async function backupFileIfPresent(filePath: string, stamp: string) {
+  try {
+    await copyFile(filePath, `${filePath}.backup.${stamp}`)
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function resetCodexGatewayThreadSandboxState(codexHome: string) {
+  const statePath = path.join(codexHome, "state_5.sqlite")
+  const stamp = `${timestampForFilename()}.${process.pid}`
+  const cwd = normalizeFsPathForCompare(process.cwd())
+  try {
+    try {
+      await readFile(statePath)
+    } catch {
+      return { updated: 0, statePath, skipped: "state database not found" }
+    }
+    await backupFileIfPresent(statePath, stamp)
+    await backupFileIfPresent(`${statePath}-wal`, stamp)
+    await backupFileIfPresent(`${statePath}-shm`, stamp)
+
+    const db = new Database(statePath)
+    try {
+      const rows = db
+        .query("select id, cwd, sandbox_policy from threads where sandbox_policy = ?")
+        .all('{"type":"danger-full-access"}') as Array<{ id: string; cwd: string; sandbox_policy: string }>
+      const ids = rows
+        .filter((row) => normalizeFsPathForCompare(String(row.cwd ?? "")) === cwd)
+        .map((row) => String(row.id))
+        .filter(Boolean)
+      if (ids.length === 0) return { updated: 0, statePath }
+
+      const update = db.query("update threads set sandbox_policy = ?, approval_mode = ? where id = ?")
+      const tx = db.transaction((threadIds: string[]) => {
+        for (const id of threadIds) update.run(CODEX_GATEWAY_WORKSPACE_WRITE_POLICY, "on-request", id)
+      })
+      tx(ids)
+      return { updated: ids.length, statePath }
+    } finally {
+      db.close()
+    }
+  } catch (error) {
+    return {
+      updated: 0,
+      statePath,
+      error: error instanceof Error ? error.message : String(error),
+    }
+  }
+}
+
 function ensureFastModeFeature(raw: string) {
   const lines = raw.split(/\r?\n/)
   let featuresIndex = lines.findIndex((line) => /^\s*\[features\]\s*$/.test(line))
@@ -365,11 +434,14 @@ async function writeCodexGatewayConfigForVirtualKey(input: {
   const existingConfig = setWindowsSandboxMode(withoutGatewayManagedConfigLines(await readTextIfExists(configPath)), "unelevated")
   const configHeader = [
     'cli_auth_credentials_store = "file"',
+    'approval_policy = "on-request"',
+    'sandbox_mode = "workspace-write"',
     `openai_base_url = ${toTomlString(input.apiBase)}`,
     `model_catalog_json = ${toTomlString(modelCatalogPath)}`,
   ].join("\n")
   const nextConfig = ensureFastModeFeature(existingConfig ? `${configHeader}\n${existingConfig}` : `${configHeader}\n`)
   await writeFile(configPath, nextConfig, "utf8")
+  const threadSandboxReset = await resetCodexGatewayThreadSandboxState(codexHome)
 
   const appRestart = input.restartCodexApp === false ? null : restartOfficialCodexApp()
   return {
@@ -382,6 +454,7 @@ async function writeCodexGatewayConfigForVirtualKey(input: {
       authPath: null,
       modelCatalogPath: modelCatalogBackupPath,
     },
+    threadSandboxReset,
     appRestart,
     authPreserved: true,
   }
