@@ -118,7 +118,7 @@ export type AccountRouteDeps = {
   parseImportRtAccount: (raw: unknown) => unknown
   loginCodexLocalAuth: (
     account: StoredAccount,
-    input: { restartCodexApp?: boolean },
+    input: { restartCodexApp?: boolean; apiBase: string },
   ) => Promise<Record<string, unknown>>
 }
 
@@ -195,7 +195,10 @@ export function registerAccountRoutes(app: Hono, deps: AccountRouteDeps) {
     try {
       const raw = await c.req.json().catch(() => ({}))
       const restartCodexApp = raw && typeof raw === "object" && "restartCodexApp" in raw ? raw.restartCodexApp !== false : true
-      const result = await deps.loginCodexLocalAuth(account, { restartCodexApp })
+      const requestOrigin = new URL(c.req.url).origin
+      const configuredBase = String(raw?.apiBase ?? `${requestOrigin}/v1`).trim()
+      const apiBase = configuredBase.endsWith("/") ? configuredBase.slice(0, -1) : configuredBase
+      const result = await deps.loginCodexLocalAuth(account, { restartCodexApp, apiBase })
       const refreshedAccount = deps.accountStore.get(accountID) ?? account
       return c.json({
         success: true,

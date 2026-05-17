@@ -39,6 +39,10 @@ type ConfigureCodexResponse = {
   success?: boolean
   modelCatalogPath?: string | null
   modelsCachePath?: string | null
+  threadProviderMigration?: {
+    updated?: number
+    backupPath?: string | null
+  }
   backups?: {
     modelsCachePath?: string | null
   }
@@ -46,6 +50,10 @@ type ConfigureCodexResponse = {
 
 function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message)
+}
+
+function countRegexMatches(value: string, pattern: RegExp) {
+  return value.match(pattern)?.length ?? 0
 }
 
 function buildFakeJwt(payload: Record<string, unknown>) {
@@ -154,8 +162,23 @@ async function main() {
     path.join(codexHome, "config.toml"),
     [
       'model = "gpt-5.4"',
+      'model_provider = "codex-gateway-http"',
+      'openai_base_url = "http://legacy-gateway.invalid/v1"',
       'approval_policy = "never"',
       'sandbox_mode = "danger-full-access"',
+      "",
+      "[model_providers.codex-gateway-http]",
+      'name = "Stale Codex Gateway"',
+      'base_url = "http://stale-gateway.invalid/v1"',
+      'wire_api = "responses"',
+      "requires_openai_auth = true",
+      "supports_websockets = true",
+      "",
+      "[model_providers.other-provider]",
+      'name = "Other Provider"',
+      'base_url = "https://other-provider.invalid/v1"',
+      'wire_api = "responses"',
+      "supports_websockets = true",
       "",
       "[windows]",
       'sandbox = "elevated"',
@@ -234,12 +257,22 @@ async function main() {
   )
   const stateDbPath = path.join(codexHome, "state_5.sqlite")
   const stateDb = new Database(stateDbPath)
-  stateDb.run("create table threads (id text primary key, cwd text not null, sandbox_policy text not null, approval_mode text not null)")
-  stateDb.run("insert into threads (id, cwd, sandbox_policy, approval_mode) values (?, ?, ?, ?)", [
+  stateDb.run(
+    "create table threads (id text primary key, cwd text not null, sandbox_policy text not null, approval_mode text not null, model_provider text not null)",
+  )
+  stateDb.run("insert into threads (id, cwd, sandbox_policy, approval_mode, model_provider) values (?, ?, ?, ?, ?)", [
     "thread-key-mode-audit",
     process.cwd(),
     '{"type":"danger-full-access"}',
     "never",
+    "openai",
+  ])
+  stateDb.run("insert into threads (id, cwd, sandbox_policy, approval_mode, model_provider) values (?, ?, ?, ?, ?)", [
+    "thread-key-mode-split-provider",
+    process.cwd(),
+    '{"type":"workspace-write"}',
+    "on-request",
+    "codex-official-http",
   ])
   stateDb.close()
 
@@ -438,6 +471,40 @@ async function main() {
     )
     assertCondition(configured.success === true, "configure-codex should succeed")
     const configuredToml = await readFile(path.join(codexHome, "config.toml"), "utf8")
+    assertCondition(!configuredToml.includes("openai_base_url"), "configure-codex should remove legacy API base URL override")
+    assertCondition(
+      countRegexMatches(configuredToml, /^model_provider\s*=\s*"codex-gateway-http"\s*$/gm) === 1,
+      "configure-codex should select Codex Gateway HTTP provider exactly once",
+    )
+    assertCondition(
+      countRegexMatches(configuredToml, /^\[model_providers\.codex-gateway-http\]\s*$/gm) === 1,
+      "configure-codex should write one Codex Gateway HTTP provider block",
+    )
+    assertCondition(
+      configuredToml.includes(`base_url = "${bridgeOrigin}/v1"`),
+      "configure-codex should write the requested gateway base URL into the provider block",
+    )
+    assertCondition(
+      configuredToml.includes('wire_api = "responses"'),
+      "configure-codex should keep the provider on Responses API",
+    )
+    assertCondition(
+      configuredToml.includes("requires_openai_auth = true"),
+      "configure-codex should keep ChatGPT/OAuth credential semantics",
+    )
+    assertCondition(
+      configuredToml.includes("supports_websockets = false"),
+      "configure-codex should disable WebSocket transport for the Gateway provider",
+    )
+    assertCondition(
+      !configuredToml.includes("http://stale-gateway.invalid/v1") && !configuredToml.includes('name = "Stale Codex Gateway"'),
+      "configure-codex should remove stale Gateway provider block values",
+    )
+    assertCondition(
+      configuredToml.includes("[model_providers.other-provider]") &&
+        configuredToml.includes('base_url = "https://other-provider.invalid/v1"'),
+      "configure-codex should preserve unrelated custom providers",
+    )
     assertCondition(
       configuredToml.includes('approval_policy = "on-request"'),
       "configure-codex should set approval_policy=on-request for direct key mode",
@@ -458,6 +525,7 @@ async function main() {
       !configuredToml.includes("model_catalog_json"),
       "configure-codex should rely on gateway /v1/models instead of injecting local model_catalog_json",
     )
+    assertCondition(configuredToml.includes("fast_mode = true"), "configure-codex should preserve fast mode behavior")
     const configuredGlobalState = JSON.parse(await readFile(path.join(codexHome, ".codex-global-state.json"), "utf8"))
     const configuredAtomState = configuredGlobalState["electron-persisted-atom-state"] || {}
     assertCondition(
@@ -470,8 +538,11 @@ async function main() {
     )
     const configuredStateDb = new Database(stateDbPath, { readonly: true })
     const configuredThread = configuredStateDb
-      .query("select sandbox_policy, approval_mode from threads where id = ?")
-      .get("thread-key-mode-audit") as { sandbox_policy: string; approval_mode: string } | null
+      .query("select sandbox_policy, approval_mode, model_provider from threads where id = ?")
+      .get("thread-key-mode-audit") as { sandbox_policy: string; approval_mode: string; model_provider: string } | null
+    const migratedSplitProviderThread = configuredStateDb
+      .query("select model_provider from threads where id = ?")
+      .get("thread-key-mode-split-provider") as { model_provider: string } | null
     configuredStateDb.close()
     assertCondition(
       configuredThread?.sandbox_policy === '{"type":"danger-full-access"}',
@@ -480,6 +551,15 @@ async function main() {
     assertCondition(
       configuredThread?.approval_mode === "never",
       "configure-codex should preserve existing thread approval mode",
+    )
+    assertCondition(
+      configuredThread?.model_provider === "codex-gateway-http" &&
+        migratedSplitProviderThread?.model_provider === "codex-gateway-http",
+      "configure-codex should migrate legacy thread provider ids to the shared HTTP-only provider",
+    )
+    assertCondition(
+      configured.threadProviderMigration?.updated === 2 && configured.threadProviderMigration.backupPath,
+      "configure-codex should report a backed-up thread provider compatibility migration",
     )
     assertCondition(
       !configured.modelCatalogPath,

@@ -1287,7 +1287,7 @@ type CodexOfficialModelRecord = Record<string, unknown> & {
   visibility?: string
   supported_in_api?: boolean
   default_reasoning_level?: string
-  supported_reasoning_levels?: Array<{ effort?: string }>
+  supported_reasoning_levels?: Array<{ effort?: string; description?: string }>
   supports_parallel_tool_calls?: boolean
   supports_reasoning_summaries?: boolean
   support_verbosity?: boolean
@@ -3666,6 +3666,17 @@ function resolveVirtualApiKeyFromCodexOAuthBridge(
   for (const key of keys) {
     const binding = runtimeSettings.codexOAuthBridgeBindings?.[key]
     if (!binding?.virtualKeyId) continue
+    if (String(binding.virtualKeyId).startsWith(OAUTH_BRIDGE_VIRTUAL_KEY_ID_PREFIX)) {
+      const accountId = String(binding.virtualKeyId).slice(OAUTH_BRIDGE_VIRTUAL_KEY_ID_PREFIX.length)
+      const account = accountStore.get(accountId)
+      if (account && account.providerId === "chatgpt" && account.isActive !== false) {
+        return {
+          key: buildOAuthBridgeVirtualKey(account),
+          account,
+        }
+      }
+      continue
+    }
     const resolved = accountStore.resolveVirtualApiKeyByID(binding.virtualKeyId, {
       sessionId,
       routeOptionsFactory: (virtualKey) =>
@@ -6310,6 +6321,40 @@ function getReasoningEffortDescription(effort: string, fallback?: unknown) {
   return official?.description ?? effort
 }
 
+function normalizeCodexReasoningLevelsPayload(source: unknown, fallbackLevels: string[]) {
+  const entries = Array.isArray(source) ? source : []
+  const result: Array<{ effort: string; description: string }> = []
+  const seen = new Set<string>()
+
+  const add = (effort: unknown, description?: unknown) => {
+    const normalized = extractModelID(effort)
+    if (!normalized || seen.has(normalized)) return
+    seen.add(normalized)
+    result.push({
+      effort: normalized,
+      description: getReasoningEffortDescription(normalized, description),
+    })
+  }
+
+  for (const item of entries) {
+    if (typeof item === "string") {
+      add(item)
+      continue
+    }
+    if (item && typeof item === "object") {
+      const record = item as Record<string, unknown>
+      add(record.effort ?? record.reasoningEffort, record.description)
+    }
+  }
+
+  for (const level of fallbackLevels) {
+    add(level)
+  }
+
+  if (result.length === 0) add("medium")
+  return result
+}
+
 function normalizeCodexAppReasoningEfforts(source: unknown, fallbackLevels: string[]) {
   const entries = Array.isArray(source) ? source : []
   const result: Array<{ reasoningEffort: string; description: string }> = []
@@ -6651,9 +6696,7 @@ function buildModelCatalogPayload(input: { ids?: string[] } = {}): ModelCatalogP
       const levels = MODEL_REASONING_LEVELS[id] ?? ["medium"]
       const defaultReasoningLevel = MODEL_DEFAULT_REASONING_LEVELS[id] ?? (levels.includes("medium") ? "medium" : levels[0])
       const apiMetadata = entry?.apiMetadata ?? {}
-      const reasoningLevelsPayload = Array.isArray(apiMetadata.supported_reasoning_levels)
-        ? apiMetadata.supported_reasoning_levels
-        : levels.map((effort) => ({ effort }))
+      const reasoningLevelsPayload = normalizeCodexReasoningLevelsPayload(apiMetadata.supported_reasoning_levels, levels)
       const displayName = entry?.displayName ?? id
       const description = entry?.description ?? null
       const visibility = MODEL_VISIBILITIES[id] ?? "list"
@@ -6760,17 +6803,20 @@ async function resolveModelCatalogForCursorAccount(input: {
 }
 
 function normalizeReasoningLevelsFromModelPayload(model: Record<string, unknown>) {
-  const source = model.supported_reasoning_levels
-  if (!Array.isArray(source)) return []
-  const values = source
-    .map((item) => {
-      if (typeof item === "string") return extractModelID(item)
-      if (item && typeof item === "object") {
-        return extractModelID((item as Record<string, unknown>).effort)
-      }
-      return null
-    })
-    .filter((item): item is string => Boolean(item))
+  const sources = [model.supported_reasoning_levels, model.supportedReasoningEfforts]
+  const values = sources.flatMap((source) => {
+    if (!Array.isArray(source)) return []
+    return source
+      .map((item) => {
+        if (typeof item === "string") return extractModelID(item)
+        if (item && typeof item === "object") {
+          const record = item as Record<string, unknown>
+          return extractModelID(record.effort ?? record.reasoningEffort)
+        }
+        return null
+      })
+      .filter((item): item is string => Boolean(item))
+  })
   return [...new Set(values)]
 }
 
@@ -6836,10 +6882,8 @@ function toOpenAIModelListPayloadFromUpstream(payload: unknown): ModelCatalogPay
       : null
     const reasoningLevelsPayload =
       isModelIdOnlyHardcodedOverride(id) && catalogReasoningLevelsPayload
-        ? catalogReasoningLevelsPayload
-        : levels.length > 0
-          ? levels.map((effort) => ({ effort }))
-          : [{ effort: "medium" }]
+        ? normalizeCodexReasoningLevelsPayload(catalogReasoningLevelsPayload, levels)
+        : normalizeCodexReasoningLevelsPayload(model.supported_reasoning_levels, levels.length > 0 ? levels : ["medium"])
     data.push({
       ...model,
       id,
@@ -6887,9 +6931,7 @@ function toOpenAIModelListPayloadFromUpstream(payload: unknown): ModelCatalogPay
     if (!entry || entry.supportedInApi === false || entry.visibility.toLowerCase() === "hide") continue
     const levels = MODEL_REASONING_LEVELS[id] ?? ["medium"]
     const defaultReasoningLevel = MODEL_DEFAULT_REASONING_LEVELS[id] ?? (levels.includes("medium") ? "medium" : levels[0])
-    const reasoningLevelsPayload = Array.isArray(entry.apiMetadata.supported_reasoning_levels)
-      ? entry.apiMetadata.supported_reasoning_levels
-      : levels.map((effort) => ({ effort }))
+    const reasoningLevelsPayload = normalizeCodexReasoningLevelsPayload(entry.apiMetadata.supported_reasoning_levels, levels)
     data.unshift({
       ...(entry.apiMetadata ?? {}),
       id,
@@ -8335,6 +8377,53 @@ async function proxyOpenAIModelsRequest(input: {
     })
   ).response
 
+  if (upstream.ok) {
+    const body = await upstream.arrayBuffer()
+    const contentType = normalizeHeaderIdentityValue(upstream.headers.get("content-type")) ?? "application/json"
+    const text = new TextDecoder().decode(body)
+    try {
+      const parsed = text.trim() ? JSON.parse(text) : {}
+      const normalizedPayload = input.modelId
+        ? toOpenAIModelListPayloadFromUpstream({ data: [parsed] })
+        : toOpenAIModelListPayloadFromUpstream(parsed)
+      if (input.modelId) {
+        const match = extractModelsEntries(normalizedPayload).find((item) => extractModelEntryID(item) === input.modelId)
+        if (match) {
+          return new Response(JSON.stringify(match), {
+            status: upstream.status,
+            headers: {
+              "content-type": "application/json",
+              "cache-control": "no-store",
+            },
+          })
+        }
+        return new Response(body, {
+          status: upstream.status,
+          headers: {
+            "content-type": contentType,
+            "cache-control": "no-store",
+          },
+        })
+      } else {
+        return new Response(JSON.stringify(normalizedPayload), {
+          status: upstream.status,
+          headers: {
+            "content-type": "application/json",
+            "cache-control": "no-store",
+          },
+        })
+      }
+    } catch {
+      return new Response(body, {
+        status: upstream.status,
+        headers: {
+          "content-type": contentType,
+          "cache-control": "no-store",
+        },
+      })
+    }
+  }
+
   return new Response(upstream.body, {
     status: upstream.status,
     headers: new Headers(upstream.headers),
@@ -9443,7 +9532,7 @@ async function resolveCodexLocalAuthTokens(account: StoredAccount) {
   return refreshChatgptAccountAccessForLocalCodex(account)
 }
 
-async function loginCodexLocalAuth(account: StoredAccount, input: { restartCodexApp?: boolean }) {
+async function loginCodexLocalAuth(account: StoredAccount, input: { restartCodexApp?: boolean; apiBase: string }) {
   if (account.providerId !== "chatgpt") {
     throw new Error("Only ChatGPT OAuth accounts can be written to Codex local login")
   }
@@ -9473,6 +9562,14 @@ async function loginCodexLocalAuth(account: StoredAccount, input: { restartCodex
       accountId,
     },
     restartCodexApp: input.restartCodexApp !== false,
+    apiBase: input.apiBase,
+  })
+  const bridgeBinding = await setCodexOAuthBridgeBinding({
+    virtualKeyId: `${OAUTH_BRIDGE_VIRTUAL_KEY_ID_PREFIX}${latest.id}`,
+    accessToken: localTokens.accessToken,
+    idToken,
+    accountId,
+    email: latest.email,
   })
   return {
     codexLocalAuth: {
@@ -9482,6 +9579,7 @@ async function loginCodexLocalAuth(account: StoredAccount, input: { restartCodex
       providerId: latest.providerId,
       refreshedForLocalAuth: localTokens.refreshed,
       writtenAt: Date.now(),
+      bridgeBinding,
       ...result,
     },
   }

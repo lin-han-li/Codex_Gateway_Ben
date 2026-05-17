@@ -3,6 +3,11 @@ import os from "node:os"
 import path from "node:path"
 import { copyFile, mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import { launchOfficialCodexApp, shutdownOfficialCodexApp } from "../codex-local-auth"
+import {
+  CODEX_HTTP_PROVIDER_ID,
+  LEGACY_CODEX_THREAD_PROVIDER_IDS,
+  migrateCodexThreadProvidersForHttpCompat,
+} from "../codex-thread-provider-compat"
 
 function timestampForFilename() {
   return new Date().toISOString().replace(/[-:]/g, "").replace(/\..+$/, "").replace("T", "_")
@@ -11,6 +16,9 @@ function timestampForFilename() {
 function toTomlString(value: string) {
   return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`
 }
+
+const CODEX_GATEWAY_HTTP_PROVIDER_ID = CODEX_HTTP_PROVIDER_ID
+const CODEX_MANAGED_PROVIDER_IDS = [CODEX_GATEWAY_HTTP_PROVIDER_ID, ...LEGACY_CODEX_THREAD_PROVIDER_IDS]
 
 function normalizeNonEmpty(value: unknown) {
   const normalized = String(value ?? "").trim()
@@ -84,13 +92,83 @@ async function readCurrentCodexAuthBinding(authPath: string) {
   }
 }
 
+function normalizeTomlSectionName(value: string) {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "")
+    .replace(/["']/g, "")
+}
+
+function splitRootAndSections(raw: string) {
+  const lines = raw.split(/\r?\n/)
+  const root: string[] = []
+  const sections: string[] = []
+  let section = ""
+  for (const line of lines) {
+    const sectionMatch = line.match(/^\s*\[([^\]]+)\]\s*$/)
+    if (sectionMatch) section = normalizeTomlSectionName(sectionMatch[1] ?? "")
+    if (section) sections.push(line)
+    else root.push(line)
+  }
+  return {
+    root: root.join("\n").trim(),
+    sections: sections.join("\n").trim(),
+  }
+}
+
 function withoutGatewayManagedConfigLines(raw: string) {
-  return raw
-    .replace(/^\s*openai_base_url\s*=.*(?:\r?\n)?/gm, "")
-    .replace(/^\s*model_catalog_json\s*=.*(?:\r?\n)?/gm, "")
-    .replace(/^\s*cli_auth_credentials_store\s*=.*(?:\r?\n)?/gm, "")
-    .replace(/^\s*approval_policy\s*=.*(?:\r?\n)?/gm, "")
-    .replace(/^\s*sandbox_mode\s*=.*(?:\r?\n)?/gm, "")
+  const lines = raw.split(/\r?\n/)
+  const kept: string[] = []
+  const recoveredRoot: string[] = []
+  let section = ""
+  let skipGatewayProviderBlock = false
+  const managedProviderSections = new Set(CODEX_MANAGED_PROVIDER_IDS.map((id) => `model_providers.${id}`))
+
+  for (const line of lines) {
+    const sectionMatch = line.match(/^\s*\[([^\]]+)\]\s*$/)
+    if (sectionMatch) {
+      section = normalizeTomlSectionName(sectionMatch[1] ?? "")
+      skipGatewayProviderBlock = managedProviderSections.has(section)
+      if (skipGatewayProviderBlock) continue
+      kept.push(line)
+      continue
+    }
+    if (skipGatewayProviderBlock) {
+      if (/^\s*(?:model|model_reasoning_effort|model_reasoning_summary|model_verbosity|personality)\s*=/.test(line)) {
+        recoveredRoot.push(line)
+      }
+      continue
+    }
+    if (
+      !section &&
+      /^\s*(?:openai_base_url|model_catalog_json|model_provider|cli_auth_credentials_store|approval_policy|sandbox_mode)\s*=/.test(
+        line,
+      )
+    ) {
+      continue
+    }
+    kept.push(line)
+  }
+
+  return [...recoveredRoot, ...kept].join("\n").trimStart()
+}
+
+function composeCodexGatewayConfig(input: {
+  header: string
+  preserved: string
+  providerBlock: string
+}) {
+  const { root, sections } = splitRootAndSections(input.preserved)
+  return [
+    input.header.trim(),
+    root,
+    "",
+    input.providerBlock.trim(),
+    sections ? `\n${sections}` : "",
+  ]
+    .filter((part) => part.length > 0)
+    .join("\n")
     .trimStart()
 }
 
@@ -184,11 +262,29 @@ async function writeCodexGatewayConfigForVirtualKey(input: {
     'cli_auth_credentials_store = "file"',
     'approval_policy = "on-request"',
     'sandbox_mode = "workspace-write"',
-    `openai_base_url = ${toTomlString(input.apiBase)}`,
+    `model_provider = ${toTomlString(CODEX_GATEWAY_HTTP_PROVIDER_ID)}`,
   ].join("\n")
-  const nextConfig = ensureFastModeFeature(existingConfig ? `${configHeader}\n${existingConfig}` : `${configHeader}\n`)
+  const providerBlock = [
+    `[model_providers.${CODEX_GATEWAY_HTTP_PROVIDER_ID}]`,
+    'name = "Codex Gateway HTTP"',
+    `base_url = ${toTomlString(input.apiBase)}`,
+    'wire_api = "responses"',
+    "requires_openai_auth = true",
+    "supports_websockets = false",
+  ].join("\n")
+  const mergedConfig = composeCodexGatewayConfig({
+    header: configHeader,
+    preserved: existingConfig,
+    providerBlock,
+  })
+  const nextConfig = ensureFastModeFeature(mergedConfig)
   await writeFile(configPath, nextConfig, "utf8")
   const modelsCacheBackupPath = await backupAndRemoveFileIfExists(modelsCachePath, stamp)
+  const threadProviderMigration = await migrateCodexThreadProvidersForHttpCompat({
+    codexHome,
+    stamp,
+    targetProviderId: CODEX_GATEWAY_HTTP_PROVIDER_ID,
+  })
   const threadSandboxReset = preserveCodexState(path.join(codexHome, "state_5.sqlite"), "thread")
   const globalAgentModeReset = preserveCodexState(path.join(codexHome, ".codex-global-state.json"), "global")
 
@@ -217,6 +313,7 @@ async function writeCodexGatewayConfigForVirtualKey(input: {
       modelCatalogPath: null,
       modelsCachePath: modelsCacheBackupPath,
     },
+    threadProviderMigration,
     threadSandboxReset,
     globalAgentModeReset,
     appRestart,

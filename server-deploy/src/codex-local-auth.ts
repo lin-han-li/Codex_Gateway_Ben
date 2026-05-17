@@ -3,6 +3,12 @@ import path from "node:path"
 import { spawnSync } from "node:child_process"
 import { copyFile, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises"
 import type { StoredAccount } from "./types"
+import {
+  CODEX_HTTP_PROVIDER_ID,
+  LEGACY_CODEX_THREAD_PROVIDER_IDS,
+  migrateCodexThreadProvidersForHttpCompat,
+  type CodexThreadProviderMigrationResult,
+} from "./codex-thread-provider-compat"
 
 export type CodexLocalAuthTokens = {
   accessToken: string
@@ -39,8 +45,11 @@ export type CodexLocalAuthWriteResult = {
   configPath: string
   configBackupPath: string | null
   configUpdated: boolean
+  threadProviderMigration?: CodexThreadProviderMigrationResult
   appRestart: CodexAppRestartResult
 }
+
+const CODEX_MANAGED_PROVIDER_IDS = [CODEX_HTTP_PROVIDER_ID, ...LEGACY_CODEX_THREAD_PROVIDER_IDS]
 
 function normalizeNonEmpty(value: unknown) {
   const normalized = String(value ?? "").trim()
@@ -70,6 +79,110 @@ async function backupFileIfExists(filePath: string, backupPath: string) {
   if (!(await fileExists(filePath))) return null
   await copyFile(filePath, backupPath)
   return backupPath
+}
+
+function toTomlString(value: string) {
+  return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`
+}
+
+function normalizeTomlSectionName(value: string) {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "")
+    .replace(/["']/g, "")
+}
+
+function splitRootAndSections(raw: string) {
+  const lines = raw.split(/\r?\n/)
+  const root: string[] = []
+  const sections: string[] = []
+  let section = ""
+  for (const line of lines) {
+    const sectionMatch = line.match(/^\s*\[([^\]]+)\]\s*$/)
+    if (sectionMatch) section = normalizeTomlSectionName(sectionMatch[1] ?? "")
+    if (section) sections.push(line)
+    else root.push(line)
+  }
+  return {
+    root: root.join("\n").trim(),
+    sections: sections.join("\n").trim(),
+  }
+}
+
+function withoutCodexLocalAuthManagedConfig(raw: string) {
+  const lines = raw.split(/\r?\n/)
+  const kept: string[] = []
+  const recoveredRoot: string[] = []
+  let section = ""
+  let skipOfficialProviderBlock = false
+  const managedProviderSections = new Set(CODEX_MANAGED_PROVIDER_IDS.map((id) => `model_providers.${id}`))
+
+  for (const line of lines) {
+    const sectionMatch = line.match(/^\s*\[([^\]]+)\]\s*$/)
+    if (sectionMatch) {
+      section = normalizeTomlSectionName(sectionMatch[1] ?? "")
+      skipOfficialProviderBlock = managedProviderSections.has(section)
+      if (skipOfficialProviderBlock) continue
+      kept.push(line)
+      continue
+    }
+    if (skipOfficialProviderBlock) {
+      if (/^\s*(?:model|model_reasoning_effort|model_reasoning_summary|model_verbosity|personality)\s*=/.test(line)) {
+        recoveredRoot.push(line)
+      }
+      continue
+    }
+    if (
+      !section &&
+      /^\s*(?:openai_base_url|model_catalog_json|model_provider|cli_auth_credentials_store|approval_policy|sandbox_mode)\s*=/.test(
+        line,
+      )
+    ) {
+      continue
+    }
+    kept.push(line)
+  }
+
+  return [...recoveredRoot, ...kept].join("\n").trimStart()
+}
+
+function buildCodexHttpProviderConfig(apiBase: string) {
+  return [
+    `model_provider = ${toTomlString(CODEX_HTTP_PROVIDER_ID)}`,
+    "",
+    `[model_providers.${CODEX_HTTP_PROVIDER_ID}]`,
+    'name = "Codex Gateway HTTP"',
+    `base_url = ${toTomlString(apiBase)}`,
+    'wire_api = "responses"',
+    "requires_openai_auth = true",
+    "supports_websockets = false",
+  ].join("\n")
+}
+
+function composeCodexLocalAuthConfig(input: {
+  credentialStoreLine: string
+  providerConfig: string
+  preserved: string
+}) {
+  const providerLines = input.providerConfig.split(/\r?\n/)
+  const providerRoot = providerLines[0] ?? ""
+  const providerBlock = providerLines.slice(2).join("\n").trim()
+  const { root, sections } = splitRootAndSections(input.preserved)
+  return (
+    [
+      input.credentialStoreLine,
+      providerRoot,
+      root,
+      "",
+      providerBlock,
+      sections ? `\n${sections}` : "",
+    ]
+      .filter((part) => part.length > 0)
+      .join("\n")
+      .trimStart()
+      .trimEnd() + "\n"
+  )
 }
 
 export function resolveCodexHome(explicitCodexHome?: string | null) {
@@ -110,7 +223,7 @@ export function buildCodexChatGptAuthJson(input: {
   }
 }
 
-async function ensureCodexFileCredentialStore(codexHome: string) {
+async function ensureCodexFileCredentialStore(codexHome: string, apiBase: string) {
   const configPath = path.join(codexHome, "config.toml")
   const desiredLine = 'cli_auth_credentials_store = "file"'
   const stamp = timestampForFilename()
@@ -125,19 +238,14 @@ async function ensureCodexFileCredentialStore(codexHome: string) {
   }
 
   const originalRaw = raw
-  raw = raw
-    .replace(/^\s*openai_base_url\s*=.*(?:\r?\n)?/gm, "")
-    .replace(/^\s*model_catalog_json\s*=.*(?:\r?\n)?/gm, "")
-    .replace(/^\s*approval_policy\s*=.*(?:\r?\n)?/gm, "")
-    .replace(/^\s*sandbox_mode\s*=.*(?:\r?\n)?/gm, "")
+  raw = withoutCodexLocalAuthManagedConfig(raw)
 
-  const linePattern = /^\s*cli_auth_credentials_store\s*=\s*["']?(?:file|keyring|auto|ephemeral)["']?\s*$/m
-  let next: string
-  if (linePattern.test(raw)) {
-    next = raw.replace(linePattern, desiredLine)
-  } else {
-    next = raw.trim().length > 0 ? `${desiredLine}\n${raw}` : `${desiredLine}\n`
-  }
+  const providerConfig = buildCodexHttpProviderConfig(apiBase)
+  const next = composeCodexLocalAuthConfig({
+    credentialStoreLine: desiredLine,
+    providerConfig,
+    preserved: raw,
+  })
 
   if (next === originalRaw) {
     return { configPath, configBackupPath: null, configUpdated: false }
@@ -152,6 +260,7 @@ export async function writeCodexLocalAuth(input: {
   tokens: CodexLocalAuthTokens
   codexHome?: string | null
   restartCodexApp?: boolean
+  apiBase: string
 }) {
   const codexHome = resolveCodexHome(input.codexHome)
   await mkdir(codexHome, { recursive: true })
@@ -162,7 +271,12 @@ export async function writeCodexLocalAuth(input: {
   const tempPath = path.join(codexHome, `auth.json.tmp.${stamp}.${process.pid}`)
   const rollbackPath = path.join(codexHome, `auth.rollback.${stamp}.${process.pid}.json`)
 
-  const configResult = await ensureCodexFileCredentialStore(codexHome)
+  const configResult = await ensureCodexFileCredentialStore(codexHome, input.apiBase)
+  const threadProviderMigration = await migrateCodexThreadProvidersForHttpCompat({
+    codexHome,
+    stamp,
+    targetProviderId: CODEX_HTTP_PROVIDER_ID,
+  })
   const backupPath = await backupFileIfExists(authPath, authBackupPath)
   const authJson = buildCodexChatGptAuthJson({
     accessToken: input.tokens.accessToken,
@@ -197,6 +311,7 @@ export async function writeCodexLocalAuth(input: {
     configPath: configResult.configPath,
     configBackupPath: configResult.configBackupPath,
     configUpdated: configResult.configUpdated,
+    threadProviderMigration,
     appRestart,
   } satisfies CodexLocalAuthWriteResult
 }

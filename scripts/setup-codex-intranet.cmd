@@ -48,12 +48,16 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "$apiBase=$env:API_BASE;" ^
   "$key=$env:VIRTUAL_KEY;" ^
   "$noProxy=$env:NO_PROXY_VALUE;" ^
-  "$cfgLine='openai_base_url = ""' + $apiBase + '""';" ^
+  "$providerLine='model_provider = ""codex-gateway-http""';" ^
+  "$providerBaseUrl=$apiBase.Replace('\','\\').Replace('""','\""');" ^
+  "$providerBlock=[string]::Join([Environment]::NewLine,@('[model_providers.codex-gateway-http]','name = ""Codex Gateway HTTP""',('base_url = ""' + $providerBaseUrl + '""'),'wire_api = ""responses""','requires_openai_auth = true','supports_websockets = false'));" ^
   "$cfg='';" ^
   "if (Test-Path $cfgPath) { $cfg=[System.IO.File]::ReadAllText($cfgPath) }" ^
   "$cfg=[System.Text.RegularExpressions.Regex]::Replace($cfg,'(?m)^[ \t]*openai_base_url\s*=.*(?:\r?\n)?','');" ^
-  "$cfg=$cfg.TrimStart([char]13,[char]10);" ^
-  "if ([string]::IsNullOrWhiteSpace($cfg)) { $cfg=$cfgLine + [Environment]::NewLine } else { $cfg=$cfgLine + [Environment]::NewLine + $cfg }" ^
+  "$cfg=[System.Text.RegularExpressions.Regex]::Replace($cfg,'(?m)^[ \t]*model_provider\s*=.*(?:\r?\n)?','');" ^
+  "$cfg=[System.Text.RegularExpressions.Regex]::Replace($cfg,'(?ms)^[ \t]*\[model_providers\.(?:""codex-gateway-http""|''codex-gateway-http''|codex-gateway-http)\]\s*(?:\r?\n)(?:(?!^[ \t]*\[).*(?:\r?\n)?)*','');" ^
+  "$cfg=$cfg.TrimStart([char]13,[char]10).TrimEnd([char]13,[char]10);" ^
+  "if ([string]::IsNullOrWhiteSpace($cfg)) { $cfg=$providerLine + [Environment]::NewLine + [Environment]::NewLine + $providerBlock + [Environment]::NewLine } else { $cfg=$providerLine + [Environment]::NewLine + $cfg + [Environment]::NewLine + [Environment]::NewLine + $providerBlock + [Environment]::NewLine }" ^
   "$authObj=@{ auth_mode='apikey'; OPENAI_API_KEY=$key };" ^
   "$auth=($authObj | ConvertTo-Json -Depth 5) + [Environment]::NewLine;" ^
   "$launcherLines=@('@echo off','setlocal','set ""NO_PROXY=' + $noProxy + '""','set ""HTTP_PROXY=""','set ""HTTPS_PROXY=""','set ""ALL_PROXY=""','set ""OPENAI_BASE_URL=""','set ""OPENAI_API_BASE=""','set ""OPENAI_API_KEY=""','codex -p default %*','');" ^
